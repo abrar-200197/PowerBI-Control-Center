@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+generated_docs/
+azure_credentials.txt
+*.log
+temp_*
+.vscode/
+test_*.docx

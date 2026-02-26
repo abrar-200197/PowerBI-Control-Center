@@ -1,0 +1,69 @@
+name: $(Date:yyyyMMdd)$(Rev:.r) 
+
+trigger: 
+  branches: 
+    include: 
+      - main 
+      
+resources: 
+  repositories: 
+    - repository: pipeline_templates 
+      type: git
+      name: Infra-Cloud/infra-devops-pipelines 
+
+variables:
+  dockerRegistryServiceConnection: 'ashleyfurniture'
+  imageRepository: 'afi/bi/powerbidocumentation'
+  containerRegistry: 'ashleyfurniture.azurecr.io'
+  dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
+  tag: '$(Build.BuildId)'
+
+stages:
+  - stage: Build
+    displayName: "Build and Push Docker Image"
+    pool:
+      name: "DevOps"
+      demands:
+        - Agent.OS -equals Linux
+    jobs:
+      - job: Build
+        displayName: 'Build Docker Image'
+        steps:
+          - task: Docker@2
+            inputs:
+              containerRegistry: 'ashleyfurniture'
+              repository: '$(imageRepository)'
+              command: 'buildAndPush'
+              Dockerfile: '$(dockerfilePath)'
+              tags: |
+                $(tag)
+                latest
+
+  - stage: Deployment
+    displayName: Deploy to Prod
+    dependsOn: Build
+    jobs:
+      - deployment: Deploy
+        environment: "Afi-BI-Analytics"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureWebAppContainer@1
+                  displayName: Deploy container
+                  inputs:
+                    azureSubscription: 'AFI PROD'
+                    appName: 'afi-powerbi-documentation-prod-app'
+                    containers: '$(containerRegistry)/$(imageRepository):latest'
+  
+                - task: AzureCLI@2
+                  displayName: Force MI ACR pull
+                  inputs:
+                    azureSubscription: 'AFI PROD'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az webapp config set \
+                        --name afi-powerbi-documentation-prod-app \
+                        --resource-group afi-bi-analytics-rg \
+                        --generic-configurations '{"acrUseManagedIdentityCreds": true}'
