@@ -33,7 +33,7 @@ import sys         # For system-level operations like exiting the program
 import json        # For reading and writing JSON data files
 from datetime import datetime  # For working with dates and times
 from dotenv import load_dotenv  # For loading configuration from .env file
-
+import math
 # ============================================================================
 # STEP 2: DEFINE CONFIGURATION CONSTANTS
 # ============================================================================
