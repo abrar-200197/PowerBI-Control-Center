@@ -23,7 +23,7 @@ RUN ACCEPT_EULA=Y apt-get install -y msodbcsql17 mssql-tools
 RUN echo 'export PATH="$PATH:/opt/mssql-tools/bin"' >> ~/.bashrc
 
 # Copy only Requirements.txt first (for better caching)
-COPY Requirements.txt requirements.txt
+COPY requirements.txt requirements.txt
 RUN pip install -r requirements.txt
 
 # Copy the rest of the application code
