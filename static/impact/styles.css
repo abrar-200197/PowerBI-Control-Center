@@ -1,4 +1,5 @@
 :root {
+  /* Default aligns with Control Center dark professional shell */
   --bg: #0b1220;
   --bg-elev: #111a2e;
   --bg-soft: #16213a;
@@ -16,6 +17,29 @@
   --sidebar: 260px;
   --font: "DM Sans", system-ui, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+/* Host light theme — match Control Center bright surfaces */
+html[data-theme="light"] {
+  --bg: #F7F9FC;
+  --bg-elev: #ffffff;
+  --bg-soft: #EDF2F7;
+  --border: rgba(45, 55, 72, 0.12);
+  --text: #1A202C;
+  --muted: #718096;
+  --primary: #3B82F6;
+  --primary-2: #6366F1;
+  --good: #059669;
+  --warn: #D97706;
+  --danger: #DC2626;
+  --chip: #E2E8F0;
+  --shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+html[data-theme="light"] body {
+  background: var(--bg);
+}
+html[data-theme="light"] .sidebar {
+  background: #ffffff;
+  border-right-color: var(--border);
 }
 
 * { box-sizing: border-box; }

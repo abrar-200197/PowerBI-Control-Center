@@ -4,25 +4,93 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Power BI Control Center{% endblock %}</title>
+    <script>
+        /* Apply theme before paint to avoid flash */
+        (function () {
+            try {
+                var t = localStorage.getItem('pbi_cc_theme');
+                if (t === 'dark' || t === 'light') {
+                    document.documentElement.setAttribute('data-theme', t);
+                }
+            } catch (e) { /* ignore */ }
+        })();
+    </script>
     <style>
+        :root {
+            --bg-page: #F7F9FC;
+            --bg-surface: #ffffff;
+            --bg-surface-2: #F7FAFC;
+            --bg-header: #ffffff;
+            --bg-sidebar: #4A5568;
+            --bg-sidebar-header: #2D3748;
+            --bg-nav-hover: rgba(255, 255, 255, 0.08);
+            --bg-nav-active: #F6C343;
+            --text: #2D3748;
+            --text-strong: #1A202C;
+            --text-muted: #718096;
+            --text-on-sidebar: #E2E8F0;
+            --text-on-active: #1A202C;
+            --border: #E2E8F0;
+            --border-soft: #EDF2F7;
+            --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+            --accent: #F6C343;
+            --accent-soft: #FEF3C7;
+            --danger: #EF4444;
+            --success: #10B981;
+            --warning: #F59E0B;
+            --info: #3B82F6;
+            --input-bg: #ffffff;
+            --table-hover: #F7FAFC;
+            --chip-bg: #EDF2F7;
+        }
+        html[data-theme="dark"] {
+            --bg-page: #0F1419;
+            --bg-surface: #1A2332;
+            --bg-surface-2: #151C27;
+            --bg-header: #1A2332;
+            --bg-sidebar: #121820;
+            --bg-sidebar-header: #0B1016;
+            --bg-nav-hover: rgba(255, 255, 255, 0.06);
+            --bg-nav-active: #F6C343;
+            --text: #E2E8F0;
+            --text-strong: #F7FAFC;
+            --text-muted: #94A3B8;
+            --text-on-sidebar: #CBD5E1;
+            --text-on-active: #1A202C;
+            --border: #2D3A4D;
+            --border-soft: #243041;
+            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+            --accent: #F6C343;
+            --accent-soft: #3D3420;
+            --danger: #F87171;
+            --success: #34D399;
+            --warning: #FBBF24;
+            --info: #60A5FA;
+            --input-bg: #151C27;
+            --table-hover: #1F2A3A;
+            --chip-bg: #243041;
+            color-scheme: dark;
+        }
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: #F7F9FC;
+            background: var(--bg-page);
             min-height: 100vh;
             display: flex;
-            color: #2D3748;
+            color: var(--text);
+            transition: background-color 0.2s ease, color 0.2s ease;
         }
 
         /* Sidebar Navigation */
         .sidebar {
             width: 190px;
-            background: #4A5568;
+            background: var(--bg-sidebar);
             min-height: 100vh;
             position: fixed;
             left: 0;
@@ -32,7 +100,7 @@
         }
 
         .sidebar-header {
-            background: #2D3748;
+            background: var(--bg-sidebar-header);
             padding: 16px 20px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             display: flex;
@@ -72,7 +140,7 @@
 
         .nav-item {
             padding: 10px 16px;
-            color: #CBD5E0;
+            color: var(--text-on-sidebar);
             font-size: 13px;
             cursor: pointer;
             transition: all 0.15s ease;
@@ -84,15 +152,15 @@
         }
 
         .nav-item:hover {
-            background: rgba(255, 255, 255, 0.05);
+            background: var(--bg-nav-hover);
             color: white;
         }
 
         .nav-item.active {
-            background: #F6C343;
-            color: #2D3748;
+            background: var(--bg-nav-active);
+            color: var(--text-on-active);
             font-weight: 600;
-            border-left-color: #F6C343;
+            border-left-color: var(--accent);
         }
 
         .nav-item-icon {
@@ -108,13 +176,14 @@
             display: flex;
             flex-direction: column;
             min-height: 100vh;
+            background: var(--bg-page);
         }
 
         .header {
-            background: white;
+            background: var(--bg-header);
             padding: 14px 28px;
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
-            border-bottom: 1px solid #E2E8F0;
+            box-shadow: var(--shadow-sm);
+            border-bottom: 1px solid var(--border);
         }
 
         .header-content {
@@ -128,7 +197,7 @@
         .header-left h1 {
             font-size: 18px;
             font-weight: 650;
-            color: #1A202C;
+            color: var(--text-strong);
             display: flex;
             align-items: center;
             gap: 10px;
@@ -137,7 +206,7 @@
 
         .header-subtitle {
             font-size: 12px;
-            color: #718096;
+            color: var(--text-muted);
             font-weight: 400;
             margin-top: 0;
         }
@@ -145,22 +214,51 @@
         .user-info {
             display: flex;
             align-items: center;
-            gap: 16px;
+            gap: 10px;
             font-size: 13px;
         }
 
+        .theme-toggle {
+            width: 36px;
+            height: 36px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--bg-surface);
+            color: var(--text-strong);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: var(--shadow-sm);
+            transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+            padding: 0;
+            line-height: 1;
+        }
+        .theme-toggle:hover {
+            border-color: var(--accent);
+            transform: translateY(-1px);
+        }
+        .theme-toggle:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+        .theme-toggle .icon-sun,
+        .theme-toggle .icon-moon { display: none; width: 18px; height: 18px; }
+        html:not([data-theme="dark"]) .theme-toggle .icon-moon { display: block; }
+        html[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
+
         .user-name {
-            background: linear-gradient(180deg, #FFFFFF 0%, #F7FAFC 100%);
+            background: var(--bg-surface);
             padding: 6px 12px 6px 10px;
             border-radius: 999px;
-            border: 1px solid #E2E8F0;
+            border: 1px solid var(--border);
             font-weight: 600;
-            color: #2D3748;
+            color: var(--text);
             font-size: 12px;
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), inset 0 1px 0 rgba(255,255,255,.8);
+            box-shadow: var(--shadow-sm);
             max-width: min(320px, 42vw);
         }
         .user-name .wave {
@@ -236,6 +334,8 @@
             width: 100%;
             margin: 0 auto;
             overflow-x: hidden;
+            background: var(--bg-page);
+            color: var(--text);
         }
 
         /* Flash Messages */
@@ -248,27 +348,87 @@
         }
 
         .alert-success {
-            background: #F0FDF4;
-            color: #166534;
-            border-left-color: #22C55E;
+            background: color-mix(in srgb, var(--success) 12%, var(--bg-surface));
+            color: var(--text-strong);
+            border-left-color: var(--success);
         }
 
         .alert-error {
-            background: #FEF2F2;
-            color: #991B1B;
-            border-left-color: #EF4444;
+            background: color-mix(in srgb, var(--danger) 12%, var(--bg-surface));
+            color: var(--text-strong);
+            border-left-color: var(--danger);
         }
 
         .alert-warning {
-            background: #FFFBEB;
-            color: #92400E;
-            border-left-color: #F59E0B;
+            background: color-mix(in srgb, var(--warning) 14%, var(--bg-surface));
+            color: var(--text-strong);
+            border-left-color: var(--warning);
         }
 
         .alert-info {
-            background: #EFF6FF;
-            color: #1E40AF;
-            border-left-color: #3B82F6;
+            background: color-mix(in srgb, var(--info) 12%, var(--bg-surface));
+            color: var(--text-strong);
+            border-left-color: var(--info);
+        }
+
+        /* Shared surface helpers used across section templates */
+        html[data-theme="dark"] .stat-card,
+        html[data-theme="dark"] .controls,
+        html[data-theme="dark"] .orphaned-table,
+        html[data-theme="dark"] .impact-wrap,
+        html[data-theme="dark"] .card,
+        html[data-theme="dark"] .panel,
+        html[data-theme="dark"] .workspace-card,
+        html[data-theme="dark"] .table-card,
+        html[data-theme="dark"] .filter-bar,
+        html[data-theme="dark"] .kpi-card,
+        html[data-theme="dark"] .summary-card {
+            background: var(--bg-surface) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .stat-value,
+        html[data-theme="dark"] h1,
+        html[data-theme="dark"] h2,
+        html[data-theme="dark"] h3,
+        html[data-theme="dark"] strong {
+            color: var(--text-strong);
+        }
+        html[data-theme="dark"] .stat-label,
+        html[data-theme="dark"] .muted,
+        html[data-theme="dark"] .header-subtitle {
+            color: var(--text-muted) !important;
+        }
+        html[data-theme="dark"] table th {
+            background: var(--bg-surface-2) !important;
+            color: var(--text-muted) !important;
+            border-color: var(--border) !important;
+        }
+        html[data-theme="dark"] table td {
+            color: var(--text) !important;
+            border-color: var(--border-soft) !important;
+        }
+        html[data-theme="dark"] table tbody tr:hover {
+            background: var(--table-hover) !important;
+        }
+        html[data-theme="dark"] input,
+        html[data-theme="dark"] select,
+        html[data-theme="dark"] textarea,
+        html[data-theme="dark"] .select2-container--default .select2-selection--single {
+            background: var(--input-bg) !important;
+            color: var(--text) !important;
+            border-color: var(--border) !important;
+        }
+        html[data-theme="dark"] .select2-dropdown {
+            background: var(--bg-surface) !important;
+            color: var(--text) !important;
+            border-color: var(--border) !important;
+        }
+        html[data-theme="dark"] .select2-results__option--highlighted {
+            background: var(--table-hover) !important;
+        }
+        html[data-theme="dark"] iframe.impact-frame {
+            background: var(--bg-page) !important;
         }
 
         /* Button Styles */
@@ -387,6 +547,18 @@
                     <p class="header-subtitle">{% block page_subtitle %}Browse reports, refresh health, and ownership across workspaces{% endblock %}</p>
                 </div>
                 <div class="user-info">
+                    <button type="button" class="theme-toggle" id="themeToggle"
+                            title="Toggle dark / light theme" aria-label="Toggle color theme">
+                        <!-- Moon (switch to dark) -->
+                        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 14.5A8.5 8.5 0 0 1 9.5 3 7 7 0 1 0 21 14.5z"/>
+                        </svg>
+                        <!-- Sun (switch to light) -->
+                        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="12" cy="12" r="4"/>
+                            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+                        </svg>
+                    </button>
                     {% if session.get('user') %}
                         {% set full_name = session.get('user', {}).get('name', 'User') or 'User' %}
                         {% if ',' in full_name %}
@@ -418,7 +590,40 @@
 
     {% block extra_js %}{% endblock %}
 
-
+    <script>
+    (function () {
+        var KEY = 'pbi_cc_theme';
+        function currentTheme() {
+            return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+        }
+        function applyTheme(theme) {
+            var t = theme === 'dark' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+            try { localStorage.setItem(KEY, t); } catch (e) {}
+            // Notify Impact Explorer iframe (same-origin)
+            try {
+                var frame = document.getElementById('impactFrame');
+                if (frame && frame.contentWindow) {
+                    frame.contentWindow.postMessage({ type: 'pbi-cc-theme', theme: t }, window.location.origin);
+                }
+            } catch (e) {}
+            var btn = document.getElementById('themeToggle');
+            if (btn) {
+                btn.title = t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+                btn.setAttribute('aria-label', btn.title);
+            }
+        }
+        var btn = document.getElementById('themeToggle');
+        if (btn) {
+            btn.addEventListener('click', function () {
+                applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+            });
+            // sync label on load
+            applyTheme(currentTheme());
+        }
+        // Prefer saved theme; else keep default light (ignore OS for consistency)
+    })();
+    </script>
 </body>
 </html>
 

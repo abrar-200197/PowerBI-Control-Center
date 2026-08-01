@@ -844,22 +844,50 @@ def api_catalog_data(name):
 @app.route('/api/catalog/impact/tables')
 @login_required
 def api_catalog_impact_tables():
-    """Thin table list for Impact Explorer (no nested datasets). Server-side only cache."""
+    """
+    Thin table list for Impact Explorer (no nested datasets).
+    Strips bulky searchText field — browser builds search locally.
+    Enables short browser/proxy cache so revisits are near-instant.
+    """
     if not CATALOG_AVAILABLE or catalog_service is None:
         return jsonify({'success': False, 'error': 'Catalog not available'}), 503
     try:
         force = request.args.get('refresh') in ('1', 'true', 'yes')
-        rows = catalog_service.impact_table_rows(force_refresh=force)
+        rows_in = catalog_service.impact_table_rows(force_refresh=force)
+        # Compact rows for wire size (searchText alone is multi-MB)
+        rows = []
+        for r in rows_in or []:
+            rows.append({
+                'k': r.get('tableKey'),
+                't': r.get('table'),
+                'st': r.get('sourceType') or 'Unknown',
+                'sv': r.get('server') or '',
+                'db': r.get('database') or '',
+                'sc': r.get('schema') or '',
+                'mn': r.get('modelTableNames') or [],
+                'rc': int(r.get('reportCount') or 0),
+                'dc': int(r.get('datasetCount') or 0),
+                'wc': int(r.get('workspaceCount') or 0),
+            })
         summary = catalog_service.get_summary() or {}
-        return jsonify({
+        pack = catalog_service.get_json('ui_impact_tables.json') or {}
+        payload = {
             'success': True,
+            'v': 2,  # compact schema version
             'count': len(rows),
             'rows': rows,
-            'generatedAt': (catalog_service.get_json('ui_impact_tables.json') or {}).get('generatedAt')
-                or summary.get('generatedAt'),
+            'generatedAt': pack.get('generatedAt') or summary.get('generatedAt'),
             'stats': summary.get('stats') or {},
             'source': 'server-thin',
-        })
+        }
+        resp = jsonify(payload)
+        # Same user/session: allow brief cache so switching back to Impact is fast
+        if not force:
+            resp.headers['Cache-Control'] = 'private, max-age=120'
+        else:
+            resp.headers['Cache-Control'] = 'no-store'
+        resp.headers['X-Data-Source'] = 'server-thin'
+        return resp
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

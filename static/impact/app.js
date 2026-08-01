@@ -127,23 +127,106 @@ function setLoadProgress(msg) {
     <div class="muted small">Server reads SharePoint; browser only gets thin API JSON</div></div>`;
 }
 
-async function fetchJsonNoCache(url, { refresh = false, timeoutMs = 300000 } = {}) {
+async function fetchJsonNoCache(url, { refresh = false, timeoutMs = 300000, allowHttpCache = false } = {}) {
   const sep = url.includes("?") ? "&" : "?";
-  let full = `${url}${sep}_=${Date.now()}`;
-  if (refresh) full += "&refresh=1";
+  // Only bust cache when forcing refresh — otherwise reuse browser private cache (2 min on server)
+  let full = refresh || !allowHttpCache ? `${url}${sep}_=${Date.now()}` : url;
+  if (refresh) full += `${full.includes("?") ? "&" : "?"}refresh=1`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(full, {
       credentials: "same-origin",
-      cache: "no-store",
-      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+      cache: allowHttpCache && !refresh ? "default" : "no-store",
+      headers: allowHttpCache && !refresh
+        ? { Accept: "application/json" }
+        : { "Cache-Control": "no-cache", Pragma: "no-cache", Accept: "application/json" },
       signal: ctrl.signal,
     });
     return res;
   } finally {
     clearTimeout(timer);
   }
+}
+
+const IMPACT_CACHE_KEY = "pbi_cc_impact_tables_v2";
+const IMPACT_CACHE_TTL_MS = 10 * 60 * 1000; // 10 min session reuse
+
+function readImpactSessionCache() {
+  try {
+    const raw = sessionStorage.getItem(IMPACT_CACHE_KEY);
+    if (!raw) return null;
+    const pack = JSON.parse(raw);
+    if (!pack || !pack.ts || !Array.isArray(pack.rows)) return null;
+    if (Date.now() - pack.ts > IMPACT_CACHE_TTL_MS) return null;
+    return pack;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeImpactSessionCache(payload) {
+  try {
+    sessionStorage.setItem(
+      IMPACT_CACHE_KEY,
+      JSON.stringify({
+        ts: Date.now(),
+        generatedAt: payload.generatedAt || null,
+        stats: payload.stats || {},
+        rows: payload.rows || [],
+      })
+    );
+  } catch (_) {
+    /* quota — ignore */
+  }
+}
+
+/** Expand compact server row (v2) or legacy full row into UI row shape. */
+function expandImpactRow(r) {
+  const isCompact = r && (r.k != null || r.t != null) && r.tableKey == null && r.table == null;
+  if (isCompact || (r && r.k && r.rc != null)) {
+    const table = r.t || "—";
+    const tableKey = r.k || "";
+    const modelTableNames = r.mn || [];
+    const sourceType = r.st || "Unknown";
+    const server = r.sv || "";
+    const database = r.db || "";
+    const schema = r.sc || "";
+    return {
+      tableKey,
+      table,
+      sourceType,
+      server,
+      database,
+      schema,
+      modelTableNames,
+      datasets: [],
+      reportCount: r.rc || 0,
+      datasetCount: r.dc || 0,
+      workspaceCount: r.wc || 0,
+      searchText: [table, tableKey, server, database, schema, sourceType, ...modelTableNames]
+        .join(" ")
+        .toLowerCase(),
+    };
+  }
+  // Legacy / full shape
+  return {
+    tableKey: r.tableKey,
+    table: r.table || "—",
+    sourceType: r.sourceType || "Unknown",
+    server: r.server || "",
+    database: r.database || "",
+    schema: r.schema || "",
+    modelTableNames: r.modelTableNames || [],
+    datasets: [],
+    reportCount: r.reportCount || 0,
+    datasetCount: r.datasetCount || 0,
+    workspaceCount: r.workspaceCount || 0,
+    searchText: r.searchText || [
+      r.table, r.tableKey, r.server, r.database, r.schema, r.sourceType,
+      ...(r.modelTableNames || []),
+    ].join(" ").toLowerCase(),
+  };
 }
 
 async function loadJsonFile(path, label, opts = {}) {
@@ -180,52 +263,59 @@ async function loadData(forceRefresh = false) {
       await fetchJsonNoCache("/api/catalog/status", { timeoutMs: 30000 });
     } catch (_) { /* optional */ }
 
-    // 1) Small summary (optional KPIs)
-    let summary = null;
-    try {
-      const s = await loadJsonFile("/api/catalog/data/summary.json", "summary (~KB)", opts);
-      summary = s.data;
-      state.summary = summary;
-    } catch (e) {
-      console.warn("summary load failed", e);
+    // 1) Prefer session cache (instant return visits within 10 min)
+    let tpack = null;
+    let fromSession = false;
+    if (forceRefresh) {
+      try { sessionStorage.removeItem(IMPACT_CACHE_KEY); } catch (_) { /* ignore */ }
+    } else {
+      const cached = readImpactSessionCache();
+      if (cached) {
+        tpack = { success: true, rows: cached.rows, generatedAt: cached.generatedAt, stats: cached.stats, source: "session" };
+        fromSession = true;
+        setLoadProgress("Restoring impact tables from session…");
+      }
     }
 
-    // 2) Thin impact table list — server reads SP/disk; browser gets flat rows only
-    setLoadProgress("Loading impact tables (thin API)…");
-    const tablesUrl = forceRefresh
-      ? "/api/catalog/impact/tables?refresh=1"
-      : "/api/catalog/impact/tables";
-    const tres = await fetchJsonNoCache(tablesUrl, { timeoutMs: 180000 });
-    if (!tres.ok) {
-      const errBody = await tres.json().catch(() => ({}));
-      throw new Error(errBody.error || `impact/tables HTTP ${tres.status}`);
+    // 2) Small summary (optional KPIs) — skip when session already has stats
+    let summary = state.summary;
+    if (!fromSession || !tpack?.stats || !Object.keys(tpack.stats || {}).length) {
+      try {
+        const s = await loadJsonFile("/api/catalog/data/summary.json", "summary (~KB)", opts);
+        summary = s.data;
+        state.summary = summary;
+      } catch (e) {
+        console.warn("summary load failed", e);
+      }
     }
-    const tpack = await tres.json();
-    if (!tpack.success) throw new Error(tpack.error || "impact/tables failed");
-    state.rows = (tpack.rows || []).map((r) => ({
-      tableKey: r.tableKey,
-      table: r.table || "—",
-      sourceType: r.sourceType || "Unknown",
-      server: r.server || "",
-      database: r.database || "",
-      schema: r.schema || "",
-      modelTableNames: r.modelTableNames || [],
-      datasets: [], // loaded on demand in openDrawer via thin detail API
-      reportCount: r.reportCount || 0,
-      datasetCount: r.datasetCount || 0,
-      workspaceCount: r.workspaceCount || 0,
-      searchText: r.searchText || [
-        r.table, r.tableKey, r.server, r.database, r.schema, r.sourceType,
-        ...(r.modelTableNames || []),
-      ].join(" ").toLowerCase(),
-    }));
+
+    // 3) Thin impact table list from server if no session hit
+    if (!tpack) {
+      setLoadProgress("Loading impact tables…");
+      const tablesUrl = "/api/catalog/impact/tables";
+      const tres = await fetchJsonNoCache(tablesUrl, {
+        refresh: forceRefresh,
+        timeoutMs: 180000,
+        allowHttpCache: !forceRefresh,
+      });
+      if (!tres.ok) {
+        const errBody = await tres.json().catch(() => ({}));
+        throw new Error(errBody.error || `impact/tables HTTP ${tres.status}`);
+      }
+      tpack = await tres.json();
+      if (!tpack.success) throw new Error(tpack.error || "impact/tables failed");
+      writeImpactSessionCache(tpack);
+    }
+
+    state.rows = (tpack.rows || []).map(expandImpactRow);
 
     const gen = tpack.generatedAt || summary?.generatedAt || "";
     const stats = tpack.stats || summary?.stats || {};
     const runMeta = $("#runMeta");
     if (runMeta && !runMeta.classList.contains("hidden")) {
+      const srcLabel = fromSession ? "Session cache" : (tpack.source === "server-thin" ? "Server (cached)" : "Server");
       runMeta.innerHTML =
-        `Source: <strong>Server thin API</strong> · ` +
+        `Source: <strong>${srcLabel}</strong> · ` +
         `${fmt(stats.workspaceCount)} ws · ${fmt(stats.reportCount)} reports · ` +
         `${fmt(state.rows.length)} tables` +
         (gen ? ` · ${new Date(gen).toLocaleString()}` : "");
@@ -1071,6 +1161,23 @@ function wire() {
   $("#reloadBtn")?.addEventListener("click", () => loadData(true));
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAllDrawers(); });
 }
+
+/** Sync theme from Control Center host (or localStorage). */
+function applyHostTheme(theme) {
+  const t = theme === "light" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", t);
+}
+try {
+  const saved = localStorage.getItem("pbi_cc_theme");
+  if (saved === "light" || saved === "dark") applyHostTheme(saved);
+} catch (_) { /* ignore */ }
+window.addEventListener("message", (ev) => {
+  try {
+    if (ev.origin !== window.location.origin) return;
+    const data = ev.data || {};
+    if (data.type === "pbi-cc-theme") applyHostTheme(data.theme);
+  } catch (_) { /* ignore */ }
+});
 
 wire();
 loadData(false);

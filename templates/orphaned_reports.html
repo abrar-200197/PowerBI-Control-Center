@@ -124,13 +124,27 @@
 
     .loading {
         text-align: center;
-        padding: 40px 16px;
-        color: #718096;
+        padding: 48px 16px;
+        color: var(--text-muted, #718096);
         font-size: 13px;
     }
 
+    .idle-state {
+        text-align: center;
+        padding: 48px 20px;
+        color: var(--text-muted, #718096);
+        font-size: 13px;
+    }
+    .idle-state .idle-icon {
+        font-size: 28px;
+        margin-bottom: 10px;
+        opacity: 0.85;
+        line-height: 1;
+    }
+    .idle-state p { margin: 0; color: var(--text-muted, #718096); }
+
     .spinner {
-        border: 3px solid #EDF2F7;
+        border: 3px solid var(--border, #EDF2F7);
         border-top: 3px solid #E53E3E;
         border-radius: 50%;
         width: 28px;
@@ -146,7 +160,7 @@
 
     .age-badge {
         font-size: 12px;
-        color: #64748B;
+        color: var(--text-muted, #64748B);
     }
 </style>
 {% endblock %}
@@ -181,9 +195,10 @@
     </div>
 
     <div id="orphaned-container" class="orphaned-table">
-        <div class="loading">
-            <div class="spinner"></div>
-            <p>Select a workspace to detect orphaned reports</p>
+        <div class="idle-state">
+            <div class="idle-icon" aria-hidden="true">🗂️</div>
+            <p><strong>Select a workspace</strong> to detect orphaned reports</p>
+            <p style="margin-top:6px;font-size:12px;opacity:.85;">No scan runs until you choose a workspace.</p>
         </div>
     </div>
 </div>
@@ -223,8 +238,10 @@
 
         if (!workspaceId) {
             document.getElementById('orphaned-container').innerHTML = `
-                <div class="loading">
-                    <p>Select a workspace to detect orphaned reports</p>
+                <div class="idle-state">
+                    <div class="idle-icon" aria-hidden="true">🗂️</div>
+                    <p><strong>Select a workspace</strong> to detect orphaned reports</p>
+                    <p style="margin-top:6px;font-size:12px;opacity:.85;">No scan runs until you choose a workspace.</p>
                 </div>`;
             document.getElementById('stats-container').style.display = 'none';
             return;
