@@ -1,0 +1,54 @@
+﻿# Secrets
+.env
+azure_credentials.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.env.local
+
+# Runtime / local caches (regenerated; never source of truth)
+.usage_cache/
+.visual_cache/
+flask_session/
+output/
+generated_docs/
+data/catalog_cache/
+data/catalog_output/
+data/catalog_latest/
+data/usage_cache/
+logs/
+*.log
+*.pkl
+*.db
+
+# Local tooling junk
+temp_*/
+_*.py
+_*.txt
+*.mmd
+doc_index.json
+powerbi_documentation.json
+scan_result_raw.json
+inputs.txt
+vendor_metadata_src/
+PowerBI-Reports-MetaData-main.zip
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+test_*.docx
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OneDrive / Office noise
+~$*

@@ -1,0 +1,353 @@
+{% extends "base.html" %}
+
+{% block title %}Orphaned Reports - Power BI Control Center{% endblock %}
+{% block page_heading %}Orphaned Reports{% endblock %}
+{% block page_subtitle %}Reports with missing or inactive ownership signals{% endblock %}
+
+{% block extra_css %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<style>
+    .page-shell { display:flex; flex-direction:column; gap:12px; }
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin: 0;
+    }
+    @media (max-width: 900px) {
+        .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    .stat-card {
+        background: white;
+        padding: 12px 14px;
+        border-radius: 8px;
+        border: 1px solid #E2E8F0;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+        text-align: left;
+    }
+
+    .stat-value {
+        font-size: 22px;
+        font-weight: 700;
+        margin: 4px 0 0;
+        font-variant-numeric: tabular-nums;
+        color: #1A202C;
+    }
+
+    .stat-label {
+        color: #718096;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    .controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: #fff;
+        border: 1px solid #E2E8F0;
+        border-radius: 8px;
+        padding: 10px 14px;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+    }
+    .controls select,
+    .controls .select2-container { min-width: 280px; max-width: 480px; }
+
+    .risk-badge {
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .risk-critical {
+        background: #FEE2E2;
+        color: #991B1B;
+    }
+
+    .risk-high {
+        background: #FED7AA;
+        color: #9A3412;
+    }
+
+    .risk-medium {
+        background: #FEF3C7;
+        color: #92400E;
+    }
+
+    .risk-low {
+        background: #DBEAFE;
+        color: #1E40AF;
+    }
+
+    .orphaned-table {
+        background: white;
+        border-radius: 8px;
+        border: 1px solid #E2E8F0;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+        overflow: auto;
+        max-height: calc(100vh - 280px);
+    }
+
+    .orphaned-table table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 13px;
+    }
+
+    .orphaned-table th {
+        background: #F7FAFC;
+        padding: 8px 12px;
+        text-align: left;
+        font-weight: 700;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #718096;
+        border-bottom: 1px solid #E2E8F0;
+        position: sticky;
+        top: 0;
+        z-index: 2;
+    }
+
+    .orphaned-table td {
+        padding: 8px 12px;
+        border-bottom: 1px solid #EDF2F7;
+        color: #2D3748;
+        vertical-align: middle;
+    }
+    .orphaned-table tbody tr:hover { background: #F7FAFC; }
+
+    .loading {
+        text-align: center;
+        padding: 40px 16px;
+        color: #718096;
+        font-size: 13px;
+    }
+
+    .spinner {
+        border: 3px solid #EDF2F7;
+        border-top: 3px solid #E53E3E;
+        border-radius: 50%;
+        width: 28px;
+        height: 28px;
+        animation: spin 0.8s linear infinite;
+        margin: 0 auto 12px;
+    }
+
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+
+    .age-badge {
+        font-size: 12px;
+        color: #64748B;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-shell">
+    <div class="controls">
+        <select id="workspaceSelect" onchange="loadOrphanedReports()">
+            <option value="">Loading workspaces...</option>
+        </select>
+    </div>
+
+    <div id="stats-container" style="display: none;">
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total Reports</div>
+                <div class="stat-value" id="total-reports">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Orphaned Reports</div>
+                <div class="stat-value" id="orphaned-count" style="color: #EF4444;">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Orphaned %</div>
+                <div class="stat-value" id="orphaned-percentage" style="color: #F59E0B;">0%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Critical Risk</div>
+                <div class="stat-value" id="critical-count" style="color: #DC2626;">0</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="orphaned-container" class="orphaned-table">
+        <div class="loading">
+            <div class="spinner"></div>
+            <p>Select a workspace to detect orphaned reports</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+    let currentWorkspaceId = null;
+
+    async function loadWorkspaces() {
+        try {
+            const response = await fetch('/api/workspaces');
+            const data = await response.json();
+
+            if (data.success) {
+                const select = document.getElementById('workspaceSelect');
+                select.innerHTML = '<option value="">Select a workspace...</option>';
+                
+                data.workspaces.forEach(ws => {
+                    const option = document.createElement('option');
+                    option.value = ws.id;
+                    option.textContent = ws.name;
+                    select.appendChild(option);
+                });
+
+                $(select).select2({ width: '100%' });
+            }
+        } catch (error) {
+            console.error('Error loading workspaces:', error);
+        }
+    }
+
+    async function loadOrphanedReports() {
+        const workspaceId = document.getElementById('workspaceSelect').value;
+
+        if (!workspaceId) {
+            document.getElementById('orphaned-container').innerHTML = `
+                <div class="loading">
+                    <p>Select a workspace to detect orphaned reports</p>
+                </div>`;
+            document.getElementById('stats-container').style.display = 'none';
+            return;
+        }
+
+        currentWorkspaceId = workspaceId;
+
+        // Show loading
+        document.getElementById('orphaned-container').innerHTML = `
+            <div class="loading">
+                <div class="spinner"></div>
+                <p>Scanning for orphaned reports... This may take a moment.</p>
+            </div>`;
+        document.getElementById('stats-container').style.display = 'none';
+
+        try {
+            const response = await fetch(`/api/orphaned-reports/${workspaceId}`);
+            const data = await response.json();
+
+            if (data.success) {
+                displayResults(data);
+            } else {
+                throw new Error(data.error || 'Failed to detect orphaned reports');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            document.getElementById('orphaned-container').innerHTML = `
+                <div style="padding: 40px; text-align: center; color: #EF4444;">
+                    ❌ Error: ${escapeHtml(error.message)}
+                </div>`;
+        }
+    }
+
+    function displayResults(data) {
+        // Update stats
+        document.getElementById('total-reports').textContent = data.total_reports;
+        document.getElementById('orphaned-count').textContent = data.orphaned_count;
+        document.getElementById('orphaned-percentage').textContent = data.orphaned_percentage + '%';
+        document.getElementById('critical-count').textContent = data.risk_summary.critical;
+
+        // Color code percentage
+        const pctElement = document.getElementById('orphaned-percentage');
+        if (data.orphaned_percentage <= 5) {
+            pctElement.style.color = '#10B981';
+        } else if (data.orphaned_percentage <= 15) {
+            pctElement.style.color = '#F59E0B';
+        } else {
+            pctElement.style.color = '#EF4444';
+        }
+
+        document.getElementById('stats-container').style.display = 'block';
+
+        // Build table
+        if (data.reports.length === 0) {
+            document.getElementById('orphaned-container').innerHTML = `
+                <div style="padding: 40px; text-align: center; color: #10B981;">
+                    ✅ No orphaned reports found! All reports have proper ownership.
+                </div>`;
+            return;
+        }
+
+        const note = data.note
+            ? `<div style="padding:8px 12px;font-size:12px;color:#64748B;border-bottom:1px solid #E2E8F0;background:#FAFBFC;">${escapeHtml(data.note)}</div>`
+            : '';
+
+        let html = note + `
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 4%;">#</th>
+                        <th style="width: 22%;">Report Name</th>
+                        <th style="width: 14%;">Created By</th>
+                        <th style="width: 14%;">Modified By</th>
+                        <th style="width: 14%;">Dataset Owner</th>
+                        <th style="width: 8%;">Age</th>
+                        <th style="width: 9%;">Risk</th>
+                        <th style="width: 15%;">Issues</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+        data.reports.forEach((report, index) => {
+            const ageText = (report.age_days === 0 || report.age_days)
+                ? `${report.age_days}d`
+                : '—';
+            const issuesText = (report.orphan_reasons || []).join('; ') || '—';
+            const risk = (report.risk_level || 'Low').toLowerCase();
+
+            html += `
+                <tr>
+                    <td>${index + 1}</td>
+                    <td><strong>${escapeHtml(report.report_name)}</strong></td>
+                    <td style="font-size:12px;">${escapeHtml(report.created_by || '—')}</td>
+                    <td style="font-size:12px;">${escapeHtml(report.modified_by || '—')}</td>
+                    <td style="font-size:12px;">${escapeHtml(report.dataset_owner || '—')}</td>
+                    <td><span class="age-badge">${ageText}</span></td>
+                    <td><span class="risk-badge risk-${risk}">${escapeHtml(report.risk_level || 'Low')}</span></td>
+                    <td style="font-size: 12px; color: #64748B;">${escapeHtml(issuesText)}</td>
+                </tr>`;
+        });
+
+        html += `
+                </tbody>
+            </table>`;
+
+        document.getElementById('orphaned-container').innerHTML = html;
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        };
+        return text.toString().replace(/[&<>"']/g, m => map[m]);
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+        loadWorkspaces();
+    });
+</script>
+{% endblock %}

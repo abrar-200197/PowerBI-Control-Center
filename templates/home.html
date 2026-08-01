@@ -1,0 +1,806 @@
+﻿{% extends "base.html" %}
+
+{% block title %}Home - Power BI Control Center{% endblock %}
+{% block page_heading %}Home{% endblock %}
+{% block page_subtitle %}Workspace health at a glance{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* ===== Home: dense enterprise dashboard (no wasted scroll) ===== */
+    .home-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        /* Fill viewport under header so table scrolls internally */
+        min-height: calc(100vh - 140px);
+    }
+
+    /* KPI strip */
+    .kpi-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+    }
+
+    .kpi {
+        background: #fff;
+        border: 1px solid #E2E8F0;
+        border-radius: 8px;
+        padding: 12px 14px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 64px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    .kpi-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        position: relative;
+    }
+    .kpi-icon::before {
+        content: '';
+        width: 18px;
+        height: 18px;
+        background-color: currentColor;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+    }
+    .kpi-icon.ws {
+        background: #EBF8FF; color: #2B6CB0;
+        /* folder */
+    }
+    .kpi-icon.ws::before {
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.rp {
+        background: #F0FFF4; color: #276749;
+    }
+    .kpi-icon.rp::before {
+        /* chart bars */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V9M10 19V5M16 19v-7M22 19H2'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V9M10 19V5M16 19v-7M22 19H2'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.in {
+        background: #FFFAF0; color: #C05621;
+    }
+    .kpi-icon.in::before {
+        /* alert triangle */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9L1.8 18a2 2 0 001.7 3h16.9a2 2 0 001.7-3L12.7 3.9a2 2 0 00-3.4 0z'/%3E%3Cpath d='M12 9v4M12 17h.01'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9L1.8 18a2 2 0 001.7 3h16.9a2 2 0 001.7-3L12.7 3.9a2 2 0 00-3.4 0z'/%3E%3Cpath d='M12 9v4M12 17h.01'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.or {
+        background: #FAF5FF; color: #6B46C1;
+    }
+    .kpi-icon.or::before {
+        /* user-x */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M17 8l5 5M22 8l-5 5'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M17 8l5 5M22 8l-5 5'/%3E%3C/svg%3E");
+    }
+
+    .kpi-body { min-width: 0; }
+    .kpi-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: #718096;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        line-height: 1.2;
+    }
+    .kpi-value {
+        font-size: 22px;
+        font-weight: 700;
+        color: #1A202C;
+        line-height: 1.25;
+        font-variant-numeric: tabular-nums;
+    }
+    .kpi-value .spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid #E2E8F0;
+        border-top-color: #3182CE;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        vertical-align: middle;
+    }
+    .kpi-hint {
+        font-size: 11px;
+        color: #A0AEC0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* Panel */
+    .panel {
+        background: #fff;
+        border: 1px solid #E2E8F0;
+        border-radius: 8px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .panel-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid #EDF2F7;
+        background: #FAFBFC;
+        flex-wrap: wrap;
+    }
+
+    .panel-title {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+    }
+    .panel-title h2 {
+        font-size: 13px;
+        font-weight: 650;
+        color: #1A202C;
+        margin: 0;
+    }
+    .panel-meta {
+        font-size: 11px;
+        color: #A0AEC0;
+    }
+
+    .panel-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .search-box {
+        position: relative;
+    }
+    .search-box input {
+        width: 220px;
+        max-width: 42vw;
+        height: 32px;
+        border: 1px solid #E2E8F0;
+        border-radius: 6px;
+        padding: 0 10px 0 30px;
+        font-size: 12px;
+        color: #2D3748;
+        background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='none' stroke='%23A0AEC0' stroke-width='2' viewBox='0 0 24 24'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3-3'/%3E%3C/svg%3E") 10px center no-repeat;
+        outline: none;
+    }
+    .search-box input:focus {
+        border-color: #90CDF4;
+        box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.15);
+    }
+
+    .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 999px;
+        border: 1px solid #E2E8F0;
+        background: #fff;
+        font-size: 11px;
+        color: #4A5568;
+        font-weight: 500;
+    }
+    .chip .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #48BB78;
+    }
+    .chip.muted .dot { background: #CBD5E0; }
+
+    .sort-select {
+        height: 32px;
+        border: 1px solid #E2E8F0;
+        border-radius: 6px;
+        padding: 0 8px;
+        font-size: 12px;
+        color: #4A5568;
+        background: #fff;
+    }
+
+    /* Table — scrolls inside panel so page stays above the fold */
+    .table-scroll {
+        overflow: auto;
+        flex: 1;
+        min-height: 240px;
+        max-height: calc(100vh - 250px);
+    }
+
+    .ws-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 13px;
+    }
+
+    .ws-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: #F7FAFC;
+        border-bottom: 1px solid #E2E8F0;
+        padding: 8px 14px;
+        text-align: left;
+        font-size: 10px;
+        font-weight: 700;
+        color: #718096;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        white-space: nowrap;
+    }
+
+    .ws-table tbody td {
+        padding: 8px 14px;
+        border-bottom: 1px solid #EDF2F7;
+        vertical-align: middle;
+        color: #2D3748;
+    }
+
+    .ws-table tbody tr {
+        transition: background 0.12s ease;
+        cursor: pointer;
+    }
+    .ws-table tbody tr:hover {
+        background: #F7FAFC;
+    }
+    .ws-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .ws-name {
+        font-weight: 600;
+        color: #1A202C;
+        font-size: 13px;
+        line-height: 1.3;
+    }
+    .ws-id {
+        display: none; /* hide GUIDs by default — less noise */
+        font-size: 10px;
+        color: #A0AEC0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin-top: 2px;
+    }
+    tr:hover .ws-id { display: block; } /* reveal on hover */
+
+    .num {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        color: #2D3748;
+    }
+
+    .pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 36px;
+        height: 24px;
+        padding: 0 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 650;
+        text-decoration: none;
+        font-variant-numeric: tabular-nums;
+    }
+    .pill-active {
+        background: #EDF2F7;
+        color: #2D3748;
+    }
+    .pill-active:hover { background: #E2E8F0; }
+    .pill-inactive {
+        background: #FFFAF0;
+        color: #C05621;
+        border: 1px solid #FEEBC8;
+    }
+    .pill-inactive:hover { background: #FEEBC8; }
+    .pill-inactive.zero {
+        background: #F7FAFC;
+        color: #A0AEC0;
+        border-color: #EDF2F7;
+    }
+
+    .open-link {
+        font-size: 12px;
+        font-weight: 600;
+        color: #3182CE;
+        text-decoration: none;
+        padding: 4px 8px;
+        border-radius: 4px;
+    }
+    .open-link:hover {
+        background: #EBF8FF;
+        text-decoration: underline;
+    }
+
+    .col-num { width: 110px; text-align: center !important; }
+    .col-num .pill { margin: 0 auto; }
+    .col-action { width: 72px; text-align: right !important; }
+
+    .loading-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid #E2E8F0;
+        border-top-color: #3182CE;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .empty-state {
+        text-align: center;
+        padding: 48px 16px;
+        color: #718096;
+        font-size: 13px;
+    }
+    .empty-state-icon { font-size: 28px; margin-bottom: 8px; opacity: 0.7; }
+
+    .footer-note {
+        font-size: 11px;
+        color: #A0AEC0;
+        padding: 0 2px;
+    }
+
+    /* Home-only: compress page chrome so KPIs + table fit above the fold */
+    .main-wrapper .header { padding: 14px 28px; }
+    .main-wrapper .header-left h1 { font-size: 18px; margin-bottom: 2px; }
+    .main-wrapper .header-subtitle { font-size: 12px; margin-top: 0; }
+    .main-wrapper .content { padding: 16px 28px 18px; }
+    .main-wrapper .user-name { padding: 6px 12px; }
+    .main-wrapper .logout-btn { padding: 6px 14px; }
+
+    @media (max-width: 1100px) {
+        .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+        .kpi-strip { grid-template-columns: 1fr; }
+        .search-box input { width: 160px; }
+        .table-scroll { max-height: 55vh; }
+        .main-wrapper .content { padding: 12px 16px 16px; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="home-wrap">
+    <!-- Compact KPI strip -->
+    <div class="kpi-strip" role="region" aria-label="Summary metrics">
+        <div class="kpi">
+            <div class="kpi-icon ws"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Workspaces</div>
+                <div class="kpi-value" id="total-workspaces"><span class="spinner"></span></div>
+                <div class="kpi-hint">Accessible to you</div>
+            </div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-icon rp"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Reports</div>
+                <div class="kpi-value" id="total-reports"><span class="spinner"></span></div>
+                <div class="kpi-hint">Across your workspaces</div>
+            </div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-icon in"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Inactive</div>
+                <div class="kpi-value" id="inactive-reports"><span class="spinner"></span></div>
+                <div class="kpi-hint">No refresh in 30+ days</div>
+            </div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-icon or"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Orphaned</div>
+                <div class="kpi-value" id="orphaned-reports"><span class="spinner"></span></div>
+                <div class="kpi-hint">No active owner signal</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Workspace panel -->
+    <section class="panel" aria-label="Your workspaces">
+        <div class="panel-toolbar">
+            <div class="panel-title">
+                <h2>Your workspaces</h2>
+                <span class="panel-meta" id="workspace-count-label">—</span>
+            </div>
+            <div class="panel-actions">
+                <span class="chip muted" id="catalog-freshness" title="Data freshness">
+                    <span class="dot"></span>
+                    <span id="catalog-freshness-text">Loading…</span>
+                </span>
+                <select class="sort-select" id="sortSelect" aria-label="Sort workspaces">
+                    <option value="name">Sort: Name</option>
+                    <option value="reports-desc">Sort: Reports high → low</option>
+                    <option value="inactive-desc">Sort: Inactive high → low</option>
+                </select>
+                <div class="search-box">
+                    <input type="search" id="workspaceSearch" placeholder="Filter workspaces…" autocomplete="off" />
+                </div>
+            </div>
+        </div>
+
+        <div class="table-scroll">
+            <table class="ws-table">
+                <thead>
+                    <tr>
+                        <th>Workspace</th>
+                        <th class="col-num">Reports</th>
+                        <th class="col-num">Inactive</th>
+                        <th class="col-action"></th>
+                    </tr>
+                </thead>
+                <tbody id="workspace-list">
+                    <tr>
+                        <td colspan="4" class="empty-state">
+                            <div class="loading-spinner"></div>
+                            <div style="margin-top: 10px;">Loading workspaces</div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <div class="footer-note" id="home-footer-note">
+        Counts prefer precomputed catalog when available. Open a workspace for report catalog detail.
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function escapeHtml(text) {
+        if (text == null) return '';
+        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+        return String(text).replace(/[&<>"']/g, m => map[m]);
+    }
+
+    let workspaces = [];
+    let totalReports = 0;
+    let totalInactiveReports = 0;
+    let totalOrphanedReports = 0;
+    let catalogMeta = { source: null, opsEnrichedAt: null, generatedAt: null };
+
+    async function loadDashboard() {
+        try {
+            // 1) ACL: which workspaces this user can open (live /groups — one call)
+            await loadWorkspaces();
+            if (!workspaces.length) return;
+
+            // 2) Catalog ∩ ACL: one server call for report/inactive/orphaned counts
+            //    Never fan-out live APIs per workspace on Home (that was the 3–4 min storm).
+            const usedCatalog = await tryLoadFromCatalogSummary();
+            if (usedCatalog) {
+                console.log('Home dashboard filled from catalog summary');
+                applyFilterAndSort();
+                return;
+            }
+
+            console.warn('Catalog home-summary unavailable — showing workspace list only (no live storm)');
+            setFreshnessChip(null, null, 'offline');
+            // Keep rows usable: unknown counts show as 0, not spinners forever
+            workspaces.forEach(ws => {
+                if (ws.reportCount == null) ws.reportCount = 0;
+                if (ws.inactiveCount == null) ws.inactiveCount = 0;
+                if (ws.orphanedCount == null) ws.orphanedCount = 0;
+                if (ws.activeCount == null) ws.activeCount = 0;
+            });
+            totalReports = workspaces.reduce((s, w) => s + (w.reportCount || 0), 0);
+            totalInactiveReports = 0;
+            totalOrphanedReports = 0;
+            const elR = document.getElementById('total-reports');
+            const elI = document.getElementById('inactive-reports');
+            const elO = document.getElementById('orphaned-reports');
+            if (elR) elR.textContent = totalReports || '—';
+            if (elI) elI.textContent = '—';
+            if (elO) elO.textContent = '—';
+            const note = document.getElementById('home-footer-note');
+            if (note) {
+                note.textContent = 'Catalog offline or app needs restart. Home uses thin server APIs (SharePoint source of truth, server disk cache) — never downloads the large catalog into the browser.';
+            }
+            applyFilterAndSort();
+        } catch (error) {
+            console.error('Error loading dashboard:', error);
+            document.getElementById('workspace-list').innerHTML = `
+                <tr><td colspan="4" class="empty-state">
+                    <div class="empty-state-icon">!</div>
+                    <div>Error loading workspaces</div>
+                    <div style="font-size:12px;margin-top:6px;color:#A0AEC0;">${escapeHtml(error.message)}</div>
+                </td></tr>`;
+        }
+    }
+
+    function setFreshnessChip(opsEnrichedAt, generatedAt, source) {
+        const chip = document.getElementById('catalog-freshness');
+        const text = document.getElementById('catalog-freshness-text');
+        if (!chip || !text) return;
+        const ts = opsEnrichedAt || generatedAt;
+        if (ts) {
+            chip.classList.remove('muted');
+            let label = 'Catalog';
+            try {
+                label = 'As of ' + new Date(ts).toLocaleString();
+            } catch (e) {
+                label = 'Catalog ready';
+            }
+            text.textContent = label;
+            chip.title = source ? `Source: ${source}` : 'Precomputed catalog';
+        } else {
+            chip.classList.add('muted');
+            text.textContent = source === 'live' ? 'Live APIs' : 'Catalog offline';
+        }
+    }
+
+    async function tryLoadFromCatalogSummary() {
+        try {
+            const response = await fetch('/api/home-summary');
+            const data = await response.json();
+            if (!data.success || data.fallback || data.source === 'none') return false;
+            if (!Array.isArray(data.workspaces)) return false;
+
+            const byId = {};
+            data.workspaces.forEach(w => { if (w && w.id) byId[w.id] = w; });
+
+            let matched = 0;
+            workspaces.forEach(ws => {
+                const row = byId[ws.id];
+                if (!row) {
+                    ws.reportCount = ws.reportCount ?? 0;
+                    ws.inactiveCount = ws.inactiveCount ?? 0;
+                    ws.orphanedCount = ws.orphanedCount ?? 0;
+                    ws.activeCount = ws.activeCount ?? 0;
+                    return;
+                }
+                matched += 1;
+                ws.reportCount = row.reportCount || 0;
+                ws.inactiveCount = row.inactiveCount || 0;
+                ws.orphanedCount = row.orphanedCount || 0;
+                ws.activeCount = row.activeCount != null ? row.activeCount : Math.max(0, (ws.reportCount || 0) - (ws.inactiveCount || 0));
+            });
+
+            totalReports = data.totalReports != null ? data.totalReports : workspaces.reduce((s, w) => s + (w.reportCount || 0), 0);
+            totalInactiveReports = data.inactiveReports != null ? data.inactiveReports : workspaces.reduce((s, w) => s + (w.inactiveCount || 0), 0);
+            totalOrphanedReports = data.orphanedReports != null ? data.orphanedReports : workspaces.reduce((s, w) => s + (w.orphanedCount || 0), 0);
+
+            document.getElementById('total-reports').textContent = totalReports;
+            document.getElementById('inactive-reports').textContent = totalInactiveReports;
+            document.getElementById('orphaned-reports').textContent = totalOrphanedReports;
+
+            catalogMeta = {
+                source: data.source || 'catalog',
+                opsEnrichedAt: data.opsEnrichedAt || null,
+                generatedAt: data.generatedAt || null,
+            };
+            setFreshnessChip(catalogMeta.opsEnrichedAt, catalogMeta.generatedAt, catalogMeta.source);
+
+            // Re-render with counts (single paint)
+            applyFilterAndSort();
+
+            if (matched === 0 && workspaces.length > 0) return false;
+            return true;
+        } catch (e) {
+            console.warn('home-summary failed', e);
+            return false;
+        }
+    }
+
+    async function loadWorkspaces() {
+        const response = await fetch('/api/workspaces');
+        const data = await response.json();
+
+        if (!data.success || !data.workspaces || data.workspaces.length === 0) {
+            document.getElementById('workspace-list').innerHTML = `
+                <tr><td colspan="4" class="empty-state">
+                    <div class="empty-state-icon"></div>
+                    <div>No workspaces found</div>
+                </td></tr>`;
+            document.getElementById('total-workspaces').textContent = '0';
+            document.getElementById('total-reports').textContent = '0';
+            document.getElementById('inactive-reports').textContent = '0';
+            document.getElementById('orphaned-reports').textContent = '0';
+            document.getElementById('workspace-count-label').textContent = '0 workspaces';
+            return;
+        }
+
+        workspaces = data.workspaces.map(w => ({
+            ...w,
+            reportCount: w.reportCount,
+            inactiveCount: w.inactiveCount,
+            orphanedCount: w.orphanedCount,
+            activeCount: w.activeCount,
+        }));
+
+        document.getElementById('total-workspaces').textContent = workspaces.length;
+        document.getElementById('workspace-count-label').textContent = `${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'}`;
+        renderWorkspaceTable(workspaces);
+    }
+
+    function getFilteredSortedWorkspaces() {
+        const q = (document.getElementById('workspaceSearch')?.value || '').trim().toLowerCase();
+        const sort = document.getElementById('sortSelect')?.value || 'name';
+        let list = workspaces.slice();
+        if (q) {
+            list = list.filter(w =>
+                (w.name || '').toLowerCase().includes(q) ||
+                (w.id || '').toLowerCase().includes(q)
+            );
+        }
+        list.sort((a, b) => {
+            if (sort === 'reports-desc') return (b.reportCount || 0) - (a.reportCount || 0) || (a.name || '').localeCompare(b.name || '');
+            if (sort === 'inactive-desc') return (b.inactiveCount || 0) - (a.inactiveCount || 0) || (a.name || '').localeCompare(b.name || '');
+            return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+        });
+        return list;
+    }
+
+    function applyFilterAndSort() {
+        const list = getFilteredSortedWorkspaces();
+        renderWorkspaceTable(list);
+        const total = workspaces.length;
+        const shown = list.length;
+        document.getElementById('workspace-count-label').textContent =
+            shown === total ? `${total} workspace${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
+    }
+
+    function renderWorkspaceTable(list) {
+        const tbody = document.getElementById('workspace-list');
+        if (!list || list.length === 0) {
+            tbody.innerHTML = `
+                <tr><td colspan="4" class="empty-state">
+                    <div class="empty-state-icon"></div>
+                    <div>No workspaces match your filter</div>
+                </td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = list.map(workspace => {
+            const id = workspace.id || '';
+            const name = workspace.name || '';
+            const reports = workspace.reportCount;
+            const inactive = workspace.inactiveCount;
+            const reportsHtml = reports === undefined || reports === null
+                ? `<span class="loading-spinner" id="reports-${escapeHtml(id)}"></span>`
+                : `<a class="pill pill-active" id="reports-${escapeHtml(id)}" href="/documentation?workspace=${encodeURIComponent(id)}" title="View all reports">${reports}</a>`;
+            const inactiveVal = inactive === undefined || inactive === null ? null : Number(inactive);
+            const inactiveHtml = inactiveVal === null
+                ? `<span class="loading-spinner" id="inactive-${escapeHtml(id)}"></span>`
+                : `<a class="pill pill-inactive${inactiveVal === 0 ? ' zero' : ''}" id="inactive-${escapeHtml(id)}" href="/documentation?workspace=${encodeURIComponent(id)}&status=inactive" title="${inactiveVal} inactive (30+ days)">${inactiveVal}</a>`;
+
+            return `
+            <tr data-workspace-id="${escapeHtml(id)}" data-href="/documentation?workspace=${encodeURIComponent(id)}" title="Open ${escapeHtml(name)}">
+                <td>
+                    <div class="ws-name">${escapeHtml(name)}</div>
+                    <div class="ws-id">${escapeHtml(id)}</div>
+                </td>
+                <td class="col-num">${reportsHtml}</td>
+                <td class="col-num">${inactiveHtml}</td>
+                <td class="col-action">
+                    <a class="open-link" href="/documentation?workspace=${encodeURIComponent(id)}">Open</a>
+                </td>
+            </tr>`;
+        }).join('');
+
+        // Whole-row open (pills/links keep their own targets)
+        tbody.querySelectorAll('tr[data-href]').forEach(tr => {
+            tr.addEventListener('click', (e) => {
+                if (e.target.closest('a, button, input, select, textarea')) return;
+                const href = tr.getAttribute('data-href');
+                if (href) window.location.href = href;
+            });
+        });
+    }
+
+    // Fallback live loaders (unchanged behavior)
+    async function loadReportCounts() {
+        const promises = workspaces.map(async workspace => {
+            try {
+                const response = await fetch(`/api/reports?workspace_id=${encodeURIComponent(workspace.id)}`);
+                const data = await response.json();
+                if (data.success && data.reports) {
+                    workspace.reportCount = data.reports.length;
+                    workspace.activeCount = data.reports.length;
+                    return data.reports.length;
+                }
+                workspace.reportCount = 0;
+                return 0;
+            } catch (error) {
+                console.error(`Error loading reports for ${workspace.name}:`, error);
+                workspace.reportCount = 0;
+                return 0;
+            }
+        });
+        const counts = await Promise.all(promises);
+        totalReports = counts.reduce((sum, c) => sum + c, 0);
+        document.getElementById('total-reports').textContent = totalReports;
+        applyFilterAndSort();
+    }
+
+    async function loadInactiveCounts() {
+        const promises = workspaces.map(async (workspace) => {
+            try {
+                const response = await fetch(`/api/workspace-summary/${encodeURIComponent(workspace.id)}`);
+                const data = await response.json();
+                if (data.success) {
+                    workspace.inactiveCount = data.inactive_reports || 0;
+                    return workspace.inactiveCount;
+                }
+                workspace.inactiveCount = 0;
+                return 0;
+            } catch (error) {
+                console.error(`Error loading inactive count for ${workspace.name}:`, error);
+                workspace.inactiveCount = 0;
+                return 0;
+            }
+        });
+        try {
+            const results = await Promise.all(promises);
+            totalInactiveReports = results.reduce((sum, c) => sum + c, 0);
+            document.getElementById('inactive-reports').textContent = totalInactiveReports;
+            applyFilterAndSort();
+        } catch (error) {
+            console.error('Error loading inactive counts:', error);
+            document.getElementById('inactive-reports').textContent = totalInactiveReports;
+        }
+    }
+
+    async function loadOrphanedCounts() {
+        const promises = workspaces.map(async (workspace) => {
+            try {
+                const response = await fetch(`/api/orphaned-reports/${workspace.id}`);
+                const data = await response.json();
+                if (data.success) {
+                    workspace.orphanedCount = data.orphaned_count;
+                    return data.orphaned_count;
+                }
+                return 0;
+            } catch (error) {
+                console.error(`Error loading orphaned count for ${workspace.name}:`, error);
+                return 0;
+            }
+        });
+        try {
+            const results = await Promise.all(promises);
+            totalOrphanedReports = results.reduce((sum, c) => sum + c, 0);
+            document.getElementById('orphaned-reports').textContent = totalOrphanedReports;
+        } catch (error) {
+            console.error('Error loading orphaned counts:', error);
+            document.getElementById('orphaned-reports').textContent = 'N/A';
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadDashboard();
+        const search = document.getElementById('workspaceSearch');
+        const sort = document.getElementById('sortSelect');
+        if (search) search.addEventListener('input', () => applyFilterAndSort());
+        if (sort) sort.addEventListener('change', () => applyFilterAndSort());
+    });
+</script>
+{% endblock %}

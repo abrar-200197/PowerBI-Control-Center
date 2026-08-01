@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PBI Impact Explorer — EDW → Fabric</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    /* Instant light chrome before CSS vars apply (matches Control Center) */
+    html, body { background: #F7FAFC; color: #1A202C; }
+  </style>
+</head>
+<body class="impact-embedded">
+  <div class="app embedded no-sidebar">
+    <main class="main full-width">
+      <!-- Side-by-side tabs only — catalog status/reload live on the outer host toolbar -->
+      <div class="section-tabs" role="tablist" aria-label="Impact sections">
+        <button class="section-tab nav-item active" data-view="tables" type="button" role="tab" aria-selected="true">
+          Table impact
+        </button>
+        <button class="section-tab nav-item" data-view="lookup" type="button" role="tab" aria-selected="false">
+          Impact lookup
+        </button>
+        <div class="section-tabs-meta">
+          <span id="viewSubtitle" class="muted small tab-subtitle">Search every source table → reports / datasets / workspaces</span>
+          <button id="exportCsvBtn" class="btn secondary sm" type="button">Export CSV</button>
+          <button id="exportFilteredBtn" class="btn primary sm" type="button">Export filtered</button>
+        </div>
+      </div>
+      <!-- Hidden stubs kept for JS that still references these ids -->
+      <span id="runMeta" class="hidden" aria-hidden="true"></span>
+      <button id="reloadBtn" type="button" class="hidden" aria-hidden="true" tabindex="-1"></button>
+      <h1 id="viewTitle" class="hidden" aria-hidden="true">Table impact</h1>
+
+      <div id="loadState" class="load-state">
+        <div class="spinner"></div>
+        <div>
+          <strong>Loading impact index…</strong>
+          <div class="muted small">First load may take a few seconds</div>
+        </div>
+      </div>
+
+      <div id="errorState" class="error-state hidden"></div>
+
+      <div id="appContent" class="hidden">
+        <!-- Hidden stubs so older JS hooks stay safe if called -->
+        <div id="kpiGrid" class="hidden"></div>
+        <div id="topTablesChart" class="hidden"></div>
+        <div id="sourceMix" class="hidden"></div>
+        <div id="sourceCallout" class="hidden"></div>
+        <div id="serverTable" class="hidden"></div>
+        <div id="coverageBanner" class="hidden"></div>
+        <div id="wsCountBadge" class="hidden"></div>
+        <div id="wsList" class="hidden"></div>
+        <div id="wsEmpty" class="hidden"></div>
+        <div id="wsDetail" class="hidden"></div>
+        <div id="wsDetailName" class="hidden"></div>
+        <div id="wsDetailMeta" class="hidden"></div>
+        <div id="wsDetailKpis" class="hidden"></div>
+        <div id="wsReportsTable" class="hidden"><tbody></tbody></div>
+        <div id="insightsGrid" class="hidden"></div>
+        <input id="wsSearch" type="hidden" />
+        <input id="wsReportSearch" type="hidden" />
+
+        <!-- TABLES -->
+        <section id="view-tables" class="view">
+          <div class="filters card filters-one-line">
+            <div class="filter-row one-line">
+              <label class="field grow">
+                <span class="sr-only">Search</span>
+                <input id="searchInput" type="search" placeholder="Search table / server / database…" />
+              </label>
+              <label class="field field-sm">
+                <span class="sr-only">Source type</span>
+                <select id="sourceFilter" title="Source type"><option value="">Source: All</option></select>
+              </label>
+              <label class="field field-xs">
+                <span class="sr-only">Min reports</span>
+                <input id="minReports" type="number" min="0" value="1" title="Min reports" placeholder="Min" />
+              </label>
+              <label class="field field-sm">
+                <span class="sr-only">Resolution</span>
+                <select id="resolutionFilter" title="Resolution">
+                  <option value="">Resolution: All</option>
+                  <option value="physical">Physical source</option>
+                  <option value="model">Model-only</option>
+                </select>
+              </label>
+              <button id="clearFilters" class="btn ghost sm" type="button">Clear</button>
+            </div>
+            <div class="filter-meta compact">
+              <span id="resultCount" class="muted small"></span>
+            </div>
+          </div>
+          <div class="card table-card">
+            <div class="table-wrap">
+              <table id="impactTable">
+                <thead>
+                  <tr>
+                    <th data-sort="table">Table</th>
+                    <th data-sort="sourceType">Source</th>
+                    <th data-sort="server">Server</th>
+                    <th data-sort="database">Database</th>
+                    <th data-sort="reportCount" class="num">Reports</th>
+                    <th data-sort="datasetCount" class="num">Datasets</th>
+                    <th data-sort="workspaceCount" class="num">Workspaces</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <button id="prevPage" class="btn ghost sm" type="button">Previous</button>
+              <span id="pageInfo" class="muted small"></span>
+              <button id="nextPage" class="btn ghost sm" type="button">Next</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- LOOKUP -->
+        <section id="view-lookup" class="view hidden">
+          <div class="card">
+            <div class="card-head">
+              <h2>What breaks if we change this table?</h2>
+            </div>
+            <p class="muted small" style="margin:-4px 0 12px">Type the <strong>EDW/source name</strong> (FactSales) or a <strong>Power BI renamed name</strong> (Sales). Matches both when lineage was resolved.</p>
+            <div class="lookup-box">
+              <input id="lookupInput" type="search" placeholder="e.g. FactSales or Sales" />
+              <button id="lookupBtn" class="btn primary" type="button">Find affected reports</button>
+            </div>
+            <div id="lookupResults"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- TABLE IMPACT DRAWER -->
+    <aside id="drawer" class="drawer hidden" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <div class="eyebrow">Table impact</div>
+          <h2 id="drawerTitle">—</h2>
+          <div id="drawerSub" class="muted small"></div>
+        </div>
+        <button id="closeDrawer" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="drawerKpis" class="drawer-kpis"></div>
+      <div class="drawer-section">
+        <div class="section-title-row">
+          <h3>Reports that would be affected</h3>
+          <button id="copyReportsBtn" class="btn ghost sm">Copy names</button>
+        </div>
+        <input id="drawerReportFilter" type="search" placeholder="Filter reports…" class="drawer-search" />
+        <div id="drawerReports" class="drawer-list"></div>
+      </div>
+      <div class="drawer-section">
+        <h3>Datasets using this source</h3>
+        <div id="drawerDatasets" class="drawer-list"></div>
+      </div>
+      <div class="drawer-section">
+        <h3>Also known as in Power BI (renamed model tables)</h3>
+        <p class="muted small" style="margin:0 0 8px">If EDW <em>FactSales</em> was renamed to Sales / SalesData in models, those names appear here.</p>
+        <div id="drawerModels" class="chip-wrap"></div>
+      </div>
+    </aside>
+
+    <!-- REPORT DETAIL DRAWER -->
+    <aside id="reportDrawer" class="drawer report-drawer-wide hidden" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <div class="eyebrow">Report details</div>
+          <h2 id="reportDrawerTitle">—</h2>
+          <div id="reportDrawerSub" class="muted small"></div>
+        </div>
+        <button id="closeReportDrawer" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="reportDrawerBody"></div>
+    </aside>
+    <div id="drawerBackdrop" class="backdrop hidden"></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
