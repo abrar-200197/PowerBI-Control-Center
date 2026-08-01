@@ -391,13 +391,34 @@
         html[data-theme="dark"] h1,
         html[data-theme="dark"] h2,
         html[data-theme="dark"] h3,
-        html[data-theme="dark"] strong {
-            color: var(--text-strong);
+        html[data-theme="dark"] strong,
+        html[data-theme="dark"] .ws-name,
+        html[data-theme="dark"] .kpi-value,
+        html[data-theme="dark"] .num {
+            color: var(--text-strong) !important;
         }
         html[data-theme="dark"] .stat-label,
         html[data-theme="dark"] .muted,
-        html[data-theme="dark"] .header-subtitle {
+        html[data-theme="dark"] .header-subtitle,
+        html[data-theme="dark"] .kpi-label,
+        html[data-theme="dark"] .kpi-hint,
+        html[data-theme="dark"] .panel-meta,
+        html[data-theme="dark"] .ws-id,
+        html[data-theme="dark"] .footer-note,
+        html[data-theme="dark"] .empty-state {
             color: var(--text-muted) !important;
+        }
+        html[data-theme="dark"] body,
+        html[data-theme="dark"] .content,
+        html[data-theme="dark"] p,
+        html[data-theme="dark"] label,
+        html[data-theme="dark"] td,
+        html[data-theme="dark"] li,
+        html[data-theme="dark"] span {
+            color: inherit;
+        }
+        html[data-theme="dark"] a:not(.nav-item):not(.btn):not(.logout-btn) {
+            color: #63B3ED;
         }
         html[data-theme="dark"] table th {
             background: var(--bg-surface-2) !important;
@@ -410,6 +431,15 @@
         }
         html[data-theme="dark"] table tbody tr:hover {
             background: var(--table-hover) !important;
+        }
+        /* Force light text on dark surfaces when pages hardcode near-black */
+        html[data-theme="dark"] .panel,
+        html[data-theme="dark"] .kpi,
+        html[data-theme="dark"] .stat-card,
+        html[data-theme="dark"] .card,
+        html[data-theme="dark"] .orphaned-table,
+        html[data-theme="dark"] .controls {
+            color: var(--text) !important;
         }
         html[data-theme="dark"] input,
         html[data-theme="dark"] select,

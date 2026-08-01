@@ -4,7 +4,7 @@ Flask backend for generating Power BI documentation on-demand
 """
 
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, session, flash
-from datetime import datetime, timezone  # Needed for /health and date handling at module level
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 import os
 import time
@@ -44,18 +44,27 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'powerbi-doc-generator-secret
 
 # Session configuration - CRITICAL for preventing cross-user session issues
 # Use Flask's built-in client-side sessions (works in all environments including Azure)
-app.config['SESSION_PERMANENT'] = False  # Session expires when browser closes
-app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour max session lifetime
+#
+# Policy (production):
+#   - Non-permanent session cookie → cleared when the browser is fully closed
+#   - Absolute max age 12 hours from login (even if browser stays open)
+SESSION_MAX_HOURS = int(os.getenv('SESSION_MAX_HOURS', '12'))
+app.config['SESSION_PERMANENT'] = False  # no Max-Age / no persistent cookie
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=SESSION_MAX_HOURS)
+app.config['SESSION_REFRESH_EACH_REQUEST'] = False
 
 # Session cookie configuration for production (Azure App Service with TLS termination)
-app.config['SESSION_COOKIE_SECURE'] = False  # Azure handles TLS termination at load balancer
+# Prefer Secure cookies when running on Azure HTTPS
+_on_azure = bool(os.getenv('WEBSITE_HOSTNAME'))
+app.config['SESSION_COOKIE_SECURE'] = _on_azure or os.getenv('SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes')
 app.config['SESSION_COOKIE_HTTPONLY'] = True  # Prevent JavaScript access
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # Allow cross-site requests for OAuth redirect
 app.config['SESSION_COOKIE_NAME'] = 'pbi_session'  # Custom session cookie name
 
-print(f"🔐 Session configuration:")
+print(f"Session configuration:")
 print(f"   SECRET_KEY: {'Set from environment' if os.getenv('SECRET_KEY') else 'Using default (set SECRET_KEY in production!)'}")
-print(f"   Session type: Client-side (secure cookie-based)")
+print(f"   Session type: Client-side cookie | permanent=False (browser-close expires)")
+print(f"   Absolute max age: {SESSION_MAX_HOURS}h from login")
 print(f"   Cookie secure: {app.config['SESSION_COOKIE_SECURE']}")
 print(f"   Cookie SameSite: {app.config['SESSION_COOKIE_SAMESITE']}")
 
@@ -70,8 +79,12 @@ def add_cache_control_headers(response):
     Issue: Docker layer caching + browser caching = users seeing old code
     Solution: Force no-cache for dynamic content (HTML, JSON)
     """
-    # Don't cache API responses or HTML pages
-    if response.content_type and ('application/json' in response.content_type or 'text/html' in response.content_type):
+    # Don't cache API/HTML by default — but keep explicit private caches
+    # (e.g. /api/catalog/impact/tables sets private max-age for fast revisits).
+    ct = response.content_type or ''
+    existing_cc = (response.headers.get('Cache-Control') or '').lower()
+    allow_private = 'private' in existing_cc and 'max-age' in existing_cc
+    if ('application/json' in ct or 'text/html' in ct) and not allow_private:
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
@@ -186,19 +199,43 @@ def clear_all_caches():
     print("🗑️ Cleared ALL workspace, report, and scanner caches")
 
 
+def _session_expired() -> bool:
+    """True when absolute session age exceeds SESSION_MAX_HOURS (default 12)."""
+    if 'user' not in session:
+        return True
+    started = session.get('login_at')
+    if not started:
+        # Legacy sessions without stamp — force re-login once
+        return True
+    try:
+        from datetime import datetime, timezone
+        if isinstance(started, (int, float)):
+            started_ts = float(started)
+        else:
+            s = str(started)
+            if s.endswith('Z'):
+                s = s[:-1] + '+00:00'
+            started_ts = datetime.fromisoformat(s).timestamp()
+        age_sec = time.time() - started_ts
+        return age_sec > (SESSION_MAX_HOURS * 3600)
+    except Exception:
+        return True
+
+
 def login_required(f):
-    """Decorator to require login for routes"""
+    """Decorator to require login; enforces browser-close cookie + 12h absolute max."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user' not in session:
-            # Check if this is an API request (JSON expected)
+        if 'user' not in session or _session_expired():
+            if 'user' in session:
+                # Absolute age exceeded — hard clear
+                session.clear()
             if request.path.startswith('/api/'):
                 return jsonify({
                     'success': False,
-                    'error': 'Not authenticated',
+                    'error': 'Not authenticated or session expired',
                     'redirect': url_for('login')
                 }), 401
-            # For regular page requests, redirect to login
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
@@ -335,9 +372,12 @@ def authorized():
         old_user_id = session.get('user', {}).get('oid')
         session.clear()  # Clear ALL session data for fresh start
 
-        # Store NEW user information and access token in session
+        # Non-permanent cookie → expires when browser is fully closed.
+        # Absolute 12h bound enforced via login_at + login_required.
+        session.permanent = False
         session["user"] = result.get("id_token_claims")
         session["access_token"] = result.get("access_token")  # Store Power BI access token
+        session["login_at"] = datetime.now(timezone.utc).isoformat()
         _save_cache(cache)
 
         # Get the new user ID and clear their old cache if any
