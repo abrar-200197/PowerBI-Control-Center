@@ -1,12 +1,15 @@
-.git*
+﻿.git*
 .vscode
 __pycache__
 *.pyc
 .python_packages
 local.settings.json
+local.settings.json.example
 .venv
 venv
 .env
-*.md
 .DS_Store
 Thumbs.db
+test_decide_mode.py
+README.md
+*.md
