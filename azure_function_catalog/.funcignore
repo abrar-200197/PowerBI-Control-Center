@@ -1,0 +1,12 @@
+.git*
+.vscode
+__pycache__
+*.pyc
+.python_packages
+local.settings.json
+.venv
+venv
+.env
+*.md
+.DS_Store
+Thumbs.db
