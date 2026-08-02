@@ -6536,164 +6536,128 @@ def get_report_usage(workspace_id):
             # Default: keep it (might be username or other readable format)
             return False
 
+        def _resolve_viewer(activity):
+            """Human-readable viewer identity (prefer email/UPN over hex UserKey)."""
+            user_id = activity.get('UserId')
+            if user_id and not is_hex_identifier(str(user_id)):
+                return str(user_id)
+            return (
+                activity.get('UserPrincipalName')
+                or activity.get('UserEmail')
+                or activity.get('User')
+                or 'Unknown User'
+            )
+
+        def _ingest_view_activity(activity, day_views, day_last_viewed):
+            """Count a ViewReport for this workspace (crash-test compatible)."""
+            act = (activity.get('Activity') or '').strip()
+            if act and act != 'ViewReport':
+                return
+            ws = activity.get('WorkspaceId') or activity.get('WorkSpaceId')
+            if ws and str(ws).lower() != str(workspace_id).lower():
+                return
+            report_id = activity.get('ReportId') or activity.get('ArtifactId')
+            if not report_id:
+                return
+            report_id = str(report_id)
+            activity_time = activity.get('CreationTime') or ''
+            user_identifier = _resolve_viewer(activity)
+            # Skip known service/admin identity from counts (existing product rule)
+            if str(user_identifier).lower() == 'admin-rsteinke@ashleyfurniture.com':
+                return
+            day_views[report_id] = day_views.get(report_id, 0) + 1
+            if activity_time:
+                prev = day_last_viewed.get(report_id)
+                if not prev or activity_time > (prev.get('timestamp') or ''):
+                    day_last_viewed[report_id] = {
+                        'timestamp': activity_time,
+                        'user': user_identifier,
+                    }
+
         def fetch_day_activities(day_offset):
-            """Fetch activities for a single day with optimized retry logic"""
+            """
+            Fetch ViewReport activities for a single day.
+            Aligned with PowerBI-Crash-Test (working in tenant):
+              - plain ISO times without trailing Z
+              - $filter=Activity eq 'ViewReport'
+              - pagination via continuationUri (full URL)
+            """
             import time
             import random
 
             current_date = end_date - timedelta(days=day_offset)
-            start_datetime = current_date.strftime('%Y-%m-%dT00:00:00.000Z')
-            end_datetime = current_date.strftime('%Y-%m-%dT23:59:59.999Z')
-            url = f"{base_url}?startDateTime='{start_datetime}'&endDateTime='{end_datetime}'"
+            day_key = current_date.strftime('%Y-%m-%d')
+            # No .000Z — matches working crash-test Activity Events calls
+            start_datetime = f"{day_key}T00:00:00"
+            end_datetime = f"{day_key}T23:59:59"
+            url = (
+                f"{base_url}"
+                f"?startDateTime='{start_datetime}'&endDateTime='{end_datetime}'"
+                f"&$filter=Activity eq 'ViewReport'"
+            )
 
             day_views = {}
             day_last_viewed = {}
-
-            # Optimized retry logic: skip 400s immediately, longer timeout for stability
+            pages = 0
+            max_pages = 100
             max_retries = 3
             base_delay = 0.5
 
-            for attempt in range(max_retries):
-                try:
-                    # Small jitter only on first attempt
-                    if attempt == 0:
-                        time.sleep(random.uniform(0.01, 0.02))
-
-                    # Keep 60s timeout - API is slow, 30s causes connection resets
-                    response = requests.get(url, headers=headers, timeout=60)
-
-                    # HTTP 400 = No data for this date - skip immediately
-                    if response.status_code == 400:
-                        return (day_offset, {}, {}, 0, "HTTP 400 (no data)")
-
-                    # HTTP 429 = Rate limit - retry with backoff
-                    if response.status_code == 429:
-                        if attempt < max_retries - 1:
-                            max_delay = min(10, base_delay * (2 ** attempt))
-                            jittered_delay = random.uniform(base_delay, max_delay)
-                            time.sleep(jittered_delay)
-                            continue
-                        else:
+            while url and pages < max_pages:
+                response = None
+                for attempt in range(max_retries):
+                    try:
+                        if attempt == 0 and pages == 0:
+                            time.sleep(random.uniform(0.01, 0.02))
+                        response = requests.get(url, headers=headers, timeout=60)
+                        if response.status_code == 400:
+                            return (day_offset, {}, {}, 0, "HTTP 400 (no data)")
+                        if response.status_code == 429:
+                            if attempt < max_retries - 1:
+                                max_delay = min(10, base_delay * (2 ** attempt))
+                                time.sleep(random.uniform(base_delay, max_delay))
+                                continue
                             return (day_offset, {}, {}, 0, "HTTP 429")
+                        break
+                    except requests.Timeout:
+                        if attempt < max_retries - 1:
+                            time.sleep(random.uniform(0.5, 1.0))
+                            continue
+                        return (day_offset, {}, {}, 0, "Timeout")
+                    except Exception as e:
+                        if attempt < max_retries - 1 and ('Connection' in str(e) or '10054' in str(e)):
+                            time.sleep(random.uniform(1.0, 2.0))
+                            continue
+                        return (day_offset, {}, {}, 0, f"{str(e)[:50]}")
 
-                    # Success or other status - process
+                if response is None or response.status_code != 200:
+                    status = getattr(response, 'status_code', 'n/a')
+                    if pages == 0:
+                        return (day_offset, {}, {}, 0, f"HTTP {status}")
                     break
 
-                except requests.Timeout:
-                    if attempt < max_retries - 1:
-                        time.sleep(random.uniform(0.5, 1.0))
-                        continue
-                    else:
-                        return (day_offset, {}, {}, 0, "Timeout")
-                except Exception as e:
-                    # Retry connection errors once, fail fast for other errors
-                    if attempt < max_retries - 1 and ('Connection' in str(e) or '10054' in str(e)):
-                        time.sleep(random.uniform(1.0, 2.0))
-                        continue
-                    return (day_offset, {}, {}, 0, f"{str(e)[:50]}")
+                pages += 1
+                try:
+                    data = response.json() or {}
+                except Exception:
+                    break
 
-            try:
+                for activity in data.get('activityEventEntities') or []:
+                    _ingest_view_activity(activity, day_views, day_last_viewed)
 
-                if response.status_code == 200:
-                    data = response.json()
-                    activities = data.get('activityEventEntities', [])
-
-                    # Count views per report
-                    for activity in activities:
-                        if (activity.get('Activity') == 'ViewReport' and
-                            activity.get('WorkspaceId') == workspace_id):
-                            report_id = activity.get('ReportId')
-                            if report_id:
-                                # Track last viewed info with strict email-based priority
-                                activity_time = activity.get('CreationTime')
-
-                                # Advanced user identity resolution with hex detection
-                                # Power BI API returns UserKey as hex (e.g., "100FFF92C7717B") and UserId as email
-                                user_id = activity.get('UserId')
-                                user_key = activity.get('UserKey')
-                                user_principal_name = activity.get('UserPrincipalName')
-                                user_email = activity.get('UserEmail')
-                                user_field = activity.get('User')
-
-                                # DEBUG: Log what fields are actually available (only log once per unique combination)
-                                if day_offset == 0 and len(day_views) < 3:  # Only log first few activities of first day
-                                    print(f"         🔍 DEBUG Activity fields: UserId={user_id}, UserKey={user_key}, UPN={user_principal_name}, Email={user_email}, User={user_field}")
-
-                                # Prioritize human-readable identifiers (using optimized hex checker)
-                                if user_id and not is_hex_identifier(user_id):
-                                    user_identifier = user_id  # Valid email or UPN
-                                else:
-                                    # UserId is hex or missing - try alternatives
-                                    user_identifier = (
-                                        user_principal_name or  # UPN format (user@domain.com)
-                                        user_email or  # Email field
-                                        user_field or  # Sometimes present as 'User'
-                                        'Unknown User'  # Last resort (don't use UserKey - it's always hex)
-                                    )
-
-                                # Skip admin account from BOTH view counting AND "Last Viewed By" tracking
-                                # This ensures consistency: if views are excluded, last viewed is also excluded
-                                if user_identifier.lower() != 'admin-rsteinke@ashleyfurniture.com':
-                                    # Count the view (non-admin only)
-                                    day_views[report_id] = day_views.get(report_id, 0) + 1
-
-                                    # Track last viewed info (non-admin only)
-                                    if report_id not in day_last_viewed or activity_time > day_last_viewed[report_id]['timestamp']:
-                                        day_last_viewed[report_id] = {
-                                            'timestamp': activity_time,
-                                            'user': user_identifier
-                                        }
-
-                    # Handle continuation tokens
-                    continuation_token = data.get('continuationToken')
-                    while continuation_token:
-                        continuation_url = f"{base_url}?continuationToken='{continuation_token}'"
-                        response = requests.get(continuation_url, headers=headers, timeout=30)
-                        if response.status_code == 200:
-                            data = response.json()
-                            activities = data.get('activityEventEntities', [])
-                            for activity in activities:
-                                if (activity.get('Activity') == 'ViewReport' and
-                                    activity.get('WorkspaceId') == workspace_id):
-                                    report_id = activity.get('ReportId')
-                                    if report_id:
-                                        activity_time = activity.get('CreationTime')
-
-                                        # Advanced user identity resolution with hex detection
-                                        user_id = activity.get('UserId')
-
-                                        # Use the optimized hex checker defined outside the loop
-                                        if user_id and not is_hex_identifier(user_id):
-                                            user_identifier = user_id
-                                        else:
-                                            user_identifier = (
-                                                activity.get('UserPrincipalName') or
-                                                activity.get('UserEmail') or
-                                                activity.get('User') or
-                                                'Unknown User'
-                                            )
-
-                                        # Skip admin account from BOTH view counting AND "Last Viewed By" tracking
-                                        if user_identifier.lower() != 'admin-rsteinke@ashleyfurniture.com':
-                                            # Count the view (non-admin only)
-                                            day_views[report_id] = day_views.get(report_id, 0) + 1
-
-                                            # Track last viewed info (non-admin only)
-                                            if report_id not in day_last_viewed or activity_time > day_last_viewed[report_id]['timestamp']:
-                                                day_last_viewed[report_id] = {
-                                                    'timestamp': activity_time,
-                                                    'user': user_identifier
-                                                }
-                            continuation_token = data.get('continuationToken')
-                        else:
-                            break
-
-                    return (day_offset, day_views, day_last_viewed, len(activities), None)
+                cont_uri = data.get('continuationUri')
+                cont_tok = data.get('continuationToken')
+                if cont_uri:
+                    url = cont_uri
+                elif cont_tok:
+                    tok = str(cont_tok).strip().strip("'")
+                    url = f"{base_url}?continuationToken='{tok}'"
                 else:
-                    return (day_offset, {}, {}, 0, f"HTTP {response.status_code}")
+                    url = None
 
-            except Exception as e:
-                return (day_offset, {}, {}, 0, str(e))
+            # (day_offset, day_views, day_last_viewed, event_count, error)
+            event_count = sum(day_views.values())
+            return (day_offset, day_views, day_last_viewed, event_count, None)
 
         # Fetch only missing days in parallel (incremental fetching)
         # Convert missing date strings to day offsets

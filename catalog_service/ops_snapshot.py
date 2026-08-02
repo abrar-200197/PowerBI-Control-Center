@@ -230,48 +230,71 @@ def _fetch_activity_day(headers: Dict[str, str], day: str) -> Dict[str, Any]:
     """
     Fetch ViewReport events for one UTC day. Returns:
       {report_views: {rid: n}, last_viewed: {rid: {timestamp, user}}}
+
+    Matches the proven PowerBI-Crash-Test Activity Events pattern:
+      - $filter=Activity eq 'ViewReport' (server-side filter; much more reliable)
+      - start/end as plain ISO without trailing Z (API quirk)
+      - full-day window 00:00:00 → 23:59:59
+      - pagination via continuationUri (full URL), not token-only query
     """
-    start = f"{day}T00:00:00.000Z"
-    # end exclusive next day
-    d0 = _parse_day(day)
-    end = (d0 + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
-    url = "https://api.powerbi.com/v1.0/myorg/admin/activityevents"
-    params = {
-        "startDateTime": f"'{start}'",
-        "endDateTime": f"'{end}'",
-    }
+    # Plain ISO without Z — same format as working crash-test tool
+    start = f"{day}T00:00:00"
+    end = f"{day}T23:59:59"
+    # Filter reduces payload and avoids client-side Activity mismatches
+    first_url = (
+        "https://api.powerbi.com/v1.0/myorg/admin/activityevents"
+        f"?startDateTime='{start}'&endDateTime='{end}'"
+        f"&$filter=Activity eq 'ViewReport'"
+    )
+
     report_views: Dict[str, int] = {}
     last_viewed: Dict[str, Dict[str, str]] = {}
     pages = 0
-    cont = None
+    url: Optional[str] = first_url
+    retries_429 = 0
 
-    while True:
+    while url and pages < 500:
         pages += 1
-        q = dict(params)
-        if cont:
-            q = {"continuationToken": f"'{cont}'"}
         try:
-            resp = requests.get(url, headers=headers, params=q, timeout=HTTP_TIMEOUT)
+            resp = requests.get(url, headers=headers, timeout=max(HTTP_TIMEOUT, 60))
         except requests.RequestException as exc:
             logger.warning("Activity day %s request error: %s", day, exc)
             break
+
         if resp.status_code == 429:
-            wait = float(resp.headers.get("Retry-After", 5))
+            retries_429 += 1
+            if retries_429 > 8:
+                logger.warning("Activity day %s too many 429s", day)
+                break
+            wait = float(resp.headers.get("Retry-After", min(30, 2 * retries_429)))
             time.sleep(wait)
+            pages -= 1  # don't count throttle retries as pages
             continue
+        retries_429 = 0
+
         if resp.status_code in (401, 403):
-            logger.error("Activity Events forbidden (%s) for %s", resp.status_code, day)
+            logger.error(
+                "Activity Events forbidden (%s) for %s: %s",
+                resp.status_code, day, (resp.text or "")[:240],
+            )
             break
         if resp.status_code != 200:
-            logger.warning("Activity day %s HTTP %s: %s", day, resp.status_code, resp.text[:200])
+            logger.warning(
+                "Activity day %s HTTP %s: %s", day, resp.status_code, (resp.text or "")[:240]
+            )
             break
+
         data = resp.json() or {}
-        for activity in data.get("activityEventEntities") or []:
-            if activity.get("Activity") != "ViewReport":
+        entities = data.get("activityEventEntities") or []
+        for activity in entities:
+            # Server already filters ViewReport; keep client check as safety net
+            act = (activity.get("Activity") or "").strip()
+            if act and act != "ViewReport":
                 continue
             rid = activity.get("ReportId") or activity.get("ArtifactId")
             if not rid:
                 continue
+            rid = str(rid)
             report_views[rid] = report_views.get(rid, 0) + 1
             ts = activity.get("CreationTime") or ""
             user = (
@@ -280,18 +303,35 @@ def _fetch_activity_day(headers: Dict[str, str], day: str) -> Dict[str, Any]:
                 or activity.get("UserEmail")
                 or "Unknown"
             )
-            # Skip obvious service accounts if needed later
             prev = last_viewed.get(rid)
             if not prev or (ts and ts > (prev.get("timestamp") or "")):
-                last_viewed[rid] = {"timestamp": ts, "user": user}
-        cont = data.get("continuationToken")
-        if not cont:
-            break
-        if pages > 500:
-            logger.warning("Activity day %s hit page cap", day)
-            break
+                last_viewed[rid] = {"timestamp": ts, "user": str(user)}
 
-    return {"report_views": report_views, "last_viewed": last_viewed, "pages": pages}
+        # Prefer full continuationUri (working crash-test path); fall back to token
+        cont_uri = data.get("continuationUri")
+        cont_tok = data.get("continuationToken")
+        if cont_uri:
+            url = cont_uri
+        elif cont_tok:
+            # Some tenants only return the token — quote form per API docs
+            tok = str(cont_tok).strip().strip("'")
+            url = (
+                "https://api.powerbi.com/v1.0/myorg/admin/activityevents"
+                f"?continuationToken='{tok}'"
+            )
+        else:
+            url = None
+
+    logger.info(
+        "Activity day %s: pages=%s view_events=%s unique_reports=%s",
+        day, pages, sum(report_views.values()), len(report_views),
+    )
+    return {
+        "report_views": report_views,
+        "last_viewed": last_viewed,
+        "pages": pages,
+        "eventCount": sum(report_views.values()),
+    }
 
 
 def build_usage_snapshot_incremental(

@@ -84,84 +84,94 @@ class ReportUsageTracker:
         last_viewed = {}
         results_lock = threading.Lock()
         
-        # Parallel fetching (10 workers for optimal performance)
+        # Parallel fetching (10 workers). Pattern aligned with PowerBI-Crash-Test:
+        # plain ISO times, $filter=ViewReport, continuationUri pagination.
+        def _ingest_activity(activity, day_views, day_last_viewed):
+            """Count one ViewReport if it belongs to this workspace (or no ws filter)."""
+            act = (activity.get('Activity') or '').strip()
+            if act and act != 'ViewReport':
+                return
+            # Prefer workspace match when present; accept if field missing (some payloads)
+            ws = activity.get('WorkspaceId') or activity.get('WorkSpaceId')
+            if ws and str(ws).lower() != str(workspace_id).lower():
+                return
+            report_id = activity.get('ReportId') or activity.get('ArtifactId')
+            if not report_id:
+                return
+            report_id = str(report_id)
+            day_views[report_id] = day_views.get(report_id, 0) + 1
+            creation_time = activity.get('CreationTime') or ''
+            user_key = (
+                activity.get('UserId')
+                or activity.get('UserKey')
+                or activity.get('UserEmail')
+                or 'Unknown'
+            )
+            if creation_time:
+                prev = day_last_viewed.get(report_id)
+                if not prev or creation_time > (prev.get('timestamp') or ''):
+                    day_last_viewed[report_id] = {
+                        'timestamp': creation_time,
+                        'user': user_key,
+                    }
+
         def fetch_day_usage(date_str):
             """Fetch usage for a single day"""
             try:
-                start_dt = f"{date_str}T00:00:00.000Z"
-                end_dt = f"{date_str}T23:59:59.999Z"
-                
-                url = f"{self.base_url}?startDateTime='{start_dt}'&endDateTime='{end_dt}'"
-                
-                response = requests.get(url, headers=self.headers, timeout=30)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    day_views = {}
-                    day_last_viewed = {}
-                    
-                    # Process activities
-                    activities = data.get('activityEventEntities', [])
-                    for activity in activities:
-                        if (activity.get('Activity') == 'ViewReport' and 
-                            activity.get('WorkspaceId') == workspace_id):
-                            
-                            report_id = activity.get('ReportId')
-                            if report_id:
-                                day_views[report_id] = day_views.get(report_id, 0) + 1
-                                
-                                # Track last viewed
-                                creation_time = activity.get('CreationTime')
-                                user_key = activity.get('UserKey') or activity.get('UserId') or 'Unknown'
-                                
-                                if creation_time:
-                                    if (report_id not in day_last_viewed or 
-                                        creation_time > day_last_viewed[report_id]['timestamp']):
-                                        day_last_viewed[report_id] = {
-                                            'timestamp': creation_time,
-                                            'user': user_key
-                                        }
-                    
-                    # Handle continuation tokens (pagination)
-                    continuation_token = data.get('continuationToken')
-                    while continuation_token:
-                        cont_url = f"{self.base_url}?continuationToken='{continuation_token}'"
-                        cont_response = requests.get(cont_url, headers=self.headers, timeout=30)
-                        
-                        if cont_response.status_code == 200:
-                            cont_data = cont_response.json()
-                            
-                            for activity in cont_data.get('activityEventEntities', []):
-                                if (activity.get('Activity') == 'ViewReport' and 
-                                    activity.get('WorkspaceId') == workspace_id):
-                                    
-                                    report_id = activity.get('ReportId')
-                                    if report_id:
-                                        day_views[report_id] = day_views.get(report_id, 0) + 1
-                                        
-                                        creation_time = activity.get('CreationTime')
-                                        user_key = activity.get('UserKey') or activity.get('UserId') or 'Unknown'
-                                        
-                                        if creation_time:
-                                            if (report_id not in day_last_viewed or 
-                                                creation_time > day_last_viewed[report_id]['timestamp']):
-                                                day_last_viewed[report_id] = {
-                                                    'timestamp': creation_time,
-                                                    'user': user_key
-                                                }
-                            
-                            continuation_token = cont_data.get('continuationToken')
-                        else:
-                            break
-                    
-                    return {'views': day_views, 'last_viewed': day_last_viewed, 'success': True}
-                
-                else:
-                    print(f"      ⚠️ {date_str}: Status {response.status_code}")
-                    return {'views': {}, 'last_viewed': {}, 'success': False}
+                # No trailing Z — matches working crash-test Activity Events calls
+                start_dt = f"{date_str}T00:00:00"
+                end_dt = f"{date_str}T23:59:59"
+                url = (
+                    f"{self.base_url}"
+                    f"?startDateTime='{start_dt}'&endDateTime='{end_dt}'"
+                    f"&$filter=Activity eq 'ViewReport'"
+                )
+
+                day_views = {}
+                day_last_viewed = {}
+                pages = 0
+                max_pages = 100
+
+                while url and pages < max_pages:
+                    pages += 1
+                    response = requests.get(url, headers=self.headers, timeout=60)
+
+                    if response.status_code == 429:
+                        import time as _time
+                        wait = float(response.headers.get('Retry-After', 5))
+                        _time.sleep(wait)
+                        pages -= 1
+                        continue
+
+                    if response.status_code != 200:
+                        print(f"      {date_str}: Status {response.status_code} {(response.text or '')[:120]}")
+                        if pages == 1:
+                            return {'views': {}, 'last_viewed': {}, 'success': False}
+                        break
+
+                    data = response.json() or {}
+                    for activity in data.get('activityEventEntities') or []:
+                        _ingest_activity(activity, day_views, day_last_viewed)
+
+                    cont_uri = data.get('continuationUri')
+                    cont_tok = data.get('continuationToken')
+                    if cont_uri:
+                        url = cont_uri
+                    elif cont_tok:
+                        tok = str(cont_tok).strip().strip("'")
+                        url = f"{self.base_url}?continuationToken='{tok}'"
+                    else:
+                        url = None
+
+                return {
+                    'views': day_views,
+                    'last_viewed': day_last_viewed,
+                    'success': True,
+                    'pages': pages,
+                }
 
             except Exception as e:
-                print(f"      ❌ Error on {date_str}: {str(e)}")
+                print(f"      Error on {date_str}: {str(e)}")
                 return {'views': {}, 'last_viewed': {}, 'success': False}
 
         # Fetch all days in parallel (10 workers)
