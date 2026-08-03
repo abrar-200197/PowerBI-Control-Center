@@ -420,17 +420,40 @@
         html[data-theme="dark"] a:not(.nav-item):not(.btn):not(.logout-btn) {
             color: #63B3ED;
         }
-        html[data-theme="dark"] table th {
+        html[data-theme="dark"] table,
+        html[data-theme="dark"] .table-wrapper,
+        html[data-theme="dark"] .table-card {
+            background: var(--bg-surface) !important;
+            color: var(--text) !important;
+            border-color: var(--border) !important;
+        }
+        html[data-theme="dark"] table thead,
+        html[data-theme="dark"] table th,
+        html[data-theme="dark"] .table-wrapper thead th {
             background: var(--bg-surface-2) !important;
             color: var(--text-muted) !important;
             border-color: var(--border) !important;
         }
+        html[data-theme="dark"] table tbody,
+        html[data-theme="dark"] table tbody tr {
+            background: var(--bg-surface) !important;
+        }
         html[data-theme="dark"] table td {
             color: var(--text) !important;
             border-color: var(--border-soft) !important;
+            background: transparent !important;
         }
-        html[data-theme="dark"] table tbody tr:hover {
+        html[data-theme="dark"] table tbody tr:hover,
+        html[data-theme="dark"] table tbody tr:hover td {
             background: var(--table-hover) !important;
+        }
+        html[data-theme="dark"] .controls,
+        html[data-theme="dark"] .filter-bar,
+        html[data-theme="dark"] .no-data,
+        html[data-theme="dark"] .loading {
+            background: var(--bg-surface) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
         }
         /* Force light text on dark surfaces when pages hardcode near-black */
         html[data-theme="dark"] .panel,

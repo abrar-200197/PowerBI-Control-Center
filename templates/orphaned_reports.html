@@ -19,12 +19,13 @@
     }
 
     .stat-card {
-        background: white;
+        background: var(--bg-surface);
         padding: 12px 14px;
         border-radius: 8px;
-        border: 1px solid #E2E8F0;
-        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow-sm);
         text-align: left;
+        color: var(--text);
     }
 
     .stat-value {
@@ -32,11 +33,11 @@
         font-weight: 700;
         margin: 4px 0 0;
         font-variant-numeric: tabular-nums;
-        color: #1A202C;
+        color: var(--text-strong);
     }
 
     .stat-label {
-        color: #718096;
+        color: var(--text-muted);
         font-size: 11px;
         font-weight: 600;
         text-transform: uppercase;
@@ -47,11 +48,12 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        background: #fff;
-        border: 1px solid #E2E8F0;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 10px 14px;
-        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+        box-shadow: var(--shadow-sm);
+        color: var(--text);
     }
     .controls select,
     .controls .select2-container { min-width: 280px; max-width: 480px; }
@@ -84,12 +86,13 @@
     }
 
     .orphaned-table {
-        background: white;
+        background: var(--bg-surface);
         border-radius: 8px;
-        border: 1px solid #E2E8F0;
-        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow-sm);
         overflow: auto;
         max-height: calc(100vh - 280px);
+        color: var(--text);
     }
 
     .orphaned-table table {
@@ -97,18 +100,20 @@
         border-collapse: separate;
         border-spacing: 0;
         font-size: 13px;
+        background: var(--bg-surface);
+        color: var(--text);
     }
 
     .orphaned-table th {
-        background: #F7FAFC;
+        background: var(--bg-surface-2);
         padding: 8px 12px;
         text-align: left;
         font-weight: 700;
         font-size: 10px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
-        color: #718096;
-        border-bottom: 1px solid #E2E8F0;
+        color: var(--text-muted);
+        border-bottom: 1px solid var(--border);
         position: sticky;
         top: 0;
         z-index: 2;
@@ -116,11 +121,17 @@
 
     .orphaned-table td {
         padding: 8px 12px;
-        border-bottom: 1px solid #EDF2F7;
-        color: #2D3748;
+        border-bottom: 1px solid var(--border-soft);
+        color: var(--text);
         vertical-align: middle;
     }
-    .orphaned-table tbody tr:hover { background: #F7FAFC; }
+    .orphaned-table tbody tr { background: var(--bg-surface); }
+    .orphaned-table tbody tr:hover { background: var(--table-hover); }
+
+    html[data-theme="dark"] .risk-critical { background:#3f1515; color:#fca5a5; }
+    html[data-theme="dark"] .risk-high { background:#3d2e12; color:#fdba74; }
+    html[data-theme="dark"] .risk-medium { background:#3d2e12; color:#fbbf24; }
+    html[data-theme="dark"] .risk-low { background:#172554; color:#93c5fd; }
 
     .loading {
         text-align: center;

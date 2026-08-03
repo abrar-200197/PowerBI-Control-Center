@@ -780,3 +780,96 @@ body:has(.app.embedded) {
   .app.embedded .section-tabs-meta { margin-left: 0; width: 100%; justify-content: flex-start; }
   .app.embedded.no-sidebar .table-wrap { max-height: calc(100vh - 260px); }
 }
+
+/* ── Embedded dark theme (follows host data-theme via postMessage / localStorage) ── */
+html[data-theme="dark"] .app.embedded,
+html[data-theme="dark"] body:has(.app.embedded) {
+  --bg: #0F1419;
+  --bg-elev: #1A2332;
+  --bg-soft: #151C27;
+  --border: #2D3A4D;
+  --text: #E2E8F0;
+  --muted: #94A3B8;
+  --primary: #63B3ED;
+  --primary-2: #4299E1;
+  --good: #34D399;
+  --warn: #FBBF24;
+  --danger: #F87171;
+  --chip: #243041;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  background: var(--bg) !important;
+  color: var(--text) !important;
+}
+html[data-theme="dark"].impact-embedded,
+html[data-theme="dark"] body.impact-embedded {
+  background: #0F1419 !important;
+  color: #E2E8F0 !important;
+}
+html[data-theme="dark"] .app.embedded .main.full-width,
+html[data-theme="dark"] .app.embedded.no-sidebar .main {
+  background: #0F1419 !important;
+  color: var(--text);
+}
+html[data-theme="dark"] .app.embedded .section-tabs {
+  background: #1A2332 !important;
+  border-color: #2D3A4D !important;
+}
+html[data-theme="dark"] .app.embedded .section-tab { color: #94A3B8; }
+html[data-theme="dark"] .app.embedded .section-tab:hover {
+  background: #1F2A3A;
+  color: #E2E8F0;
+}
+html[data-theme="dark"] .app.embedded .section-tab.active,
+html[data-theme="dark"] .app.embedded .section-tab.nav-item.active {
+  background: #0c2a43;
+  color: #90CDF4;
+  border-color: #2B6CB0;
+}
+html[data-theme="dark"] .app.embedded .card,
+html[data-theme="dark"] .app.embedded .load-state,
+html[data-theme="dark"] .app.embedded .error-state,
+html[data-theme="dark"] .app.embedded .drawer {
+  background: #1A2332 !important;
+  border-color: #2D3A4D !important;
+  color: #E2E8F0 !important;
+}
+html[data-theme="dark"] .app.embedded .card-head h2,
+html[data-theme="dark"] .app.embedded .card h2 { color: #F7FAFC !important; }
+html[data-theme="dark"] .app.embedded .btn.secondary,
+html[data-theme="dark"] .app.embedded .btn.ghost {
+  background: #151C27 !important;
+  border-color: #2D3A4D !important;
+  color: #E2E8F0 !important;
+}
+html[data-theme="dark"] .app.embedded input,
+html[data-theme="dark"] .app.embedded select,
+html[data-theme="dark"] .app.embedded .drawer-search {
+  background: #151C27 !important;
+  border-color: #2D3A4D !important;
+  color: #E2E8F0 !important;
+}
+html[data-theme="dark"] .app.embedded .table-wrap {
+  border-color: #2D3A4D !important;
+  background: #1A2332 !important;
+}
+html[data-theme="dark"] .app.embedded thead th {
+  background: #151C27 !important;
+  color: #94A3B8 !important;
+  border-bottom-color: #2D3A4D !important;
+}
+html[data-theme="dark"] .app.embedded tbody td {
+  color: #E2E8F0 !important;
+  border-bottom-color: #243041 !important;
+}
+html[data-theme="dark"] .app.embedded tbody tr:hover { background: #1F2A3A !important; }
+html[data-theme="dark"] .app.embedded .badge {
+  background: #243041 !important;
+  color: #94A3B8 !important;
+  border-color: #2D3A4D !important;
+}
+html[data-theme="dark"] .app.embedded .field span,
+html[data-theme="dark"] .app.embedded .section-tabs-meta .tab-subtitle { color: #94A3B8 !important; }
+html[data-theme="dark"] .app.embedded .drawer-head {
+  background: #151C27 !important;
+  border-bottom-color: #2D3A4D !important;
+}
