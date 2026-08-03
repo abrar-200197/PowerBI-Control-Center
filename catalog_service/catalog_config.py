@@ -83,7 +83,7 @@ SHAREPOINT_PUBLISH_FILES = [
 ]
 
 # Ops snapshot tuning (batch job)
-USAGE_LOOKBACK_DAYS = int(os.getenv("USAGE_LOOKBACK_DAYS", "30"))
+USAGE_LOOKBACK_DAYS = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))
 OPS_REFRESH_WORKERS = int(os.getenv("OPS_REFRESH_WORKERS", "8"))
 OPS_USAGE_DAY_WORKERS = int(os.getenv("OPS_USAGE_DAY_WORKERS", "6"))
 OPS_HTTP_TIMEOUT_SEC = int(os.getenv("OPS_HTTP_TIMEOUT_SEC", "30"))

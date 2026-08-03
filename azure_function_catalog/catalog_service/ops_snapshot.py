@@ -3,7 +3,7 @@ Operational snapshot for Control Center catalog.
 
 Builds:
   - Dataset refresh snapshot (last refresh, status, schedule, type)
-  - Incremental 30-day usage (Activity Events) with day-bucket state
+  - Incremental 60-day usage (Activity Events) with day-bucket state
 
 Designed for scheduled runs (e.g. every 6 hours):
   - De-dupe datasets across reports
@@ -29,7 +29,7 @@ from powerbi_connector import resolve_dataset_refresh_info, _empty_refresh_info
 logger = logging.getLogger("ops_snapshot")
 
 PBI_SCOPE = ["https://analysis.windows.net/powerbi/api/.default"]
-USAGE_LOOKBACK_DAYS = int(getattr(cfg, "USAGE_LOOKBACK_DAYS", None) or 30)
+USAGE_LOOKBACK_DAYS = int(getattr(cfg, "USAGE_LOOKBACK_DAYS", None) or 60)
 REFRESH_WORKERS = int(getattr(cfg, "OPS_REFRESH_WORKERS", None) or 8)
 USAGE_DAY_WORKERS = int(getattr(cfg, "OPS_USAGE_DAY_WORKERS", None) or 6)
 HTTP_TIMEOUT = int(getattr(cfg, "OPS_HTTP_TIMEOUT_SEC", None) or 30)

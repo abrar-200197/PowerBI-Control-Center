@@ -529,6 +529,15 @@
         <a id="clearFilterLink" href="#">Clear filter</a>
     </div>
 
+    <!-- Shown when 2+ filters are active (folder + status, report pick, etc.) -->
+    <div id="multiFilterBar" class="catalog-filter-banner" style="display:none; border-left-color:#3182CE; background:#EBF8FF; border-color:#BEE3F8; color:#2A4365;">
+        <div>
+            <div class="title" style="color:#2B6CB0;">Multiple filters active</div>
+            <div class="sub" id="multiFilterSummary" style="color:#2C5282;">Reset to see the full list</div>
+        </div>
+        <a id="clearAllFiltersBtn" href="#" style="background:#EBF8FF; color:#2B6CB0; border:1px solid #90CDF4;">Clear all filters</a>
+    </div>
+
     <div class="controls">
         <div class="controls-left">
             <select id="workspaceSelect" onchange="onWorkspaceChange()">
@@ -543,7 +552,7 @@
             <span id="statusFilterBadge" style="display: none;"></span>
         </div>
         <div class="controls-right">
-            <button class="btn btn-primary" onclick="loadUsageMetricsInBackground()" id="usageBtn" style="display: none;" title="Load usage metrics (30-day view counts and last viewed info)">
+            <button class="btn btn-primary" onclick="loadUsageMetricsInBackground()" id="usageBtn" style="display: none;" title="Load usage metrics (60-day view counts and last viewed info)">
                 Usage
             </button>
             <button class="btn btn-success" onclick="exportToExcel()" id="exportBtn" style="display: none;" title="Export current list to Excel">
@@ -583,6 +592,123 @@
     let folders = [];
     let allWorkspaces = []; // Store all workspaces for filtering
     let statusFilter = null; // Filter for active/inactive reports
+    let selectedReportId = null; // report dropdown filter
+    const VIEW_LOOKBACK_DAYS = 60;
+
+    /** Parse ISO / epoch → Date or null */
+    function parseRefreshTs(value) {
+        if (value == null || value === '') return null;
+        try {
+            if (typeof value === 'number') {
+                const ms = value > 1e12 ? value : value * 1000;
+                const d = new Date(ms);
+                return isNaN(d.getTime()) ? null : d;
+            }
+            const s = String(value).trim();
+            if (!s || ['unknown','n/a','none','null','-','—'].includes(s.toLowerCase())) return null;
+            const d = new Date(s);
+            return isNaN(d.getTime()) ? null : d;
+        } catch (e) { return null; }
+    }
+
+    function daysSinceRefreshClient(value) {
+        const d = parseRefreshTs(value);
+        if (!d) return null;
+        return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000));
+    }
+
+    /**
+     * Pick newer last_refreshed between existing row and incoming (catalog ops vs live).
+     * Days-since is always derived from the winning timestamp.
+     */
+    function mergeRefreshFields(existing, incoming) {
+        if (!incoming) return existing || {};
+        if (!existing) {
+            const out = { ...incoming };
+            if (out.days_since_refresh == null && out.last_refreshed) {
+                out.days_since_refresh = daysSinceRefreshClient(out.last_refreshed);
+            }
+            return out;
+        }
+        const aTs = parseRefreshTs(existing.last_refreshed);
+        const bTs = parseRefreshTs(incoming.last_refreshed);
+        let winner = existing;
+        let loser = incoming;
+        if (bTs && (!aTs || bTs > aTs)) {
+            winner = incoming;
+            loser = existing;
+        }
+        const merged = {
+            ...existing,
+            refresh_schedule: winner.refresh_schedule || loser.refresh_schedule || existing.refresh_schedule,
+            last_refreshed: winner.last_refreshed || loser.last_refreshed || null,
+            last_refresh_status: winner.last_refresh_status || loser.last_refresh_status || existing.last_refresh_status,
+            refresh_type: winner.refresh_type || loser.refresh_type || existing.refresh_type,
+            refresh_note: winner.refresh_note || loser.refresh_note || existing.refresh_note,
+            dataset_workspace_id: winner.dataset_workspace_id || loser.dataset_workspace_id || existing.dataset_workspace_id,
+            refresh_pending: false,
+        };
+        merged.days_since_refresh = daysSinceRefreshClient(merged.last_refreshed);
+        return merged;
+    }
+
+    /** Count active list filters (status, folder, specific report). Workspace is navigation. */
+    function countActiveFilters() {
+        let n = 0;
+        if (statusFilter) n += 1;
+        if (currentFolderId) n += 1;
+        const reportVal = document.getElementById('reportSelect')?.value || selectedReportId;
+        if (reportVal) n += 1;
+        return n;
+    }
+
+    function updateMultiFilterBar() {
+        const bar = document.getElementById('multiFilterBar');
+        const summary = document.getElementById('multiFilterSummary');
+        if (!bar) return;
+        const n = countActiveFilters();
+        if (n >= 2) {
+            const bits = [];
+            if (statusFilter) bits.push(`status=${statusFilter}`);
+            if (currentFolderId) bits.push('folder');
+            if (document.getElementById('reportSelect')?.value || selectedReportId) bits.push('report');
+            bar.style.display = 'flex';
+            if (summary) summary.textContent = `${n} filters active (${bits.join(', ')}). Clear all to reset.`;
+        } else {
+            bar.style.display = 'none';
+        }
+    }
+
+    function clearAllFilters(ev) {
+        if (ev) ev.preventDefault();
+        statusFilter = null;
+        currentFolderId = null;
+        selectedReportId = null;
+        // Strip filter query params but keep workspace
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('status');
+            url.searchParams.delete('folder_id');
+            url.searchParams.delete('folder');
+            url.searchParams.delete('report');
+            window.history.replaceState({}, '', url.pathname + (url.search || '') + (url.hash || ''));
+        } catch (e) { /* ignore */ }
+        if (window.jQuery) {
+            $('#folderSelect').val('').trigger('change.select2');
+            $('#reportSelect').val('').trigger('change.select2');
+        } else {
+            const fs = document.getElementById('folderSelect');
+            const rs = document.getElementById('reportSelect');
+            if (fs) fs.value = '';
+            if (rs) rs.value = '';
+        }
+        const header = document.getElementById('filterStatusHeader');
+        if (header) header.style.display = 'none';
+        const badge = document.getElementById('statusFilterBadge');
+        if (badge) badge.style.display = 'none';
+        updateMultiFilterBar();
+        if (currentWorkspaceId) loadReports();
+    }
 
     // Initialize Select2 on page load
     window.addEventListener('DOMContentLoaded', function() {
@@ -609,6 +735,30 @@
             width: '250px',
             minimumResultsForSearch: 0  // Always show search box
         });
+
+        const clearAll = document.getElementById('clearAllFiltersBtn');
+        if (clearAll) clearAll.addEventListener('click', clearAllFilters);
+        const clearOne = document.getElementById('clearFilterLink');
+        if (clearOne) {
+            clearOne.addEventListener('click', (e) => {
+                e.preventDefault();
+                // Single status clear — if only status, clear it; if more filters, clear all
+                if (countActiveFilters() >= 2) {
+                    clearAllFilters(e);
+                } else {
+                    statusFilter = null;
+                    try {
+                        const url = new URL(window.location.href);
+                        url.searchParams.delete('status');
+                        window.history.replaceState({}, '', url.pathname + (url.search || ''));
+                    } catch (err) { /* ignore */ }
+                    const header = document.getElementById('filterStatusHeader');
+                    if (header) header.style.display = 'none';
+                    updateMultiFilterBar();
+                    if (currentWorkspaceId) loadReports();
+                }
+            });
+        }
 
         // Load workspaces after Select2 initialization
         loadWorkspaces();
@@ -750,6 +900,7 @@
         const folderSelect = document.getElementById('folderSelect');
         currentFolderId = folderSelect.value || null;
         console.log(`📁 Folder changed to: ${currentFolderId || 'All Folders'}`);
+        updateMultiFilterBar();
 
         if (currentWorkspaceId) {
             loadReports();
@@ -876,6 +1027,7 @@
                         filterTitle.textContent = 'Inactive reports filter';
                         filterSubtitle.textContent = `Showing ${reports.length} reports not refreshed in 30+ days`;
                     }
+                    updateMultiFilterBar();
 
                     clearLink.href = `/documentation?workspace=${encodeURIComponent(currentWorkspaceId)}`;
                 } else if (filterHeader) {
@@ -915,17 +1067,23 @@
                     console.log(`   ⏱ Ops snapshot as of: ${result.opsEnrichedAt}`);
                 }
 
-                // Live background enrichment ONLY if catalog has no ops snapshot yet
+                // Dual-source refresh: merge live API + catalog/SharePoint ops, show LATEST.
+                // Run when catalog has no ops, OR when some rows lack last_refreshed
+                // (catalog may be incomplete while SharePoint/live has history).
+                const missingRefresh = reports.filter(r => !r.last_refreshed).length;
                 if (
                     reports.length > 0 &&
-                    !opsFromCatalog &&
                     result.refreshIncluded === false &&
+                    (!opsFromCatalog || missingRefresh > 0) &&
                     !statusFilter &&
                     !currentFolderId
                 ) {
-                    console.log('⚡ Catalog missing ops — scheduling live refresh enrichment…');
+                    console.log(
+                        `⚡ Scheduling dual refresh merge (ops=${opsFromCatalog}, missingTs=${missingRefresh})…`
+                    );
                     setTimeout(() => enrichRefreshInBackground(), 50);
                 }
+                updateMultiFilterBar();
 
                 // STEP 2: Auto-load metadata in background (silently - no alerts)
                 if (reports.length > 0 && !reports[0].metadata_loaded) {
@@ -1097,12 +1255,16 @@
         if (!currentWorkspaceId || !reports || reports.length === 0) {
             return;
         }
-        // Skip if already have refresh data
-        if (reports.some(r => r.last_refreshed || r.refresh_type || r.last_refresh_status)) {
+        // Always try live overlay so we can pick LATEST between catalog ops and live history.
+        // (Previously we skipped when catalog already had some refresh — that missed newer live
+        // rows AND left blank UI when catalog was empty but SharePoint later had data.)
+        const missingMany = reports.filter(r => !r.last_refreshed).length >= Math.max(1, Math.floor(reports.length * 0.3));
+        const alwaysMerge = true;
+        if (!alwaysMerge && !missingMany) {
             return;
         }
         try {
-            console.log('⚡ Background: fetching live refresh (include_refresh=1)…');
+            console.log('⚡ Background: fetching live refresh (include_refresh=1) for dual-source merge…');
             let url = `/api/reports?workspace_id=${currentWorkspaceId}&include_refresh=1`;
             if (currentFolderId) url += `&folder_id=${currentFolderId}`;
             const response = await fetch(url);
@@ -1116,20 +1278,22 @@
             let merged = 0;
             reports = reports.map(r => {
                 const live = byId[r.id];
-                if (!live) return r;
+                if (!live) {
+                    // Still recompute days-since from existing catalog timestamp
+                    if (r.last_refreshed && r.days_since_refresh == null) {
+                        return { ...r, days_since_refresh: daysSinceRefreshClient(r.last_refreshed), refresh_pending: false };
+                    }
+                    return r;
+                }
                 merged++;
+                const fields = mergeRefreshFields(r, live);
                 return {
                     ...r,
-                    refresh_schedule: live.refresh_schedule,
-                    last_refreshed: live.last_refreshed,
-                    last_refresh_status: live.last_refresh_status,
-                    refresh_type: live.refresh_type,
-                    refresh_note: live.refresh_note,
-                    dataset_workspace_id: live.dataset_workspace_id,
+                    ...fields,
                     refresh_pending: false,
                 };
             });
-            console.log(`✅ Background refresh merged for ${merged} reports`);
+            console.log(`✅ Background refresh dual-merged for ${merged} reports`);
             renderReportsTable(reports);
         } catch (e) {
             console.warn('Background refresh enrichment error', e);
@@ -1367,17 +1531,19 @@
     }
 
     function onReportChange() {
-        const selectedReportId = document.getElementById('reportSelect').value;
+        selectedReportId = document.getElementById('reportSelect').value || null;
 
         if (!selectedReportId) {
             // No report selected - show all reports
             renderReportsTable(reports);
+            updateMultiFilterBar();
             return;
         }
 
         // Filter to show only the selected report
         const filteredReports = reports.filter(report => report.id === selectedReportId);
         renderReportsTable(filteredReports);
+        updateMultiFilterBar();
 
         console.log(`🔍 Filtered to show report: ${filteredReports[0]?.name}`);
     }
@@ -1444,7 +1610,7 @@
                             <th>Last refresh</th>
                             <th title="Days since last refresh">Days</th>
                             <th>Status</th>
-                            <th title="Views in the last 30 days">Views</th>
+                            <th title="Views in the last 60 days">Views</th>
                             <th>Last viewed</th>
                             <th>Action</th>
                         </tr>
@@ -1488,7 +1654,7 @@
 
             const safeName = report.name.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/ /g, '_');
 
-            // Format views count (30 days)
+            // Format views count (60 days)
             const viewCount = report.view_count;
             let viewsDisplay = '';
 
@@ -1497,9 +1663,9 @@
             } else if (viewCount === undefined) {
                 viewsDisplay = '<span class="inline-spinner" title="Loading views…"></span>';
             } else if (viewCount === 0) {
-                viewsDisplay = `<div class="views-cell" title="No views in last 30 days"><span class="views-num zero">0</span><span class="views-tag">Inactive</span></div>`;
+                viewsDisplay = `<div class="views-cell" title="No views in last ${VIEW_LOOKBACK_DAYS} days"><span class="views-num zero">0</span><span class="views-tag">Inactive</span></div>`;
             } else {
-                viewsDisplay = `<div class="views-cell" title="${viewCount.toLocaleString()} views in last 30 days"><span class="views-num">${viewCount.toLocaleString()}</span></div>`;
+                viewsDisplay = `<div class="views-cell" title="${viewCount.toLocaleString()} views in last ${VIEW_LOOKBACK_DAYS} days"><span class="views-num">${viewCount.toLocaleString()}</span></div>`;
             }
 
             // Format Last Viewed By

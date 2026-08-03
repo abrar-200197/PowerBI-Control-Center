@@ -6,6 +6,165 @@
 
 {% block extra_css %}
 <style>
+    /* ===== Post-login intro (Mercury-style slow zoom into the app) ===== */
+    .login-intro-stage {
+        position: fixed;
+        inset: 0;
+        z-index: 99990;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.35s ease;
+    }
+    .login-intro-stage.is-on {
+        pointer-events: auto;
+        opacity: 1;
+    }
+    .login-intro-stage.is-done {
+        opacity: 0;
+        pointer-events: none;
+    }
+    .login-intro-veil {
+        position: absolute;
+        inset: 0;
+        background:
+            radial-gradient(1200px 600px at 50% 40%, rgba(49, 130, 206, 0.18), transparent 60%),
+            linear-gradient(160deg, #0B1220 0%, #1A202C 55%, #2D3748 100%);
+    }
+    .login-intro-card {
+        position: relative;
+        z-index: 1;
+        width: min(920px, 92vw);
+        height: min(560px, 78vh);
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow:
+            0 30px 80px rgba(0, 0, 0, 0.45),
+            0 0 0 1px rgba(255, 255, 255, 0.06);
+        transform: scale(0.72);
+        transform-origin: 50% 45%;
+        transition: transform 5s cubic-bezier(0.22, 1, 0.36, 1);
+        background: #F7FAFC;
+    }
+    .login-intro-stage.is-zoom .login-intro-card {
+        transform: scale(1);
+    }
+    .login-intro-card-inner {
+        padding: 28px 28px 20px;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        background:
+            linear-gradient(180deg, #FFFFFF 0%, #F7FAFC 100%);
+    }
+    .login-intro-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: #1A365D;
+        font-size: 15px;
+    }
+    .login-intro-brand .mark {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #3182CE, #2B6CB0);
+        box-shadow: 0 6px 14px rgba(49, 130, 206, 0.35);
+    }
+    .login-intro-hero {
+        flex: 1;
+        border-radius: 12px;
+        border: 1px solid #E2E8F0;
+        background:
+            linear-gradient(135deg, rgba(49,130,206,0.08), rgba(72,187,120,0.06)),
+            #fff;
+        padding: 22px;
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: 16px;
+        min-height: 0;
+    }
+    .login-intro-title {
+        font-size: 28px;
+        line-height: 1.15;
+        font-weight: 750;
+        color: #1A202C;
+        margin: 0 0 8px;
+    }
+    .login-intro-sub {
+        margin: 0;
+        color: #4A5568;
+        font-size: 14px;
+        line-height: 1.45;
+        max-width: 36ch;
+    }
+    .login-intro-kpis {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        align-content: start;
+    }
+    .login-intro-kpi {
+        border: 1px solid #E2E8F0;
+        border-radius: 10px;
+        padding: 12px;
+        background: #fff;
+    }
+    .login-intro-kpi .lbl { font-size: 11px; color: #718096; text-transform: uppercase; letter-spacing: 0.04em; }
+    .login-intro-kpi .val { font-size: 22px; font-weight: 700; color: #2B6CB0; margin-top: 4px; }
+    .login-intro-skip {
+        position: absolute;
+        top: 18px;
+        right: 18px;
+        z-index: 2;
+        border: 1px solid rgba(255,255,255,0.25);
+        background: rgba(15, 23, 42, 0.35);
+        color: #EDF2F7;
+        border-radius: 999px;
+        padding: 8px 14px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        backdrop-filter: blur(6px);
+        pointer-events: auto;
+    }
+    .login-intro-skip:hover { background: rgba(15, 23, 42, 0.55); }
+    body.login-intro-lock { overflow: hidden; }
+    @media (prefers-reduced-motion: reduce) {
+        .login-intro-card { transition: none !important; transform: scale(1) !important; }
+        .login-intro-stage { transition: none !important; }
+    }
+    @media (max-width: 720px) {
+        .login-intro-hero { grid-template-columns: 1fr; }
+        .login-intro-title { font-size: 22px; }
+    }
+
+    /* Multi-filter clear chip */
+    .home-filter-reset {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 4px;
+    }
+    .home-filter-reset.is-on { display: flex; }
+    .home-filter-reset button {
+        border: 1px solid #90CDF4;
+        background: #EBF8FF;
+        color: #2B6CB0;
+        border-radius: 999px;
+        padding: 5px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .home-filter-reset button:hover { background: #BEE3F8; }
+    .home-filter-reset .hint { font-size: 12px; color: #4A5568; }
+
     /* ===== Home: dense enterprise dashboard (no wasted scroll) ===== */
     .home-wrap {
         display: flex;
@@ -480,6 +639,33 @@
 {% endblock %}
 
 {% block content %}
+{% if show_login_intro %}
+<div id="loginIntro" class="login-intro-stage" aria-hidden="true">
+    <div class="login-intro-veil"></div>
+    <button type="button" class="login-intro-skip" id="loginIntroSkip">Skip</button>
+    <div class="login-intro-card" id="loginIntroCard">
+        <div class="login-intro-card-inner">
+            <div class="login-intro-brand">
+                <span class="mark" aria-hidden="true"></span>
+                <span>Power BI Control Center</span>
+            </div>
+            <div class="login-intro-hero">
+                <div>
+                    <h1 class="login-intro-title">Workspace health, ownership &amp; impact — in one place.</h1>
+                    <p class="login-intro-sub">Catalog, refresh, and usage signals load from SharePoint ops snapshots so your home view paints fast after sign-in.</p>
+                </div>
+                <div class="login-intro-kpis" aria-hidden="true">
+                    <div class="login-intro-kpi"><div class="lbl">Workspaces</div><div class="val">…</div></div>
+                    <div class="login-intro-kpi"><div class="lbl">Reports</div><div class="val">…</div></div>
+                    <div class="login-intro-kpi"><div class="lbl">Inactive</div><div class="val">…</div></div>
+                    <div class="login-intro-kpi"><div class="lbl">Orphaned</div><div class="val">…</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="home-wrap">
     <!-- Compact KPI strip -->
     <div class="kpi-strip" role="region" aria-label="Summary metrics">
@@ -515,6 +701,11 @@
                 <div class="kpi-hint">No active owner signal</div>
             </div>
         </div>
+    </div>
+
+    <div class="home-filter-reset" id="homeFilterReset">
+        <span class="hint" id="homeFilterHint">Multiple filters active</span>
+        <button type="button" id="homeClearAllFilters">Clear all filters</button>
     </div>
 
     <!-- Workspace panel -->
@@ -754,6 +945,44 @@
         return list;
     }
 
+    function countHomeFilters() {
+        // Treat search text + non-default sort as independent filters
+        let n = 0;
+        const q = (document.getElementById('workspaceSearch')?.value || '').trim();
+        const sort = document.getElementById('sortSelect')?.value || 'name';
+        if (q) n += 1;
+        if (sort && sort !== 'name') n += 1;
+        return n;
+    }
+
+    function updateHomeFilterReset() {
+        const bar = document.getElementById('homeFilterReset');
+        const hint = document.getElementById('homeFilterHint');
+        if (!bar) return;
+        const n = countHomeFilters();
+        if (n >= 2) {
+            bar.classList.add('is-on');
+            if (hint) {
+                const q = (document.getElementById('workspaceSearch')?.value || '').trim();
+                const sort = document.getElementById('sortSelect')?.value || 'name';
+                const bits = [];
+                if (q) bits.push('search');
+                if (sort !== 'name') bits.push('sort');
+                hint.textContent = `${n} filters active (${bits.join(' + ')})`;
+            }
+        } else {
+            bar.classList.remove('is-on');
+        }
+    }
+
+    function clearAllHomeFilters() {
+        const search = document.getElementById('workspaceSearch');
+        const sort = document.getElementById('sortSelect');
+        if (search) search.value = '';
+        if (sort) sort.value = 'name';
+        applyFilterAndSort();
+    }
+
     function applyFilterAndSort() {
         const list = getFilteredSortedWorkspaces();
         renderWorkspaceTable(list);
@@ -761,6 +990,42 @@
         const shown = list.length;
         document.getElementById('workspace-count-label').textContent =
             shown === total ? `${total} workspace${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
+        updateHomeFilterReset();
+    }
+
+    function runLoginIntro() {
+        const stage = document.getElementById('loginIntro');
+        if (!stage) return;
+        const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const finish = () => {
+            stage.classList.add('is-done');
+            document.body.classList.remove('login-intro-lock');
+            setTimeout(() => { try { stage.remove(); } catch (e) {} }, 400);
+        };
+        document.body.classList.add('login-intro-lock');
+        stage.setAttribute('aria-hidden', 'false');
+        // paint, then fade in, then zoom
+        requestAnimationFrame(() => {
+            stage.classList.add('is-on');
+            if (reduce) {
+                setTimeout(finish, 400);
+                return;
+            }
+            // start zoom slightly after veil is visible
+            setTimeout(() => stage.classList.add('is-zoom'), 80);
+            // auto-complete after ~5s zoom
+            setTimeout(finish, 5200);
+        });
+        const skip = document.getElementById('loginIntroSkip');
+        if (skip) skip.addEventListener('click', finish);
+        // Esc to skip
+        const onKey = (e) => {
+            if (e.key === 'Escape') {
+                finish();
+                window.removeEventListener('keydown', onKey);
+            }
+        };
+        window.addEventListener('keydown', onKey);
     }
 
     function renderWorkspaceTable(list) {
@@ -890,11 +1155,14 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        runLoginIntro();
         loadDashboard();
         const search = document.getElementById('workspaceSearch');
         const sort = document.getElementById('sortSelect');
         if (search) search.addEventListener('input', () => applyFilterAndSort());
         if (sort) sort.addEventListener('change', () => applyFilterAndSort());
+        const clearBtn = document.getElementById('homeClearAllFilters');
+        if (clearBtn) clearBtn.addEventListener('click', clearAllHomeFilters);
     });
 </script>
 {% endblock %}

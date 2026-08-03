@@ -542,6 +542,114 @@ def _classify_dataset_type(dataset_info, history_status_code=None):
     return 'unknown'
 
 
+def parse_refresh_timestamp(value):
+    """Parse ISO / epoch refresh timestamps to aware UTC datetime, or None."""
+    if value is None or value == '':
+        return None
+    try:
+        from datetime import datetime, timezone
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if ts > 1e12:
+                ts /= 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        s = str(value).strip()
+        if not s or s.lower() in {'unknown', 'n/a', 'none', 'null', '-', '—'}:
+            return None
+        if s.endswith('Z'):
+            s = s[:-1] + '+00:00'
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def days_since_refresh(value, as_of=None):
+    """Whole days since last refresh; None if timestamp unknown."""
+    from datetime import datetime, timezone
+    dt = parse_refresh_timestamp(value)
+    if not dt:
+        return None
+    now = as_of or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return max(0, (now - dt).days)
+
+
+def merge_refresh_candidates(*sources, prefer_keys=None):
+    """
+    Merge multiple refresh info dicts and pick the LATEST last_refreshed.
+
+    Used when catalog/SharePoint ops has a refresh timestamp (OneDrive snapshot)
+    but live Power BI history is missing/stale (or the reverse). UI should show
+    the newer of both and recompute days_since_refresh from that winner.
+
+    Non-timestamp fields (schedule, type, owner) prefer the first non-empty from
+    sources in order, unless that field is tied to the winning timestamp source.
+    """
+    prefer_keys = prefer_keys or (
+        'refresh_schedule', 'refresh_type', 'refresh_note',
+        'dataset_owner', 'dataset_workspace_id', 'is_refreshable',
+    )
+    cleaned = [s for s in sources if isinstance(s, dict) and s]
+    if not cleaned:
+        return _empty_refresh_info()
+
+    best = None
+    best_dt = None
+    for src in cleaned:
+        ts = src.get('last_refreshed')
+        dt = parse_refresh_timestamp(ts)
+        if dt is None:
+            continue
+        if best_dt is None or dt > best_dt:
+            best_dt = dt
+            best = src
+
+    # Base: first source that has any useful structure, else first
+    base = dict(cleaned[0])
+    for src in cleaned[1:]:
+        for k in prefer_keys:
+            if not base.get(k) and src.get(k) not in (None, '', 'Unknown', 'N/A'):
+                base[k] = src.get(k)
+
+    if best is not None:
+        base['last_refreshed'] = best.get('last_refreshed')
+        # Prefer status from the same source as the winning timestamp
+        if best.get('last_refresh_status'):
+            base['last_refresh_status'] = best.get('last_refresh_status')
+        note_bits = []
+        if best.get('refresh_note'):
+            note_bits.append(str(best.get('refresh_note')))
+        # Annotate if we picked catalog/ops over empty live (or vice versa)
+        others = [s for s in cleaned if s is not best]
+        other_has_ts = any(parse_refresh_timestamp(s.get('last_refreshed')) for s in others)
+        if other_has_ts:
+            note_bits.append('latest of live API + catalog ops')
+        elif any(
+            not parse_refresh_timestamp(s.get('last_refreshed'))
+            for s in others
+        ):
+            note_bits.append('filled from alternate refresh source')
+        if note_bits and not base.get('refresh_note'):
+            base['refresh_note'] = '; '.join(note_bits)
+        elif note_bits and 'latest of' not in str(base.get('refresh_note') or ''):
+            base['refresh_note'] = (
+                f"{base.get('refresh_note')}; {note_bits[-1]}"
+                if base.get('refresh_note') else note_bits[-1]
+            )
+    else:
+        # No timestamps anywhere — still take best status label available
+        for src in cleaned:
+            if src.get('last_refresh_status') and not base.get('last_refresh_status'):
+                base['last_refresh_status'] = src.get('last_refresh_status')
+
+    base['days_since_refresh'] = days_since_refresh(base.get('last_refreshed'))
+    return base
+
+
 def resolve_dataset_refresh_info(
     headers,
     workspace_id,

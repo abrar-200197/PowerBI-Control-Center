@@ -391,6 +391,8 @@ def authorized():
         if old_user_id and old_user_id != new_user_id:
             clear_user_cache(old_user_id)
 
+        # One-shot post-login intro (Mercury-style slow zoom into the app)
+        session['show_login_intro'] = True
         return redirect(url_for("index"))
 
     flash('No authorization code received', 'error')
@@ -724,7 +726,9 @@ def test_sso():
 @login_required
 def index():
     """Home page - Dashboard Overview"""
-    return render_template('home.html')
+    # Consume one-shot login intro flag (set after SSO success)
+    show_login_intro = bool(session.pop('show_login_intro', False))
+    return render_template('home.html', show_login_intro=show_login_intro)
 
 
 @app.route('/documentation')
@@ -5268,6 +5272,15 @@ def _catalog_reports_shell(catalog_reports):
         )
         has_people = bool(created_by or modified_by or created_dt or modified_dt)
 
+        last_ref = r.get('last_refreshed')
+        days = r.get('days_since_refresh')
+        if days is None and last_ref:
+            try:
+                from powerbi_connector import days_since_refresh as _dsr
+                days = _dsr(last_ref)
+            except Exception:
+                days = None
+
         report_list.append({
             'id': r.get('id'),
             'name': r.get('name'),
@@ -5275,11 +5288,11 @@ def _catalog_reports_shell(catalog_reports):
             'folderId': r.get('folderId'),
             'folderName': r.get('folderName'),
             'refresh_schedule': r.get('refresh_schedule'),
-            'last_refreshed': r.get('last_refreshed'),
+            'last_refreshed': last_ref,
             'last_refresh_status': r.get('last_refresh_status'),
             'refresh_type': r.get('refresh_type'),
             'refresh_note': r.get('refresh_note'),
-            'days_since_refresh': r.get('days_since_refresh'),
+            'days_since_refresh': days,
             'dataset_workspace_id': r.get('dataset_workspace_id'),
             'dataset_owner': r.get('dataset_owner'),
             'view_count': r.get('view_count'),
@@ -5314,7 +5327,12 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
     Structure from catalog (fast); refresh/status still live (accurate).
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from powerbi_connector import resolve_dataset_refresh_info, _empty_refresh_info
+    from powerbi_connector import (
+        resolve_dataset_refresh_info,
+        _empty_refresh_info,
+        merge_refresh_candidates,
+        days_since_refresh,
+    )
 
     report_list = []
     dataset_ids = set()
@@ -5371,7 +5389,19 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
 
     for r in catalog_reports:
         ds_id = r.get('datasetId') or ''
-        info = dataset_refresh_map.get(ds_id, {})
+        live = dataset_refresh_map.get(ds_id, {}) or {}
+        # Catalog / SharePoint ops snapshot (often has history when live API is empty)
+        catalog_ops = {
+            'last_refreshed': r.get('last_refreshed'),
+            'last_refresh_status': r.get('last_refresh_status'),
+            'refresh_schedule': r.get('refresh_schedule'),
+            'refresh_type': r.get('refresh_type'),
+            'refresh_note': r.get('refresh_note'),
+            'dataset_owner': r.get('dataset_owner'),
+            'dataset_workspace_id': r.get('dataset_workspace_id') or workspace_id,
+        }
+        # Latest timestamp wins between live history and catalog ops
+        info = merge_refresh_candidates(live, catalog_ops)
         created_by = _pick_person(r.get('createdBy'), r.get('created_by'))
         modified_by = _pick_person(r.get('modifiedBy'), r.get('modified_by'))
         created_dt = _pick_datetime(
@@ -5381,6 +5411,9 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
             r.get('modifiedDateTime'), r.get('modified_date_time'), r.get('modified_date')
         )
         has_people = bool(created_by or modified_by or created_dt or modified_dt)
+        days = info.get('days_since_refresh')
+        if days is None:
+            days = days_since_refresh(info.get('last_refreshed'))
         report_list.append({
             'id': r.get('id'),
             'name': r.get('name'),
@@ -5392,8 +5425,9 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
             'last_refresh_status': info.get('last_refresh_status'),
             'refresh_type': info.get('refresh_type'),
             'refresh_note': info.get('refresh_note'),
+            'days_since_refresh': days,
             'dataset_workspace_id': info.get('dataset_workspace_id'),
-            'dataset_owner': r.get('dataset_owner'),
+            'dataset_owner': info.get('dataset_owner') or r.get('dataset_owner'),
             'view_count': r.get('view_count'),
             'last_viewed': r.get('last_viewed'),
             'created_by': created_by or None,
@@ -6222,7 +6256,8 @@ def export_inactive_reports(workspace_id):
 
         print(f"\n📋 GENERATING DECOMMISSION REPORT FOR WORKSPACE: {workspace_id}")
         REFRESH_STALE_DAYS = 90
-        VIEW_LOOKBACK_LABEL = '30 days'
+        VIEW_LOOKBACK_LABEL = '60 days'
+        VIEW_LOOKBACK_DAYS = 60
 
         def _is_live_or_dq(report_or_ds):
             rtype = str(
@@ -6339,7 +6374,7 @@ def export_inactive_reports(workspace_id):
             reports_in = list(workspace_data.get('reports') or [])
             print(f"   🛰️ Scanner reports: {len(reports_in)}")
 
-        # ---------- 2) Views (30-day window preferred) ----------
+        # ---------- 2) Views (60-day window preferred) ----------
         # a) catalog report.view_count
         for r in reports_in:
             rid = r.get('id')
@@ -6404,7 +6439,7 @@ def export_inactive_reports(workspace_id):
             refresh_type = report.get('refresh_type') or report.get('refreshType') or ''
             refresh_note = report.get('refresh_note') or ''
 
-            # Views (30-day window when snapshot provides it)
+            # Views (60-day window when snapshot provides it)
             if rid in report_views:
                 views = int(report_views.get(rid) or 0)
                 views_known = True
@@ -6433,7 +6468,7 @@ def export_inactive_reports(workspace_id):
             if no_history:
                 reasons.append('No refresh history')
 
-            # Rule 3: last 30 days views == 0
+            # Rule 3: last 60 days views == 0
             # Apply when we have an explicit view_count / usage value (including 0).
             if (views_known or report.get('view_count') is not None) and int(views or 0) == 0:
                 reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
@@ -6561,7 +6596,7 @@ def export_inactive_reports(workspace_id):
         # Sheet 1 — candidates
         cand_headers = [
             'Report Name', 'Report ID', 'Dataset', 'Owner',
-            'Views (Last 30 Days)', 'Last Viewed',
+            'Views (Last 60 Days)', 'Last Viewed',
             'Last Refreshed', 'Days Since Refresh', 'Refresh Type', 'Refresh Status',
             'Decommission Reasons', 'Risk Level', 'Recommendation', 'Action Required',
         ]
@@ -6680,7 +6715,7 @@ def export_inactive_reports(workspace_id):
 @login_required
 def get_report_usage(workspace_id):
     """
-    Get report usage metrics (view counts) for the last 30 days using Activity Events API
+    Get report usage metrics (view counts) for the last 60 days using Activity Events API
     Returns view counts per report AND last viewed info (user + timestamp)
 
     NOTE: This endpoint requires service principal authentication with Power BI Admin permissions.
@@ -6709,10 +6744,10 @@ def get_report_usage(workspace_id):
             except Exception as e:
                 print(f"   ⚠️ Cache load error: {e}")
         else:
-            print(f"   🔍 No persistent cache found, will fetch all 30 days")
+            print(f"   🔍 No persistent cache found, will fetch all 60 days")
 
         # Determine which days are missing from cache
-        days_back = 30  # Always track 30 days
+        days_back = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))  # default 60-day views
         max_workers = 30
 
         cached_dates = set(persistent_cache.get('daily_data', {}).keys())
