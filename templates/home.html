@@ -30,30 +30,36 @@
         pointer-events: none;
         display: none;
     }
-    /* Full-bleed forest hero — Mercury start-frame (HQ 3840×1440) */
+    /* Full-bleed forest hero — canvas dive (sharp) + img fallback */
     .mercury-scene {
         position: absolute;
         inset: 0;
         z-index: 0;
         overflow: hidden;
-        /* Laptop screen center in the photo (~50% x, ~57% y) */
-        transform-origin: 50% 57%;
-        will-change: transform;
         background-color: #2a3540;
-        background-image: url("/static/img/mercury-hero.jpg?v=2");
+        background-image: url("/static/img/mercury-hero.jpg?v=3");
         background-repeat: no-repeat;
-        /* Align framing so desk sits lower-center like mercury.com */
         background-position: 50% 52%;
         background-size: cover;
         transition: none;
-        /* Crisper scaled pixels during CSS zoom */
-        -webkit-backface-visibility: hidden;
-        backface-visibility: hidden;
+    }
+    /* Canvas redraws HQ crops each frame — sharp deep zoom (no CSS scale blur) */
+    .mercury-scene-canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+        z-index: 2;
+        opacity: 0;
+        pointer-events: none;
+        /* GPU layer for smooth composites */
         transform: translateZ(0);
     }
-    .mercury-landing.is-finishing .mercury-scene {
-        transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+    .mercury-scene.has-canvas .mercury-scene-canvas {
+        opacity: 1;
     }
+    /* Img is poster + fallback if canvas can't init */
     .mercury-scene-photo {
         position: absolute;
         inset: 0;
@@ -65,11 +71,16 @@
         opacity: 1;
         pointer-events: none;
         z-index: 1;
-        /* Prefer quality over speed when browser scales the bitmap */
-        image-rendering: -webkit-optimize-contrast;
         image-rendering: high-quality;
-        -ms-interpolation-mode: bicubic;
         transform: translateZ(0);
+        /* CSS scale only used in fallback mode */
+        transform-origin: 50% 57%;
+    }
+    .mercury-scene.has-canvas .mercury-scene-photo {
+        opacity: 0;
+    }
+    .mercury-landing.is-finishing .mercury-scene-photo {
+        transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
     }
     /* Light vignette for headline readability */
     .mercury-scene::after {
@@ -207,6 +218,9 @@
         .mercury-landing.is-finishing { transition: none !important; }
         .mercury-scroll-hint .chev { animation: none !important; }
         .mercury-scene { transform: none !important; transition: none !important; }
+        .mercury-scene-photo { transform: none !important; }
+        .mercury-scene-canvas { display: none !important; }
+        .mercury-scene.has-canvas .mercury-scene-photo { opacity: 1 !important; }
     }
     @media (max-width: 720px) {
         .mercury-title { font-size: 30px; max-width: 14ch; }
@@ -724,16 +738,18 @@
 {% block content %}
 {% if show_login_landing %}
 <div id="mercuryLanding" class="mercury-landing" role="dialog" aria-label="Welcome — scroll to enter">
-    <!-- Scene zooms on wheel (progress 0→1). No document scroll.
-         Real mercury.com forest start-frame (desk + laptop on misty ridge). -->
+    <!-- Wheel progress 0→1 drives canvas crop dive into laptop (sharp).
+         Img is poster + CSS-scale fallback if canvas unavailable. -->
     <div class="mercury-scene" id="mercuryScene" aria-hidden="true">
         <img
             class="mercury-scene-photo"
-            src="/static/img/mercury-hero.jpg?v=2"
+            id="mercuryPhoto"
+            src="/static/img/mercury-hero.jpg?v=3"
             alt=""
             decoding="async"
             fetchpriority="high"
         />
+        <canvas class="mercury-scene-canvas" id="mercuryCanvas" aria-hidden="true"></canvas>
     </div>
     <div class="mercury-chrome">
         <div class="mercury-nav">
@@ -1080,35 +1096,45 @@
     }
 
     function runMercuryLanding() {
-        // Fixed viewport: wheel zooms forest → full laptop, THEN fade to Home.
-        // Landing stays opaque the whole way (covers Home underneath).
+        // Fixed viewport: wheel drives a sharp canvas crop-dive into the laptop,
+        // then fade to Home. Img is poster + CSS-scale fallback only.
         const landing = document.getElementById('mercuryLanding');
         if (!landing) return;
         const scene = document.getElementById('mercuryScene');
-        const photo = landing.querySelector('.mercury-scene-photo');
+        const photo = document.getElementById('mercuryPhoto') || landing.querySelector('.mercury-scene-photo');
+        const canvas = document.getElementById('mercuryCanvas');
         const copy = document.getElementById('mercuryCopy');
         const hint = document.getElementById('mercuryHint');
         const brand = landing.querySelector('.mercury-brand');
         const skipBtn = document.getElementById('mercurySkip');
         const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-        // Max zoom kept moderate so the still stays crisp (Mercury uses video frames
-        // for deep zoom; we only have a still — past ~2.8× looks soft).
-        // Scale goes 1 → 1+MAX_SCALE (= ~2.75×).
-        const MAX_SCALE = 1.75;
-        const COPY_FADE_BY = 0.36;
-        const HINT_FADE_BY = 0.18;
-        const DEEP_AT = 0.55;
-        const FINISH_AT = 0.99;
+        // Zoom factor on the source image: 1 → MAX_ZOOM (canvas crops stay sharp).
+        // CSS fallback uses a milder max so blur is limited if canvas fails.
+        const MAX_ZOOM = 5.2;          // deep into laptop screen via crop
+        const FALLBACK_MAX_SCALE = 1.75;
+        const COPY_FADE_BY = 0.34;
+        const HINT_FADE_BY = 0.16;
+        const DEEP_AT = 0.5;
+        const FINISH_AT = 0.988;
+        // Focal point in image natural coords (laptop screen center ≈ 50% × 57%)
+        const FOCUS_X = 0.50;
+        const FOCUS_Y = 0.57;
 
         let progress = 0;
+        let target = 0;
         let done = false;
         let touchY = null;
         let raf = 0;
-        let target = 0; // smoothed progress target
+        let useCanvas = false;
+        let ctx = null;
+        let imgReady = false;
+        let dpr = Math.min(window.devicePixelRatio || 1, 2);
+        let cssW = 0;
+        let cssH = 0;
+        let onResize = null;
 
         const clamp01 = (v) => Math.max(0, Math.min(1, v));
-        // Ease-out cubic: quick early dive, settles into laptop
         const ease = (t) => 1 - Math.pow(1 - t, 3);
 
         const detach = () => {
@@ -1116,11 +1142,66 @@
             window.removeEventListener('keydown', onKey);
             landing.removeEventListener('touchstart', onTouchStart);
             landing.removeEventListener('touchmove', onTouchMove);
+            if (onResize) window.removeEventListener('resize', onResize);
             if (raf) cancelAnimationFrame(raf);
         };
 
         const unlockBody = () => {
             document.body.classList.remove('mercury-landing-open');
+        };
+
+        const sizeCanvas = () => {
+            if (!canvas || !ctx) return;
+            cssW = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+            cssH = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+            dpr = Math.min(window.devicePixelRatio || 1, 2);
+            const bw = Math.round(cssW * dpr);
+            const bh = Math.round(cssH * dpr);
+            if (canvas.width !== bw || canvas.height !== bh) {
+                canvas.width = bw;
+                canvas.height = bh;
+            }
+            // Reset transform after resize (device pixel buffer)
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+        };
+
+        // Cover-fit source rect at a given zoom, focused on laptop
+        const sourceRect = (zoom) => {
+            const iw = photo.naturalWidth;
+            const ih = photo.naturalHeight;
+            const viewAspect = cssW / cssH;
+            // Base cover size (zoom=1): fill viewport without letterboxing
+            let baseW, baseH;
+            if ((iw / ih) > viewAspect) {
+                baseH = ih;
+                baseW = ih * viewAspect;
+            } else {
+                baseW = iw;
+                baseH = iw / viewAspect;
+            }
+            const sw = baseW / zoom;
+            const sh = baseH / zoom;
+            let sx = FOCUS_X * iw - sw / 2;
+            let sy = FOCUS_Y * ih - sh / 2;
+            sx = Math.max(0, Math.min(iw - sw, sx));
+            sy = Math.max(0, Math.min(ih - sh, sy));
+            return { sx, sy, sw, sh };
+        };
+
+        const drawCanvas = (t) => {
+            if (!useCanvas || !ctx || !imgReady) return;
+            const zoom = 1 + t * (MAX_ZOOM - 1);
+            const { sx, sy, sw, sh } = sourceRect(zoom);
+            ctx.clearRect(0, 0, cssW, cssH);
+            try {
+                ctx.drawImage(photo, sx, sy, sw, sh, 0, 0, cssW, cssH);
+            } catch (e) {
+                // Rare CORS/taint — fall back silently
+                useCanvas = false;
+                if (scene) scene.classList.remove('has-canvas');
+            }
         };
 
         const finish = () => {
@@ -1129,9 +1210,11 @@
             progress = 1;
             target = 1;
             try {
-                if (scene) {
-                    // End right on the laptop screen, not past into mush
-                    scene.style.transform = `scale(${1 + MAX_SCALE}) translateZ(0)`;
+                const t = 1;
+                if (useCanvas) {
+                    drawCanvas(t);
+                } else if (photo) {
+                    photo.style.transform = `scale(${1 + FALLBACK_MAX_SCALE}) translateZ(0)`;
                 }
                 landing.style.opacity = '';
                 landing.classList.add('is-deep', 'is-finishing');
@@ -1150,14 +1233,7 @@
             setTimeout(unlockBody, 900);
         };
 
-        const paint = () => {
-            if (done) return;
-            const t = ease(progress);
-
-            if (scene) {
-                // translateZ(0) promotes layer → sharper compositing on GPU
-                scene.style.transform = `scale(${1 + t * MAX_SCALE}) translateZ(0)`;
-            }
+        const paintChrome = (t) => {
             if (copy) {
                 const fade = clamp01(1 - progress / COPY_FADE_BY);
                 copy.style.opacity = String(fade);
@@ -1171,12 +1247,22 @@
             const chromeFade = progress < 0.4 ? 1 : clamp01(1 - (progress - 0.4) / 0.45);
             if (brand) brand.style.opacity = String(chromeFade);
             if (skipBtn) skipBtn.style.opacity = '1';
-
             if (progress >= DEEP_AT) landing.classList.add('is-deep');
             else landing.classList.remove('is-deep');
         };
 
-        // Smooth interpolation toward target for less jank / blur streaking
+        const paint = () => {
+            if (done) return;
+            const t = ease(progress);
+            if (useCanvas) {
+                drawCanvas(t);
+            } else if (photo) {
+                // Fallback: mild CSS scale (same path as before canvas)
+                photo.style.transform = `scale(${1 + t * FALLBACK_MAX_SCALE}) translateZ(0)`;
+            }
+            paintChrome(t);
+        };
+
         const tick = () => {
             raf = 0;
             if (done) return;
@@ -1202,7 +1288,6 @@
         const onWheel = (e) => {
             if (done) return;
             e.preventDefault();
-            // ~8–12 notches to fill laptop; smaller steps = smoother dive
             const step = Math.max(-0.035, Math.min(0.035, e.deltaY / 1800));
             bump(step);
         };
@@ -1233,11 +1318,38 @@
             }
         };
 
-        // If the hero image 404s, log it — CSS bg is the fallback paint path
+        const enableCanvas = () => {
+            if (!canvas || !photo || !photo.naturalWidth) return false;
+            try {
+                ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+                if (!ctx) return false;
+                imgReady = true;
+                useCanvas = true;
+                sizeCanvas();
+                if (scene) scene.classList.add('has-canvas');
+                onResize = () => {
+                    if (done) return;
+                    sizeCanvas();
+                    paint();
+                };
+                window.addEventListener('resize', onResize);
+                return true;
+            } catch (e) {
+                useCanvas = false;
+                return false;
+            }
+        };
+
         if (photo) {
             photo.addEventListener('error', () => {
                 console.warn('Mercury hero image failed to load:', photo.src);
             }, { once: true });
+            const tryInit = () => {
+                if (photo.naturalWidth > 0) enableCanvas();
+                paint();
+            };
+            if (photo.complete && photo.naturalWidth > 0) tryInit();
+            else photo.addEventListener('load', tryInit, { once: true });
         }
 
         document.body.classList.add('mercury-landing-open');
@@ -1255,7 +1367,6 @@
         window.addEventListener('wheel', onWheel, { passive: false });
         landing.addEventListener('touchstart', onTouchStart, { passive: true });
         landing.addEventListener('touchmove', onTouchMove, { passive: false });
-        // Click on scene nudges zoom; never traps user (Skip always works)
         landing.addEventListener('click', (e) => {
             if (e.target.closest('#mercurySkip')) return;
             if (progress < 0.92) bump(0.07);
