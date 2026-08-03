@@ -168,7 +168,7 @@
       </div>
     </aside>
 
-    <!-- REPORT DETAIL DRAWER -->
+    <!-- REPORT DETAIL DRAWER (legacy path; kept for optional workspace views) -->
     <aside id="reportDrawer" class="drawer report-drawer-wide hidden" aria-hidden="true">
       <div class="drawer-head">
         <div>
@@ -181,6 +181,27 @@
       <div id="reportDrawerBody"></div>
     </aside>
     <div id="drawerBackdrop" class="backdrop hidden"></div>
+
+    <!-- MODEL DETAILS MODAL (from affected report click) -->
+    <div id="modelModal" class="column-modal model-modal hidden" aria-hidden="true" role="dialog" aria-modal="true">
+      <div class="column-modal-card model-modal-card">
+        <div class="model-modal-head">
+          <div class="model-modal-titles">
+            <div class="eyebrow">Semantic model</div>
+            <h2 id="modelModalTitle">—</h2>
+            <div id="modelModalSub" class="muted small"></div>
+          </div>
+          <button type="button" id="closeModelModal" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div id="modelModalTabs" class="model-tabs" role="tablist"></div>
+        <div id="modelModalBody" class="model-modal-body">
+          <div class="muted small">Select a report to load model details…</div>
+        </div>
+        <div class="model-modal-foot">
+          <button type="button" id="closeModelModalBtn" class="btn secondary sm">Close</button>
+        </div>
+      </div>
+    </div>
   </div>
   <script src="app.js"></script>
 </body>

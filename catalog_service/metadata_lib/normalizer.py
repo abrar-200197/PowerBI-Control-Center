@@ -186,6 +186,8 @@ def normalize_workspaces(raw_workspaces: List[Dict[str, Any]]) -> Dict[str, Any]
                     "serverName": display.get("serverName"),
                     "sqlSourceTables": display.get("sqlSourceTables") or [],
                     "sqlQuery": display.get("sqlQuery"),
+                    "fileName": display.get("fileName"),
+                    "sourceUrl": display.get("sourceUrl"),
                     "columnCount": len(columns),
                     "measureCount": len(measures),
                     "columns": columns,

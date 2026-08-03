@@ -993,6 +993,61 @@ def api_catalog_impact_lookup():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/catalog/impact/model-details')
+@login_required
+def api_catalog_impact_model_details():
+    """
+    Thin semantic-model payload for Impact Explorer popup.
+    Catalog-only (no full workspace_catalog in browser). Optional focus_table
+    highlights the impact table the user came from.
+    """
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
+    dataset_id = (request.args.get('dataset_id') or '').strip()
+    workspace_id = (request.args.get('workspace_id') or '').strip()
+    focus_table = (request.args.get('focus_table') or request.args.get('table') or '').strip()
+    model_table = (request.args.get('model_table') or '').strip()
+    report_name = (request.args.get('report_name') or '').strip()
+    report_id = (request.args.get('report_id') or '').strip()
+    if not dataset_id:
+        return jsonify({'success': False, 'error': 'dataset_id required'}), 400
+    try:
+        allowed = _user_allowed_workspace_ids()
+        if allowed is not None and len(allowed) > 0 and workspace_id and workspace_id not in allowed:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
+        details = catalog_service.impact_model_details(
+            dataset_id=dataset_id,
+            workspace_id=workspace_id,
+            focus_table=focus_table,
+            model_table_name=model_table,
+        )
+        if not details:
+            return jsonify({
+                'success': False,
+                'error': 'Dataset not found in catalog. Run a fresh extract if this model is new.',
+            }), 404
+
+        # ACL: if no workspace_id was passed, still enforce when we resolved one
+        ws_resolved = details.get('workspaceId') or workspace_id
+        if allowed is not None and len(allowed) > 0 and ws_resolved and ws_resolved not in allowed:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
+        payload = {
+            'success': True,
+            'source': 'catalog',
+            'reportName': report_name or None,
+            'reportId': report_id or None,
+            **details,
+        }
+        resp = jsonify(payload)
+        resp.headers['Cache-Control'] = 'private, max-age=60'
+        resp.headers['X-Data-Source'] = 'catalog-impact-model'
+        return resp
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/home-summary')
 @login_required
 def api_home_summary():
@@ -4842,7 +4897,11 @@ def _normalize_semantic_tables(tables):
             'measures': measures,
             'sourceTypeLabel': table.get('sourceTypeLabel'),
             'serverName': table.get('serverName'),
-            'sqlSourceTables': table.get('sqlSourceTables'),
+            'sqlSourceTables': table.get('sqlSourceTables') or [],
+            'sqlQuery': table.get('sqlQuery') or '',
+            'fileName': table.get('fileName') or '',
+            'sourceUrl': table.get('sourceUrl') or '',
+            'sourceExpression': table.get('sourceExpression') or '',
         })
     return out
 

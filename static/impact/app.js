@@ -3,10 +3,11 @@
  *
  * Architecture: browser NEVER downloads SharePoint or large catalog files.
  * Server holds SP source-of-truth + disk mirror; UI calls thin APIs only:
- *   GET /api/catalog/impact/tables   — flat rows for grid
- *   GET /api/catalog/impact/table    — one table drawer detail
- *   GET /api/catalog/impact/lookup   — name search with blast radius
- *   GET /api/catalog/data/summary.json — small stats
+ *   GET /api/catalog/impact/tables         — flat rows for grid
+ *   GET /api/catalog/impact/table          — one table drawer detail
+ *   GET /api/catalog/impact/lookup         — name search with blast radius
+ *   GET /api/catalog/impact/model-details  — one semantic model popup
+ *   GET /api/catalog/data/summary.json     — small stats
  */
 const state = {
   rows: [],
@@ -22,10 +23,18 @@ const state = {
   selectedWorkspaceId: null,
   wsReportFilter: "",
   _reportTables: [],
+  _modelDetails: null,
+  _modelTab: "focus",
 };
 
 const $ = (sel) => document.querySelector(sel);
 const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString());
+const cssEsc = (s) => {
+  try {
+    if (window.CSS && typeof CSS.escape === "function") return CSS.escape(String(s));
+  } catch (_) { /* ignore */ }
+  return String(s).replace(/["\\]/g, "\\$&");
+};
 
 function sourceClass(t) {
   const x = (t || "").toLowerCase();
@@ -593,9 +602,12 @@ async function openDrawer(tableKey) {
       if (!map.has(id)) {
         map.set(id, {
           ...rep,
-          datasetName: ds.datasetName,
+          datasetId: ds.datasetId || rep.datasetId || "",
+          datasetName: ds.datasetName || "",
+          workspaceId: rep.workspaceId || ds.workspaceId || "",
+          workspaceName: rep.workspaceName || ds.workspaceName || "",
           datasetWorkspace: ds.workspaceName,
-          modelTableName: ds.modelTableName,
+          modelTableName: ds.modelTableName || "",
         });
       }
     }
@@ -609,12 +621,41 @@ async function openDrawer(tableKey) {
   $("#drawerDatasets").innerHTML = datasets
     .slice()
     .sort((a, b) => (b.reports?.length || 0) - (a.reports?.length || 0))
-    .map((d) => `<div class="list-item"><strong>${escapeHtml(d.datasetName || d.datasetId)}</strong>
-      <div class="sub">${escapeHtml(d.workspaceName || "")}<br/>
-        Power BI table name in this model: <strong>${escapeHtml(d.modelTableName || "—")}</strong>
-        ${physical ? `<br/>Source object: <strong>${escapeHtml(row.table || "—")}</strong>` : ""}
-        · ${(d.reports || []).length} reports</div></div>`)
+    .map((d) => `<div class="list-item list-item-clickable" data-ds-open="1"
+        data-dataset-id="${escapeAttr(d.datasetId || "")}"
+        data-workspace-id="${escapeAttr(d.workspaceId || "")}"
+        data-dataset-name="${escapeAttr(d.datasetName || "")}"
+        data-workspace-name="${escapeAttr(d.workspaceName || "")}"
+        data-model-table="${escapeAttr(d.modelTableName || "")}">
+      <div class="list-item-main">
+        <button type="button" class="linkish ds-open">${escapeHtml(d.datasetName || d.datasetId)}</button>
+        <div class="sub">${escapeHtml(d.workspaceName || "")}<br/>
+          Power BI table name in this model: <strong>${escapeHtml(d.modelTableName || "—")}</strong>
+          ${physical ? `<br/>Source object: <strong>${escapeHtml(row.table || "—")}</strong>` : ""}
+          · ${(d.reports || []).length} reports</div>
+      </div>
+      <button type="button" class="btn ghost sm ds-open">View model</button>
+    </div>`)
     .join("") || `<div class="muted">No datasets</div>`;
+
+  $("#drawerDatasets").querySelectorAll("[data-ds-open]").forEach((root) => {
+    const open = (ev) => {
+      if (ev) ev.stopPropagation();
+      openModelModal({
+        datasetId: root.getAttribute("data-dataset-id"),
+        workspaceId: root.getAttribute("data-workspace-id"),
+        datasetName: root.getAttribute("data-dataset-name"),
+        workspaceName: root.getAttribute("data-workspace-name"),
+        modelTableName: root.getAttribute("data-model-table"),
+        reportName: "",
+        reportId: "",
+      });
+    };
+    root.addEventListener("click", (ev) => {
+      // Single open path for row or inner button
+      open(ev);
+    });
+  });
 }
 
 function renderDrawerReports() {
@@ -622,19 +663,370 @@ function renderDrawerReports() {
   const list = state.drawerReports.filter((r) =>
     !q || `${r.reportName} ${r.workspaceName} ${r.datasetName}`.toLowerCase().includes(q)
   );
-  $("#drawerReports").innerHTML = list.map((r) => `
-    <div class="list-item">
-      <strong>${escapeHtml(r.reportName || r.reportId || "—")}</strong>
-      <div class="sub">${escapeHtml(r.workspaceName || "")} · via ${escapeHtml(r.datasetName || "")}</div>
-    </div>`).join("") || `<div class="muted small">No reports</div>`;
+  $("#drawerReports").innerHTML = list.map((r, i) => {
+    const rid = r.reportId || "";
+    const rname = r.reportName || r.reportId || "—";
+    const ws = r.workspaceName || "";
+    const ds = r.datasetName || "";
+    const dsId = r.datasetId || "";
+    const wsId = r.workspaceId || "";
+    const modelTable = r.modelTableName || "";
+    return `
+    <div class="list-item list-item-clickable" data-report-idx="${i}" title="View semantic model details">
+      <div class="list-item-main">
+        <button type="button" class="linkish report-open" data-report-idx="${i}">${escapeHtml(rname)}</button>
+        <div class="sub">
+          ${escapeHtml(ws)}${ws && ds ? " · " : ""}${ds ? `Model: <button type="button" class="linkish inline-link model-open" data-report-idx="${i}">${escapeHtml(ds)}</button>` : ""}
+          ${modelTable ? `<span class="muted"> · table ${escapeHtml(modelTable)}</span>` : ""}
+        </div>
+      </div>
+      <button type="button" class="btn ghost sm model-open" data-report-idx="${i}"
+        data-dataset-id="${escapeAttr(dsId)}" data-workspace-id="${escapeAttr(wsId)}"
+        data-report-id="${escapeAttr(rid)}" data-report-name="${escapeAttr(rname)}"
+        data-model-table="${escapeAttr(modelTable)}">View model</button>
+    </div>`;
+  }).join("") || `<div class="muted small">No reports</div>`;
+
+  $("#drawerReports").querySelectorAll(".report-open, .model-open, .list-item-clickable").forEach((el) => {
+    el.addEventListener("click", (ev) => {
+      // Avoid double-fire when clicking inner button inside the row
+      if (el.classList.contains("list-item-clickable") && ev.target.closest("button")) return;
+      const idx = Number(el.getAttribute("data-report-idx"));
+      const rep = state.drawerReports[idx];
+      if (!rep) return;
+      openModelModal({
+        datasetId: rep.datasetId,
+        workspaceId: rep.workspaceId,
+        reportId: rep.reportId,
+        reportName: rep.reportName,
+        modelTableName: rep.modelTableName,
+        datasetName: rep.datasetName,
+        workspaceName: rep.workspaceName,
+      });
+    });
+  });
 }
 
 function closeDrawer() {
   $("#drawer").classList.add("hidden");
   $("#drawer").setAttribute("aria-hidden", "true");
-  if ($("#reportDrawer").classList.contains("hidden")) {
+  if ($("#reportDrawer").classList.contains("hidden") && (!$("#modelModal") || $("#modelModal").classList.contains("hidden"))) {
     $("#drawerBackdrop").classList.add("hidden");
   }
+}
+
+function closeModelModal() {
+  const modal = $("#modelModal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  modal.setAttribute("aria-hidden", "true");
+  state._modelDetails = null;
+  // Keep table impact drawer; only hide backdrop if nothing open
+  if ($("#drawer").classList.contains("hidden") && $("#reportDrawer").classList.contains("hidden")) {
+    $("#drawerBackdrop").classList.add("hidden");
+  }
+}
+
+async function openModelModal(ctx) {
+  const modal = $("#modelModal");
+  if (!modal) return;
+  if (!ctx.datasetId) {
+    alert("No semantic model id on this report — cannot load details.");
+    return;
+  }
+
+  const focusRow = state.rows.find((r) => r.tableKey === state.selectedKey) || {};
+  const focusTable = focusRow.table || "";
+  const focusAliases = focusRow.modelTableNames || [];
+
+  $("#modelModalTitle").textContent = ctx.datasetName || "Semantic model";
+  $("#modelModalSub").innerHTML = [
+    ctx.workspaceName ? escapeHtml(ctx.workspaceName) : "",
+    ctx.reportName ? `Report: <strong>${escapeHtml(ctx.reportName)}</strong>` : "",
+    focusTable || ctx.modelTableName
+      ? `Focused on <strong>${escapeHtml(ctx.modelTableName || focusTable)}</strong>`
+      : "",
+  ].filter(Boolean).join(" · ");
+
+  state._modelTab = "focus";
+  state._modelDetails = null;
+  $("#modelModalTabs").innerHTML = "";
+  $("#modelModalBody").innerHTML = `<div class="muted small" style="padding:12px 0">Loading model details from catalog…</div>`;
+  modal.classList.remove("hidden");
+  modal.setAttribute("aria-hidden", "false");
+  // Keep drawer backdrop so impact drawer stays dimmed underneath
+  $("#drawerBackdrop").classList.remove("hidden");
+
+  const params = new URLSearchParams({
+    dataset_id: ctx.datasetId || "",
+    workspace_id: ctx.workspaceId || "",
+    focus_table: focusTable || ctx.modelTableName || "",
+    model_table: ctx.modelTableName || "",
+    report_name: ctx.reportName || "",
+    report_id: ctx.reportId || "",
+  });
+
+  try {
+    const res = await fetchJsonNoCache(
+      `/api/catalog/impact/model-details?${params.toString()}`,
+      { timeoutMs: 120000 }
+    );
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.success) {
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    // If server focus miss but we have aliases, mark matching tables client-side
+    if (!(body.focusTables || []).length && (focusAliases.length || focusTable || ctx.modelTableName)) {
+      const needles = new Set(
+        [focusTable, ctx.modelTableName, ...focusAliases].filter(Boolean).map((s) => String(s).toLowerCase())
+      );
+      body.focusTables = (body.tables || []).filter((t) => needles.has(String(t.name || "").toLowerCase()));
+      body.focusTables.forEach((t) => { t.isFocus = true; });
+    }
+    state._modelDetails = body;
+    if ($("#modelModalTitle") && body.datasetName) {
+      $("#modelModalTitle").textContent = body.datasetName;
+    }
+    if ($("#modelModalSub")) {
+      const ws = body.workspaceName || ctx.workspaceName || "";
+      const focusLabel = (body.focusTables && body.focusTables[0]?.name)
+        || ctx.modelTableName
+        || focusTable
+        || body.focusTable
+        || "";
+      $("#modelModalSub").innerHTML = [
+        ws ? escapeHtml(ws) : "",
+        ctx.reportName ? `Report: <strong>${escapeHtml(ctx.reportName)}</strong>` : "",
+        focusLabel ? `Focused on <strong>${escapeHtml(focusLabel)}</strong>` : "",
+        body.tableCount != null ? `${fmt(body.tableCount)} tables` : "",
+      ].filter(Boolean).join(" · ");
+    }
+    // Default tab: focused table if any, else all tables
+    state._modelTab = (body.focusTables || []).length ? "focus" : "all";
+    renderModelModal();
+  } catch (e) {
+    console.warn("model-details failed", e);
+    $("#modelModalBody").innerHTML = `<div class="callout" style="border-color:#FCA5A5;color:#991B1B">
+      Could not load model details: ${escapeHtml(e.message || String(e))}
+    </div>`;
+  }
+}
+
+function renderModelModal() {
+  const body = state._modelDetails;
+  if (!body) return;
+  const focusTables = body.focusTables || [];
+  const allTables = body.tables || [];
+  const measures = body.measures || [];
+  const hasFocus = focusTables.length > 0;
+
+  const tabs = [
+    hasFocus ? { id: "focus", label: `This table (${focusTables.length})` } : null,
+    { id: "all", label: `All tables (${allTables.length})` },
+    { id: "measures", label: `Measures (${measures.length})` },
+  ].filter(Boolean);
+
+  if (!tabs.find((t) => t.id === state._modelTab)) {
+    state._modelTab = tabs[0]?.id || "all";
+  }
+
+  $("#modelModalTabs").innerHTML = tabs.map((t) => `
+    <button type="button" class="model-tab ${state._modelTab === t.id ? "active" : ""}" data-tab="${t.id}" role="tab" aria-selected="${state._modelTab === t.id}">
+      ${escapeHtml(t.label)}
+    </button>`).join("");
+
+  $("#modelModalTabs").querySelectorAll("[data-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state._modelTab = btn.getAttribute("data-tab");
+      renderModelModal();
+    });
+  });
+
+  const pane = $("#modelModalBody");
+  if (state._modelTab === "measures") {
+    pane.innerHTML = renderMeasuresPane(measures);
+  } else if (state._modelTab === "focus") {
+    pane.innerHTML = focusTables.length
+      ? focusTables.map((t, i) => renderFocusTableCard(t, i)).join("")
+      : `<div class="muted small">No matching table for this impact key in the model. Open <strong>All tables</strong>.</div>`;
+  } else {
+    pane.innerHTML = renderAllTablesPane(allTables);
+  }
+
+  // Wire SQL / copy / expand actions
+  pane.querySelectorAll("[data-view-sql]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.getAttribute("data-view-sql");
+      const pre = pane.querySelector(`[data-sql-full="${cssEsc(key)}"]`);
+      if (pre) pre.classList.toggle("hidden");
+      btn.textContent = pre && !pre.classList.contains("hidden") ? "Hide SQL" : "View full SQL";
+    });
+  });
+  pane.querySelectorAll("[data-copy-sql]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const key = btn.getAttribute("data-copy-sql");
+      const pre = pane.querySelector(`[data-sql-full="${cssEsc(key)}"]`);
+      const text = pre?.textContent || btn.getAttribute("data-sql-text") || "";
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = "Copied";
+        setTimeout(() => { btn.textContent = "Copy SQL"; }, 1200);
+      } catch (_) { /* ignore */ }
+    });
+  });
+  pane.querySelectorAll("[data-toggle-cols]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.getAttribute("data-toggle-cols");
+      const box = pane.querySelector(`[data-cols="${cssEsc(key)}"]`);
+      if (!box) return;
+      box.classList.toggle("hidden");
+      btn.textContent = box.classList.contains("hidden") ? "Show columns" : "Hide columns";
+    });
+  });
+  pane.querySelectorAll("[data-toggle-expr]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.getAttribute("data-toggle-expr");
+      const box = pane.querySelector(`[data-expr="${cssEsc(key)}"]`);
+      if (!box) return;
+      box.classList.toggle("hidden");
+      btn.textContent = box.classList.contains("hidden") ? "Show expression" : "Hide expression";
+    });
+  });
+}
+
+function renderFocusTableCard(t, idx) {
+  const key = `f${idx}`;
+  const st = t.sourceTypeLabel || "Unknown";
+  const sql = t.sqlQuery || "";
+  const url = t.sourceUrl || "";
+  const file = t.fileName || "";
+  const server = t.serverName || "";
+  const srcTables = (t.sqlSourceTables || []).join(", ");
+  const cols = t.columns || [];
+  const meas = t.measures || [];
+
+  let sourceBlock = "";
+  if (sql) {
+    sourceBlock = `
+      <div class="source-block">
+        <div class="source-label">SQL query</div>
+        <div class="sql-preview mono">${escapeHtml(sql.slice(0, 220))}${sql.length > 220 ? "…" : ""}</div>
+        <div class="sql-actions">
+          <button type="button" class="btn primary sm" data-view-sql="${key}">View full SQL</button>
+          <button type="button" class="btn secondary sm" data-copy-sql="${key}">Copy SQL</button>
+        </div>
+        <pre class="sql-full mono hidden" data-sql-full="${key}">${escapeHtml(sql)}</pre>
+      </div>`;
+  } else if (url) {
+    sourceBlock = `
+      <div class="source-block">
+        <div class="source-label">File / SharePoint source</div>
+        ${file ? `<div class="mono small" style="margin-bottom:6px">${escapeHtml(file)}</div>` : ""}
+        <a class="source-link" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">Open source link</a>
+      </div>`;
+  } else if (t.sourceExpression) {
+    sourceBlock = `
+      <div class="source-block">
+        <div class="source-label">Power Query / expression</div>
+        <button type="button" class="btn secondary sm" data-toggle-expr="${key}">Show expression</button>
+        <pre class="sql-full mono hidden" data-expr="${key}">${escapeHtml(t.sourceExpression)}</pre>
+      </div>`;
+  } else {
+    sourceBlock = `<div class="muted small">No SQL or file link stored for this table in the catalog.</div>`;
+  }
+
+  const measHtml = meas.length
+    ? `<div class="source-block"><div class="source-label">Measures on this table (${meas.length})</div>
+        <ul class="measure-list">${meas.slice(0, 40).map((m) => `
+          <li><strong>${escapeHtml(m.name || "—")}</strong>
+            ${m.expression ? `<pre class="dax-snip mono">${escapeHtml(String(m.expression).slice(0, 280))}${String(m.expression).length > 280 ? "…" : ""}</pre>` : ""}
+          </li>`).join("")}
+        </ul></div>`
+    : "";
+
+  return `
+    <div class="focus-card">
+      <div class="focus-card-head">
+        <strong>${escapeHtml(t.name || "—")}</strong>
+        <span class="pill ${sourceTypePillClass(st)}">${escapeHtml(st)}</span>
+      </div>
+      <div class="kv-grid compact">
+        <div class="k">Server / path</div><div class="v mono small">${escapeHtml(server || "—")}</div>
+        <div class="k">Source tables / file</div><div class="v mono small">${escapeHtml(srcTables || file || "—")}</div>
+        <div class="k">Columns</div><div class="v">${fmt(cols.length)}
+          ${cols.length ? `<button type="button" class="btn ghost sm" data-toggle-cols="${key}" style="margin-left:8px">Show columns</button>` : ""}
+        </div>
+      </div>
+      <div class="cols-box hidden" data-cols="${key}">
+        <table class="mini-table"><thead><tr><th>Column</th><th>Type</th></tr></thead>
+        <tbody>${cols.map((c) => `<tr><td>${escapeHtml(c.name || "")}</td><td class="mono small">${escapeHtml(c.dataType || "")}</td></tr>`).join("")}</tbody></table>
+      </div>
+      ${sourceBlock}
+      ${measHtml}
+    </div>`;
+}
+
+function renderAllTablesPane(tables) {
+  if (!tables.length) return `<div class="muted small">No tables in catalog for this model.</div>`;
+  const rows = tables.map((t, idx) => {
+    const st = t.sourceTypeLabel || "Unknown";
+    const sql = t.sqlQuery || "";
+    const url = t.sourceUrl || "";
+    const file = t.fileName || "";
+    const key = `a${idx}`;
+    let qCell = `<span class="muted">—</span>`;
+    if (sql) {
+      qCell = `<div class="sql-preview mono">${escapeHtml(sql.slice(0, 100))}${sql.length > 100 ? "…" : ""}</div>
+        <div class="sql-actions">
+          <button type="button" class="btn primary sm" data-view-sql="${key}">View full SQL</button>
+          <button type="button" class="btn secondary sm" data-copy-sql="${key}">Copy SQL</button>
+        </div>
+        <pre class="sql-full mono hidden" data-sql-full="${key}">${escapeHtml(sql)}</pre>`;
+    } else if (url) {
+      qCell = `${file ? `<div class="mono small">${escapeHtml(file)}</div>` : ""}
+        <a class="source-link" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">Open source</a>`;
+    } else if (t.sourceExpression) {
+      qCell = `<button type="button" class="btn ghost sm" data-toggle-expr="${key}">Expression</button>
+        <pre class="sql-full mono hidden" data-expr="${key}">${escapeHtml(t.sourceExpression)}</pre>`;
+    }
+    return `<tr class="${t.isFocus ? "is-focus-row" : ""}">
+      <td><strong>${escapeHtml(t.name || "—")}</strong>
+        <div class="muted small">${fmt(t.columnCount)} cols · ${fmt(t.measureCount)} measures</div></td>
+      <td><span class="pill ${sourceTypePillClass(st)}">${escapeHtml(st)}</span></td>
+      <td class="mono small">${escapeHtml(t.serverName || "—")}</td>
+      <td class="mono small">${escapeHtml((t.sqlSourceTables || []).join(", ") || file || "—")}</td>
+      <td class="sql-cell">${qCell}</td>
+    </tr>`;
+  }).join("");
+
+  return `
+    <div class="table-wrap model-table-wrap">
+      <table class="model-lineage-table">
+        <thead>
+          <tr>
+            <th>Model table</th>
+            <th>Source</th>
+            <th>Server / path</th>
+            <th>Source object</th>
+            <th>SQL / link</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="muted small" style="margin-top:8px">Highlighted rows match the impact table you opened from.</p>`;
+}
+
+function renderMeasuresPane(measures) {
+  if (!measures.length) {
+    return `<div class="muted small">No DAX measures in the catalog for this model.</div>`;
+  }
+  return `<ul class="measure-list full">${measures.map((m) => `
+    <li>
+      <div><strong>${escapeHtml(m.name || "—")}</strong>
+        <span class="muted small"> · ${escapeHtml(m.table || "")}</span></div>
+      ${m.expression ? `<pre class="dax-snip mono">${escapeHtml(m.expression)}</pre>` : ""}
+    </li>`).join("")}</ul>`;
 }
 
 async function runLookup() {
@@ -1072,6 +1464,7 @@ function closeReportDrawer() {
 }
 
 function closeAllDrawers() {
+  closeModelModal();
   closeDrawer();
   closeReportDrawer();
   $("#drawerBackdrop").classList.add("hidden");
@@ -1141,7 +1534,19 @@ function wire() {
   });
   $("#closeDrawer")?.addEventListener("click", closeDrawer);
   $("#closeReportDrawer")?.addEventListener("click", closeReportDrawer);
-  $("#drawerBackdrop")?.addEventListener("click", closeAllDrawers);
+  $("#closeModelModal")?.addEventListener("click", closeModelModal);
+  $("#closeModelModalBtn")?.addEventListener("click", closeModelModal);
+  $("#modelModal")?.addEventListener("click", (e) => {
+    if (e.target === $("#modelModal")) closeModelModal();
+  });
+  $("#drawerBackdrop")?.addEventListener("click", () => {
+    // Backdrop closes model modal first, then drawers
+    if ($("#modelModal") && !$("#modelModal").classList.contains("hidden")) {
+      closeModelModal();
+      return;
+    }
+    closeAllDrawers();
+  });
   $("#drawerReportFilter")?.addEventListener("input", renderDrawerReports);
   $("#copyReportsBtn")?.addEventListener("click", async () => {
     const names = state.drawerReports.map((r) => r.reportName).filter(Boolean).join("\n");
@@ -1159,7 +1564,14 @@ function wire() {
   $("#exportCsvBtn")?.addEventListener("click", () => exportCsv(state.rows, "impact_all_tables.csv"));
   $("#exportFilteredBtn")?.addEventListener("click", () => exportCsv(state.filtered, "impact_filtered_tables.csv"));
   $("#reloadBtn")?.addEventListener("click", () => loadData(true));
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAllDrawers(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if ($("#modelModal") && !$("#modelModal").classList.contains("hidden")) {
+      closeModelModal();
+      return;
+    }
+    closeAllDrawers();
+  });
 }
 
 /** Sync theme from Control Center host (or localStorage). */

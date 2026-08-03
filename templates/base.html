@@ -467,18 +467,138 @@
         html[data-theme="dark"] input,
         html[data-theme="dark"] select,
         html[data-theme="dark"] textarea,
-        html[data-theme="dark"] .select2-container--default .select2-selection--single {
+        html[data-theme="dark"] .control-input,
+        html[data-theme="dark"] input[type="text"],
+        html[data-theme="dark"] input[type="search"],
+        html[data-theme="dark"] input[type="number"] {
             background: var(--input-bg) !important;
             color: var(--text) !important;
             border-color: var(--border) !important;
+            caret-color: var(--text) !important;
         }
-        html[data-theme="dark"] .select2-dropdown {
+        html[data-theme="dark"] input::placeholder,
+        html[data-theme="dark"] textarea::placeholder {
+            color: var(--text-muted) !important;
+            opacity: 1;
+        }
+        /* Browser text selection — always readable */
+        html[data-theme="dark"] ::selection {
+            background: #2B6CB0 !important;
+            color: #F7FAFC !important;
+        }
+        html[data-theme="light"] ::selection {
+            background: #BFDBFE !important;
+            color: #0F172A !important;
+        }
+
+        /* Select2 — closed field + open dropdown (all sections)
+           Select2 CDN ships AFTER page CSS; beat it with html[data-theme] + !important
+           and cover both aria-selected and --selected (v4.1) classes. */
+        html[data-theme="dark"] .select2-container--default .select2-selection--single,
+        html[data-theme="dark"] .select2-container--default .select2-selection--multiple {
+            background: var(--input-bg) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-selection--single .select2-selection__rendered {
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-selection--single .select2-selection__placeholder {
+            color: var(--text-muted) !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-selection--single .select2-selection__arrow b {
+            border-color: var(--text-muted) transparent transparent transparent !important;
+        }
+        html[data-theme="dark"] .select2-container--default.select2-container--open .select2-selection--single .select2-selection__arrow b {
+            border-color: transparent transparent var(--text-muted) transparent !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-selection--multiple .select2-selection__choice {
+            background: var(--chip-bg) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .select2-dropdown,
+        html[data-theme="dark"] .select2-container--open .select2-dropdown {
             background: var(--bg-surface) !important;
             color: var(--text) !important;
             border-color: var(--border) !important;
         }
+        html[data-theme="dark"] .select2-results,
+        html[data-theme="dark"] .select2-results__options {
+            background: var(--bg-surface) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-search--dropdown .select2-search__field {
+            background: var(--input-bg) !important;
+            color: var(--text) !important;
+            border-color: var(--border) !important;
+        }
+        /* Default option rows */
+        html[data-theme="dark"] .select2-container--default .select2-results__option,
+        html[data-theme="dark"] .select2-results__option {
+            background: var(--bg-surface) !important;
+            color: var(--text) !important;
+        }
+        /* Currently selected value in the open list (Select2 uses #ddd + often light text) */
+        html[data-theme="dark"] .select2-container--default .select2-results__option[aria-selected="true"],
+        html[data-theme="dark"] .select2-container--default .select2-results__option[aria-selected=true],
+        html[data-theme="dark"] .select2-container--default .select2-results__option--selected,
+        html[data-theme="dark"] .select2-results__option[aria-selected="true"],
+        html[data-theme="dark"] .select2-results__option--selected {
+            background: #243B53 !important; /* readable navy */
+            color: #F7FAFC !important;
+        }
+        /* Keyboard / mouse hover highlight — solid blue + white text (no pale mix) */
+        html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted[aria-selected],
+        html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted[aria-selected="true"],
+        html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted.select2-results__option--selectable,
+        html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted,
         html[data-theme="dark"] .select2-results__option--highlighted {
-            background: var(--table-hover) !important;
+            background: #2B6CB0 !important;
+            color: #FFFFFF !important;
+        }
+        /* Disabled options */
+        html[data-theme="dark"] .select2-container--default .select2-results__option[aria-disabled="true"] {
+            color: var(--text-muted) !important;
+            background: var(--bg-surface) !important;
+        }
+        /* Native <select> dropdown options (non-Select2) */
+        html[data-theme="dark"] select option,
+        html[data-theme="dark"] select optgroup {
+            background: var(--bg-surface) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] select option:checked,
+        html[data-theme="dark"] select option:hover {
+            background: #2B6CB0 !important;
+            color: #FFFFFF !important;
+        }
+        /* Kill leftover page-level white hardcodes on dark */
+        html[data-theme="dark"] .panel,
+        html[data-theme="dark"] .panel-head,
+        html[data-theme="dark"] .no-data,
+        html[data-theme="dark"] .empty-state,
+        html[data-theme="dark"] .table-container,
+        html[data-theme="dark"] .table-scroll,
+        html[data-theme="dark"] .kpi,
+        html[data-theme="dark"] .card,
+        html[data-theme="dark"] .stat-card {
+            background: var(--bg-surface) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .panel-head {
+            background: var(--bg-surface-2) !important;
+        }
+        html[data-theme="dark"] .panel-head h2,
+        html[data-theme="dark"] .panel-head h3,
+        html[data-theme="dark"] .kpi-value {
+            color: var(--text-strong) !important;
+        }
+        html[data-theme="dark"] .btn-secondary {
+            background: var(--bg-surface-2) !important;
+            color: var(--text) !important;
+            border: 1px solid var(--border) !important;
         }
         html[data-theme="dark"] iframe.impact-frame {
             background: var(--bg-page) !important;
@@ -642,6 +762,95 @@
     </div>
 
     {% block extra_js %}{% endblock %}
+
+    <!-- Loaded last so Select2 CDN + page CSS cannot force light selected rows / white inputs -->
+    <style id="pbi-cc-theme-final">
+        html[data-theme="dark"] input,
+        html[data-theme="dark"] select,
+        html[data-theme="dark"] textarea,
+        html[data-theme="dark"] .control-input {
+            background: var(--input-bg) !important;
+            color: var(--text) !important;
+            border-color: var(--border) !important;
+        }
+        html[data-theme="dark"] ::selection {
+            background: #2B6CB0 !important;
+            color: #F7FAFC !important;
+        }
+        html[data-theme="light"] ::selection {
+            background: #BFDBFE !important;
+            color: #0F172A !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-selection--single,
+        html[data-theme="dark"] .select2-container--default .select2-selection--multiple {
+            background-color: var(--input-bg) !important;
+            background: var(--input-bg) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-selection--single .select2-selection__rendered {
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-selection--single .select2-selection__placeholder {
+            color: var(--text-muted) !important;
+        }
+        html[data-theme="dark"] .select2-dropdown {
+            background-color: var(--bg-surface) !important;
+            background: var(--bg-surface) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-search--dropdown .select2-search__field {
+            background: var(--input-bg) !important;
+            color: var(--text) !important;
+            border-color: var(--border) !important;
+        }
+        html[data-theme="dark"] .select2-container--default .select2-results__option {
+            background-color: var(--bg-surface) !important;
+            background: var(--bg-surface) !important;
+            color: var(--text) !important;
+        }
+        /* Selected value in open list — solid navy, white text (beats Select2 #ddd) */
+        html[data-theme="dark"] .select2-container--default .select2-results__option[aria-selected=true],
+        html[data-theme="dark"] .select2-container--default .select2-results__option[aria-selected="true"],
+        html[data-theme="dark"] .select2-container--default .select2-results__option--selected,
+        html[data-theme="dark"] li.select2-results__option[aria-selected=true],
+        html[data-theme="dark"] li.select2-results__option--selected {
+            background-color: #243B53 !important;
+            background: #243B53 !important;
+            color: #F7FAFC !important;
+        }
+        /* Hover / keyboard highlight — blue bar + white text */
+        html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted,
+        html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted[aria-selected],
+        html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted[aria-selected=true],
+        html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted[aria-selected="true"],
+        html[data-theme="dark"] li.select2-results__option--highlighted {
+            background-color: #2B6CB0 !important;
+            background: #2B6CB0 !important;
+            color: #FFFFFF !important;
+        }
+        html[data-theme="dark"] .panel,
+        html[data-theme="dark"] .no-data,
+        html[data-theme="dark"] .empty-state,
+        html[data-theme="dark"] .table-container,
+        html[data-theme="dark"] .table-scroll,
+        html[data-theme="dark"] .kpi {
+            background: var(--bg-surface) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .panel-head {
+            background: var(--bg-surface-2) !important;
+            border-color: var(--border) !important;
+            color: var(--text) !important;
+        }
+        html[data-theme="dark"] .btn-secondary {
+            background: var(--bg-surface-2) !important;
+            color: var(--text) !important;
+            border-color: var(--border) !important;
+        }
+    </style>
 
     <script>
     (function () {

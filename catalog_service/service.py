@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -546,6 +547,202 @@ class CatalogService:
                 if str(m).lower() == tk:
                     return e
         return None
+
+    def impact_model_details(
+        self,
+        dataset_id: str,
+        workspace_id: str = "",
+        focus_table: str = "",
+        model_table_name: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Thin payload for Impact Explorer model popup.
+        One dataset from workspace_catalog — never ships full catalog to browser.
+        """
+        if not dataset_id:
+            return None
+        cat = self.get_workspace_catalog()
+        if not cat:
+            return None
+
+        dataset = None
+        dmap = cat.get("datasets") or {}
+        if isinstance(dmap, dict):
+            dataset = dmap.get(dataset_id)
+
+        ws_name = ""
+        if workspace_id:
+            for ws in cat.get("workspaces") or []:
+                if ws.get("id") == workspace_id:
+                    ws_name = ws.get("name") or ""
+                    if dataset is None or not (dataset or {}).get("tables"):
+                        for ds in ws.get("datasets") or []:
+                            if ds.get("id") == dataset_id:
+                                dataset = ds
+                                break
+                    break
+
+        if dataset is None and isinstance(dmap, dict):
+            # last resort: any workspace list entry
+            for ws in cat.get("workspaces") or []:
+                for ds in ws.get("datasets") or []:
+                    if ds.get("id") == dataset_id:
+                        dataset = ds
+                        ws_name = ws_name or (ws.get("name") or "")
+                        if not workspace_id:
+                            workspace_id = ws.get("id") or ""
+                        break
+                if dataset is not None:
+                    break
+
+        if not dataset:
+            return None
+
+        focus_l = (focus_table or "").strip().lower()
+        model_l = (model_table_name or "").strip().lower()
+        focus_names = {n for n in (focus_l, model_l) if n}
+
+        # Also match impact alias: physical name may differ from model table name
+        tables_out = []
+        focused = []
+        for t in dataset.get("tables") or []:
+            if not isinstance(t, dict):
+                continue
+            name = t.get("name") or ""
+            name_l = name.lower()
+            sql_tables = [str(x).lower() for x in (t.get("sqlSourceTables") or [])]
+            src_names = []
+            for s in t.get("sources") or []:
+                if isinstance(s, dict):
+                    for fld in ("table", "object_name", "objectName"):
+                        if s.get(fld):
+                            src_names.append(str(s.get(fld)).lower())
+            expr_text = t.get("sourceExpression") or ""
+            sql_q = t.get("sqlQuery") or ""
+            file_name = t.get("fileName") or ""
+            source_url = t.get("sourceUrl") or ""
+            server_name = t.get("serverName") or ""
+            source_type_label = t.get("sourceTypeLabel") or "Unknown"
+            sql_source_tables = list(t.get("sqlSourceTables") or [])
+
+            # Recover display fields from M expression (older snapshots / partial catalog)
+            needs_display = expr_text and (
+                not sql_q
+                or not source_url
+                or not file_name
+                or not server_name
+                or source_type_label in ("", "Unknown")
+                or not sql_source_tables
+            )
+            if needs_display:
+                try:
+                    from catalog_service.metadata_lib.expression_parser import (
+                        classify_source_display,
+                    )
+
+                    display = classify_source_display(expr_text, [])
+                    sql_q = sql_q or (display.get("sqlQuery") or "")
+                    file_name = file_name or (display.get("fileName") or "")
+                    source_url = source_url or (display.get("sourceUrl") or "")
+                    server_name = server_name or (display.get("serverName") or "")
+                    if source_type_label in ("", "Unknown"):
+                        source_type_label = display.get("sourceTypeLabel") or source_type_label
+                    if not sql_source_tables:
+                        sql_source_tables = list(display.get("sqlSourceTables") or [])
+                except Exception:
+                    pass
+            if not source_url and expr_text:
+                m = re.search(r'https?://[^\s"\']+', expr_text)
+                if m:
+                    source_url = m.group(0).rstrip(")',\"")
+            if not file_name and expr_text:
+                fm = re.search(r"([^\\/'\"]+\.(?:xlsx?|csv|xls))", expr_text, re.I)
+                if fm:
+                    file_name = fm.group(1)
+
+            # Refresh sql_tables for focus matching after recovery
+            sql_tables = [str(x).lower() for x in sql_source_tables] or sql_tables
+
+            row = {
+                "name": name,
+                "isHidden": bool(t.get("isHidden")),
+                "sourceTypeLabel": source_type_label,
+                "serverName": server_name,
+                "sqlSourceTables": sql_source_tables,
+                "sqlQuery": sql_q,
+                "fileName": file_name,
+                "sourceUrl": source_url,
+                "sourceExpression": expr_text,
+                "columnCount": t.get("columnCount")
+                if t.get("columnCount") is not None
+                else len(t.get("columns") or []),
+                "measureCount": t.get("measureCount")
+                if t.get("measureCount") is not None
+                else len(t.get("measures") or []),
+                "columns": [
+                    {
+                        "name": c.get("name") if isinstance(c, dict) else str(c),
+                        "dataType": (c.get("dataType") or c.get("type") or "")
+                        if isinstance(c, dict)
+                        else "",
+                        "isHidden": bool(c.get("isHidden")) if isinstance(c, dict) else False,
+                    }
+                    for c in (t.get("columns") or [])
+                ],
+                "measures": [
+                    {
+                        "name": m.get("name") if isinstance(m, dict) else str(m),
+                        "expression": (m.get("expression") or "") if isinstance(m, dict) else "",
+                    }
+                    for m in (t.get("measures") or [])
+                ],
+            }
+
+            is_focus = False
+            if focus_names:
+                if name_l in focus_names:
+                    is_focus = True
+                elif any(fn in name_l or name_l in fn for fn in focus_names if len(fn) > 2):
+                    is_focus = True
+                elif any(fn in st or st.endswith("." + fn) for st in sql_tables for fn in focus_names):
+                    is_focus = True
+                elif any(fn in sn or sn in fn for sn in src_names for fn in focus_names if fn):
+                    is_focus = True
+            row["isFocus"] = is_focus
+            tables_out.append(row)
+            if is_focus:
+                focused.append(row)
+
+        # If focus name given but nothing matched, try modelTableName exact on impact side only
+        if focus_names and not focused and model_l:
+            for row in tables_out:
+                if (row.get("name") or "").lower() == model_l:
+                    row["isFocus"] = True
+                    focused.append(row)
+
+        all_measures = []
+        for row in tables_out:
+            for m in row.get("measures") or []:
+                all_measures.append({
+                    "name": m.get("name"),
+                    "table": row.get("name"),
+                    "expression": m.get("expression") or "",
+                })
+
+        return {
+            "datasetId": dataset_id,
+            "datasetName": dataset.get("name") or "",
+            "workspaceId": workspace_id or dataset.get("workspaceId") or "",
+            "workspaceName": ws_name,
+            "targetStorageMode": dataset.get("targetStorageMode") or dataset.get("storageMode") or "",
+            "focusTable": focus_table or model_table_name or "",
+            "focusTables": focused,
+            "tables": tables_out,
+            "measures": all_measures,
+            "tableCount": len(tables_out),
+            "measureCount": len(all_measures),
+            "columnCount": sum(len(t.get("columns") or []) for t in tables_out),
+        }
 
     def lookup_table(self, table_name: str) -> List[Dict[str, Any]]:
         """Impact lookup by table / model name (case-insensitive)."""
