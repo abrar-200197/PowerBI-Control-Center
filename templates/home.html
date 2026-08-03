@@ -20,15 +20,16 @@
         touch-action: none;
         user-select: none;
     }
+    /* Fast handoff — do not linger with Home bleeding under a laptop crop */
     .mercury-landing.is-finishing {
-        transition: opacity 0.6s ease;
+        transition: opacity 0.22s ease;
         opacity: 0 !important;
         pointer-events: none;
     }
     .mercury-landing.is-done {
         opacity: 0 !important;
         pointer-events: none;
-        display: none;
+        display: none !important;
     }
     /* Full-bleed forest hero — single HQ still + canvas crop dive (smooth) */
     .mercury-scene {
@@ -1107,13 +1108,14 @@
         const skipBtn = document.getElementById('mercurySkip');
         const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-        // Keep zoom moderate so the still stays crisp and motion feels smooth
-        const MAX_ZOOM = 2.8;
-        const FALLBACK_MAX_SCALE = 1.6;
-        const COPY_FADE_BY = 0.36;
-        const HINT_FADE_BY = 0.18;
-        const DEEP_AT = 0.55;
-        const FINISH_AT = 0.99;
+        // Zoom forest → laptop only. No Control Center UI during dive.
+        // Finish hands off straight to the real Home page.
+        const MAX_ZOOM = 2.6;
+        const FALLBACK_MAX_SCALE = 1.55;
+        const COPY_FADE_BY = 0.32;
+        const HINT_FADE_BY = 0.16;
+        const DEEP_AT = 0.5;
+        const FINISH_AT = 0.97; // leave while still crisp — don't sit on soft laptop UI
         const FOCUS_X = 0.50;
         const FOCUS_Y = 0.57;
 
@@ -1199,12 +1201,12 @@
         const finish = () => {
             if (done) return;
             done = true;
-            progress = 1;
-            target = 1;
+            // Snap exit to real Home — no extra deep zoom into laptop UI
+            progress = Math.min(progress, FINISH_AT);
+            target = progress;
             try {
-                if (useCanvas) drawCanvas(1);
-                else if (photo) photo.style.transform = `scale(${1 + FALLBACK_MAX_SCALE}) translateZ(0)`;
-                landing.style.opacity = '';
+                // Clear inline opacity so CSS .is-finishing fade can run
+                landing.style.removeProperty('opacity');
                 landing.classList.add('is-deep', 'is-finishing');
             } catch (e) {}
             detach();
@@ -1217,8 +1219,9 @@
                     unlockBody();
                 }
             };
-            setTimeout(cleanup, 620);
-            setTimeout(unlockBody, 900);
+            // Quick fade then remove so Home appears directly
+            setTimeout(cleanup, 240);
+            setTimeout(unlockBody, 400);
         };
 
         const paintChrome = (t) => {
@@ -1242,6 +1245,8 @@
         const paint = () => {
             if (done) return;
             const t = ease(progress);
+            // Stay fully opaque entire dive — never reveal Home under the laptop
+            landing.style.opacity = '1';
             if (useCanvas) drawCanvas(t);
             else if (photo) photo.style.transform = `scale(${1 + t * FALLBACK_MAX_SCALE}) translateZ(0)`;
             paintChrome(t);
