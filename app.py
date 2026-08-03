@@ -1181,7 +1181,8 @@ def get_reports_metadata(workspace_id):
                     'cached': True
                 })
 
-        print(f"\n🔍 Fetching report metadata (scanner + REST + catalog) for workspace: {workspace_id}")
+        t0 = time.time()
+        print(f"\n🔍 Fetching report metadata (REST → catalog → optional scanner) for workspace: {workspace_id}")
         by_id = {}
 
         def _ensure_row(rid, name=''):
@@ -1220,55 +1221,24 @@ def get_reports_metadata(workspace_id):
                         row['modified_by_id'] = str(v)
                         break
 
-        # ---- 1) Scanner ----
-        scanner_count = 0
-        try:
-            scanner = PowerBIScanner()
-            scan_result = scanner.run_scan(workspace_id=workspace_id) or {}
-            for workspace in scan_result.get('workspaces') or []:
-                if workspace.get('id') != workspace_id:
-                    continue
-                for report in workspace.get('reports') or []:
-                    rid = report.get('id')
-                    if not rid:
-                        continue
-                    row = _ensure_row(rid, report.get('name') or '')
-                    _merge_people(
-                        row,
-                        created_vals=(
-                            report.get('createdBy'),
-                            report.get('createdByUser'),
-                            report.get('createdByUserPrincipalName'),
-                        ),
-                        modified_vals=(
-                            report.get('modifiedBy'),
-                            report.get('modifiedByUser'),
-                            report.get('modifiedByUserPrincipalName'),
-                        ),
-                        created_dt_vals=(
-                            report.get('createdDateTime'),
-                            report.get('createdDate'),
-                        ),
-                        modified_dt_vals=(
-                            report.get('modifiedDateTime'),
-                            report.get('modifiedDate'),
-                        ),
-                        created_id_vals=(report.get('createdById'),),
-                        modified_id_vals=(report.get('modifiedById'),),
-                    )
-                    scanner_count += 1
-                break
-            print(f"   🛰️ Scanner metadata rows: {scanner_count}")
-        except Exception as e:
-            print(f"   ⚠️ Scanner metadata failed (will try REST/catalog): {e}")
+        def _people_coverage():
+            if not by_id:
+                return 0.0
+            hit = sum(
+                1 for r in by_id.values()
+                if r.get('created_by') or r.get('modified_by') or r.get('modified_date_time')
+            )
+            return hit / max(1, len(by_id))
 
-        # ---- 2) Groups REST overlay (best for people + dates, incl. team mail) ----
+        # ---- 1) Groups REST FIRST (fast; usually has createdBy/modifiedBy + dates) ----
+        # Old order ran Admin Scanner first → multi-minute silent hang while UI spinners spin.
         rest_count = 0
         rest_filled = 0
         try:
+            print(f"   🌐 REST /groups/.../reports starting… t+{time.time()-t0:.1f}s")
             headers = get_user_powerbi_headers()
             url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports"
-            resp = requests.get(url, headers=headers, timeout=60)
+            resp = requests.get(url, headers=headers, timeout=45)
             if resp.status_code == 200:
                 for report in resp.json().get('value') or []:
                     rid = report.get('id')
@@ -1305,40 +1275,35 @@ def get_reports_metadata(workspace_id):
                     rest_count += 1
                     if (row.get('created_by') and not before_c) or (row.get('modified_by') and not before_m):
                         rest_filled += 1
-                print(f"   🌐 REST reports overlaid: {rest_count} (filled people gaps: {rest_filled})")
+                print(
+                    f"   🌐 REST done rows={rest_count} people_filled={rest_filled} "
+                    f"coverage={_people_coverage():.0%} t+{time.time()-t0:.1f}s"
+                )
             else:
                 print(f"   ⚠️ REST reports HTTP {resp.status_code}: {resp.text[:200]}")
         except Exception as e:
             print(f"   ⚠️ REST metadata overlay failed: {e}")
 
-        # ---- 3) Catalog fill for remaining gaps ----
+        # ---- 2) Catalog fill (fast when SharePoint/cache warm) ----
         catalog_filled = 0
         if CATALOG_AVAILABLE and catalog_service is not None:
             try:
+                print(f"   📦 Catalog gap-fill starting… t+{time.time()-t0:.1f}s")
                 pack = catalog_service.get_workspace_reports(workspace_id)
                 if pack:
                     for report in pack.get('reports') or []:
                         rid = report.get('id')
                         if not rid:
                             continue
-                        row = by_id.get(rid)
-                        if not row:
-                            # Don't invent rows only from catalog if APIs returned none —
-                            # but if we already have any rows, filling known ids is fine;
-                            # also allow catalog-only when scanner+REST empty.
-                            row = _ensure_row(rid, report.get('name') or '')
-                        before = (row.get('created_by'), row.get('modified_by'),
-                                  row.get('created_date_time'), row.get('modified_date_time'))
+                        row = by_id.get(rid) or _ensure_row(rid, report.get('name') or '')
+                        before = (
+                            row.get('created_by'), row.get('modified_by'),
+                            row.get('created_date_time'), row.get('modified_date_time'),
+                        )
                         _merge_people(
                             row,
-                            created_vals=(
-                                report.get('createdBy'),
-                                report.get('created_by'),
-                            ),
-                            modified_vals=(
-                                report.get('modifiedBy'),
-                                report.get('modified_by'),
-                            ),
+                            created_vals=(report.get('createdBy'), report.get('created_by')),
+                            modified_vals=(report.get('modifiedBy'), report.get('modified_by')),
                             created_dt_vals=(
                                 report.get('createdDateTime'),
                                 report.get('created_date_time'),
@@ -1352,13 +1317,76 @@ def get_reports_metadata(workspace_id):
                             created_id_vals=(report.get('createdById'), report.get('created_by_id')),
                             modified_id_vals=(report.get('modifiedById'), report.get('modified_by_id')),
                         )
-                        after = (row.get('created_by'), row.get('modified_by'),
-                                 row.get('created_date_time'), row.get('modified_date_time'))
+                        after = (
+                            row.get('created_by'), row.get('modified_by'),
+                            row.get('created_date_time'), row.get('modified_date_time'),
+                        )
                         if after != before and any(after):
                             catalog_filled += 1
-                    print(f"   📦 Catalog gap-fill updates: {catalog_filled}")
+                print(
+                    f"   📦 Catalog fill updates={catalog_filled} "
+                    f"coverage={_people_coverage():.0%} t+{time.time()-t0:.1f}s"
+                )
             except Exception as e:
                 print(f"   ⚠️ Catalog metadata fill failed: {e}")
+
+        # ---- 3) Scanner ONLY if coverage still poor (slow Admin scan — was causing 3–4 min UI hang) ----
+        # Default skip when REST already covered most rows. Force with ?force_scanner=1
+        force_scanner = str(request.args.get('force_scanner', '')).lower() in ('1', 'true', 'yes')
+        coverage = _people_coverage()
+        scanner_count = 0
+        need_scanner = force_scanner or (not by_id) or (coverage < 0.35 and rest_count == 0)
+        if need_scanner:
+            try:
+                print(
+                    f"   🛰️ Scanner fallback (coverage={coverage:.0%} force={force_scanner}) "
+                    f"t+{time.time()-t0:.1f}s — may take a while…"
+                )
+                scanner = PowerBIScanner()
+                scan_result = scanner.run_scan(workspace_id=workspace_id) or {}
+                for workspace in scan_result.get('workspaces') or []:
+                    if workspace.get('id') != workspace_id:
+                        continue
+                    for report in workspace.get('reports') or []:
+                        rid = report.get('id')
+                        if not rid:
+                            continue
+                        row = _ensure_row(rid, report.get('name') or '')
+                        _merge_people(
+                            row,
+                            created_vals=(
+                                report.get('createdBy'),
+                                report.get('createdByUser'),
+                                report.get('createdByUserPrincipalName'),
+                            ),
+                            modified_vals=(
+                                report.get('modifiedBy'),
+                                report.get('modifiedByUser'),
+                                report.get('modifiedByUserPrincipalName'),
+                            ),
+                            created_dt_vals=(
+                                report.get('createdDateTime'),
+                                report.get('createdDate'),
+                            ),
+                            modified_dt_vals=(
+                                report.get('modifiedDateTime'),
+                                report.get('modifiedDate'),
+                            ),
+                            created_id_vals=(report.get('createdById'),),
+                            modified_id_vals=(report.get('modifiedById'),),
+                        )
+                        scanner_count += 1
+                    break
+                print(f"   🛰️ Scanner rows={scanner_count} t+{time.time()-t0:.1f}s")
+            except Exception as e:
+                print(f"   ⚠️ Scanner metadata failed: {e}")
+        else:
+            print(
+                f"   ⏭️ Skipping Scanner (coverage={coverage:.0%} rest_rows={rest_count}) "
+                f"— UI stays fast; pass force_scanner=1 if needed"
+            )
+
+        print(f"   ⏱️ metadata sources done in {time.time()-t0:.1f}s rows={len(by_id)}")
 
         if not by_id:
             return jsonify({

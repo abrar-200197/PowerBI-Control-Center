@@ -529,13 +529,13 @@
         <a id="clearFilterLink" href="#">Clear filter</a>
     </div>
 
-    <!-- Shown when 2+ filters are active (folder + status, report pick, etc.) -->
+    <!-- Active-filters strip — any list filter (folder / status / report) -->
     <div id="multiFilterBar" class="catalog-filter-banner" style="display:none; border-left-color:#3182CE; background:#EBF8FF; border-color:#BEE3F8; color:#2A4365;">
         <div>
-            <div class="title" style="color:#2B6CB0;">Multiple filters active</div>
+            <div class="title" style="color:#2B6CB0;" id="multiFilterTitle">Filters active</div>
             <div class="sub" id="multiFilterSummary" style="color:#2C5282;">Reset to see the full list</div>
         </div>
-        <a id="clearAllFiltersBtn" href="#" style="background:#EBF8FF; color:#2B6CB0; border:1px solid #90CDF4;">Clear all filters</a>
+        <a id="clearAllFiltersBtn" href="#" style="background:#EBF8FF; color:#2B6CB0; border:1px solid #90CDF4;">Clear filters</a>
     </div>
 
     <div class="controls">
@@ -550,6 +550,9 @@
                 <option value="">Select a report...</option>
             </select>
             <span id="statusFilterBadge" style="display: none;"></span>
+            <button type="button" class="btn btn-secondary" id="clearFiltersToolbarBtn" title="Clear folder / status / report filters" style="display:none; height:34px; padding:0 12px; font-size:12px;">
+                Clear filters
+            </button>
         </div>
         <div class="controls-right">
             <button class="btn btn-primary" onclick="loadUsageMetricsInBackground()" id="usageBtn" style="display: none;" title="Load usage metrics (60-day view counts and last viewed info)">
@@ -665,17 +668,36 @@
     function updateMultiFilterBar() {
         const bar = document.getElementById('multiFilterBar');
         const summary = document.getElementById('multiFilterSummary');
-        if (!bar) return;
+        const title = document.getElementById('multiFilterTitle');
+        const toolbarBtn = document.getElementById('clearFiltersToolbarBtn');
+        if (!bar && !toolbarBtn) return;
         const n = countActiveFilters();
-        if (n >= 2) {
-            const bits = [];
-            if (statusFilter) bits.push(`status=${statusFilter}`);
-            if (currentFolderId) bits.push('folder');
-            if (document.getElementById('reportSelect')?.value || selectedReportId) bits.push('report');
-            bar.style.display = 'flex';
-            if (summary) summary.textContent = `${n} filters active (${bits.join(', ')}). Clear all to reset.`;
+        const bits = [];
+        if (statusFilter) bits.push(`status=${statusFilter}`);
+        if (currentFolderId) bits.push('folder');
+        if (document.getElementById('reportSelect')?.value || selectedReportId) bits.push('report');
+
+        // Show clear control whenever ANY list filter is on (not only 2+)
+        if (n >= 1) {
+            if (bar) {
+                bar.style.display = 'flex';
+                bar.classList.add('show');
+            }
+            if (title) {
+                title.textContent = n >= 2 ? 'Multiple filters active' : 'Filter active';
+            }
+            if (summary) {
+                summary.textContent = n >= 2
+                    ? `${n} filters active (${bits.join(', ')}). Clear to reset.`
+                    : `Active: ${bits.join(', ') || 'filter'}. Clear to reset.`;
+            }
+            if (toolbarBtn) toolbarBtn.style.display = 'inline-block';
         } else {
-            bar.style.display = 'none';
+            if (bar) {
+                bar.style.display = 'none';
+                bar.classList.remove('show');
+            }
+            if (toolbarBtn) toolbarBtn.style.display = 'none';
         }
     }
 
@@ -738,25 +760,14 @@
 
         const clearAll = document.getElementById('clearAllFiltersBtn');
         if (clearAll) clearAll.addEventListener('click', clearAllFilters);
+        const clearToolbar = document.getElementById('clearFiltersToolbarBtn');
+        if (clearToolbar) clearToolbar.addEventListener('click', clearAllFilters);
         const clearOne = document.getElementById('clearFilterLink');
         if (clearOne) {
             clearOne.addEventListener('click', (e) => {
                 e.preventDefault();
-                // Single status clear — if only status, clear it; if more filters, clear all
-                if (countActiveFilters() >= 2) {
-                    clearAllFilters(e);
-                } else {
-                    statusFilter = null;
-                    try {
-                        const url = new URL(window.location.href);
-                        url.searchParams.delete('status');
-                        window.history.replaceState({}, '', url.pathname + (url.search || ''));
-                    } catch (err) { /* ignore */ }
-                    const header = document.getElementById('filterStatusHeader');
-                    if (header) header.style.display = 'none';
-                    updateMultiFilterBar();
-                    if (currentWorkspaceId) loadReports();
-                }
+                // Always clear everything list-related so UX is predictable
+                clearAllFilters(e);
             });
         }
 
@@ -1199,10 +1210,15 @@
         btn.innerHTML = '⏳ Loading...';
 
         console.log(`🔄 Manually loading metadata for ${reports.length} reports...`);
-        showAlert('info', `Loading metadata for ${reports.length} reports. This may take 30-60 seconds...`);
+        showAlert('info', `Loading owner metadata (fast path: REST + catalog)…`);
 
+        const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        const timeoutMs = 45000;
+        const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
         try {
-            const response = await fetch(`/api/reports-metadata/${currentWorkspaceId}`);
+            const response = await fetch(`/api/reports-metadata/${currentWorkspaceId}`, {
+                signal: controller ? controller.signal : undefined,
+            });
             const result = await response.json();
 
             if (result.success && result.reports) {
@@ -1230,20 +1246,25 @@
                     }
                 });
 
-                // Re-render table with metadata
+                reports = reports.map(r => ({ ...r, metadata_loaded: true }));
                 renderReportsTable(reports);
                 showAlert('success', `✅ Metadata loaded successfully!`);
-
-                // Hide the button after successful load
                 btn.style.display = 'none';
             } else {
                 throw new Error(result.error || 'Failed to load metadata');
             }
         } catch (error) {
             console.error('Error loading metadata:', error);
-            showAlert('error', 'Failed to load metadata: ' + error.message);
+            const aborted = error && (error.name === 'AbortError' || String(error).includes('abort'));
+            showAlert('error', aborted
+                ? `Metadata timed out after ${timeoutMs / 1000}s. Rows show N/A for missing owners.`
+                : ('Failed to load metadata: ' + (error.message || error)));
+            reports = reports.map(r => ({ ...r, metadata_loaded: true }));
+            renderReportsTable(reports);
             btn.disabled = false;
             btn.innerHTML = originalText;
+        } finally {
+            if (timer) clearTimeout(timer);
         }
     }
 
@@ -1305,14 +1326,32 @@
             return;
         }
 
+        // Skip if every visible row already has people/dates
+        if (reports.every(r => r.metadata_loaded || r.created_by || r.modified_by)) {
+            console.log('⏭️ Metadata already present — skip background fetch');
+            reports = reports.map(r => ({ ...r, metadata_loaded: true }));
+            renderReportsTable(reports);
+            return;
+        }
+
         console.log(`🔄 Auto-loading metadata for ${reports.length} reports in background...`);
+        const t0 = performance.now();
+        const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        // Hard cap so UI never spins for 3–4 minutes with empty server logs
+        const timeoutMs = 45000;
+        const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
         try {
-            const response = await fetch(`/api/reports-metadata/${currentWorkspaceId}`);
+            const response = await fetch(`/api/reports-metadata/${currentWorkspaceId}`, {
+                signal: controller ? controller.signal : undefined,
+            });
             const result = await response.json();
 
             if (result.success && result.reports) {
-                console.log(`✅ Got metadata for ${result.reports.length} reports`);
+                console.log(
+                    `✅ Got metadata for ${result.reports.length} reports ` +
+                    `in ${((performance.now() - t0) / 1000).toFixed(1)}s`
+                );
 
                 // Update reports with metadata (never overwrite good values with empty)
                 result.reports.forEach(metadata => {
@@ -1336,19 +1375,30 @@
                     }
                 });
 
-                // Re-render table with metadata
+                // Mark any remaining rows loaded so spinners stop (show N/A, not spin forever)
+                reports = reports.map(r => ({ ...r, metadata_loaded: true }));
                 renderReportsTable(reports);
 
-                // Hide the manual button since metadata is now loaded
-                document.getElementById('metadataBtn').style.display = 'none';
-
-                // Dataset details (refresh info) are now included in the initial /api/reports response
-                // No need to load separately anymore!
+                const mb = document.getElementById('metadataBtn');
+                if (mb) mb.style.display = 'none';
+            } else {
+                console.warn('Metadata response not successful', result.error || result);
+                reports = reports.map(r => ({ ...r, metadata_loaded: true }));
+                renderReportsTable(reports);
             }
         } catch (error) {
-            console.error('Background metadata loading failed:', error);
-            // Don't show error to user since this is background loading
-            // They can still use the manual button if needed
+            const aborted = error && (error.name === 'AbortError' || String(error).includes('abort'));
+            console.error(
+                aborted
+                    ? `Background metadata timed out after ${timeoutMs / 1000}s — stopping spinners`
+                    : 'Background metadata loading failed:',
+                error
+            );
+            // Stop spinners even on failure/timeout
+            reports = reports.map(r => ({ ...r, metadata_loaded: true }));
+            renderReportsTable(reports);
+        } finally {
+            if (timer) clearTimeout(timer);
         }
     }
 
