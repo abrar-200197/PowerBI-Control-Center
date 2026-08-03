@@ -30,22 +30,26 @@
         pointer-events: none;
         display: none;
     }
-    /* Full-bleed forest hero — Mercury start-frame */
+    /* Full-bleed forest hero — Mercury start-frame (HQ 3840×1440) */
     .mercury-scene {
         position: absolute;
         inset: 0;
         z-index: 0;
         overflow: hidden;
-        /* Aim at laptop area in the photo */
-        transform-origin: 54% 64%;
+        /* Laptop screen center in the photo (~50% x, ~57% y) */
+        transform-origin: 50% 57%;
         will-change: transform;
         background-color: #2a3540;
-        /* Dual paint: CSS bg + <img> so one failure never blanks the screen */
-        background-image: url("/static/img/mercury-hero.jpg");
+        background-image: url("/static/img/mercury-hero.jpg?v=2");
         background-repeat: no-repeat;
-        background-position: center 48%;
+        /* Align framing so desk sits lower-center like mercury.com */
+        background-position: 50% 52%;
         background-size: cover;
         transition: none;
+        /* Crisper scaled pixels during CSS zoom */
+        -webkit-backface-visibility: hidden;
+        backface-visibility: hidden;
+        transform: translateZ(0);
     }
     .mercury-landing.is-finishing .mercury-scene {
         transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
@@ -56,11 +60,16 @@
         width: 100%;
         height: 100%;
         object-fit: cover;
-        object-position: center 48%;
+        object-position: 50% 52%;
         display: block;
         opacity: 1;
         pointer-events: none;
         z-index: 1;
+        /* Prefer quality over speed when browser scales the bitmap */
+        image-rendering: -webkit-optimize-contrast;
+        image-rendering: high-quality;
+        -ms-interpolation-mode: bicubic;
+        transform: translateZ(0);
     }
     /* Light vignette for headline readability */
     .mercury-scene::after {
@@ -705,7 +714,7 @@
     <div class="mercury-scene" id="mercuryScene" aria-hidden="true">
         <img
             class="mercury-scene-photo"
-            src="/static/img/mercury-hero.jpg"
+            src="/static/img/mercury-hero.jpg?v=2"
             alt=""
             decoding="async"
             fetchpriority="high"
@@ -1068,25 +1077,31 @@
         const skipBtn = document.getElementById('mercurySkip');
         const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-        // Tuned so you can scroll well into the laptop before exit
-        const MAX_SCALE = 3.6;     // 1 → 4.6× into the screen
-        const COPY_FADE_BY = 0.32;
-        const HINT_FADE_BY = 0.16;
-        const DEEP_AT = 0.5;
-        const FINISH_AT = 0.992;
+        // Max zoom kept moderate so the still stays crisp (Mercury uses video frames
+        // for deep zoom; we only have a still — past ~2.8× looks soft).
+        // Scale goes 1 → 1+MAX_SCALE (= ~2.75×).
+        const MAX_SCALE = 1.75;
+        const COPY_FADE_BY = 0.36;
+        const HINT_FADE_BY = 0.18;
+        const DEEP_AT = 0.55;
+        const FINISH_AT = 0.99;
 
         let progress = 0;
         let done = false;
         let touchY = null;
+        let raf = 0;
+        let target = 0; // smoothed progress target
 
         const clamp01 = (v) => Math.max(0, Math.min(1, v));
-        const ease = (t) => t * t * t * (t * (t * 6 - 15) + 10); // smootherstep
+        // Ease-out cubic: quick early dive, settles into laptop
+        const ease = (t) => 1 - Math.pow(1 - t, 3);
 
         const detach = () => {
             window.removeEventListener('wheel', onWheel);
             window.removeEventListener('keydown', onKey);
             landing.removeEventListener('touchstart', onTouchStart);
             landing.removeEventListener('touchmove', onTouchMove);
+            if (raf) cancelAnimationFrame(raf);
         };
 
         const unlockBody = () => {
@@ -1097,14 +1112,16 @@
             if (done) return;
             done = true;
             progress = 1;
+            target = 1;
             try {
-                if (scene) scene.style.transform = `scale(${1 + MAX_SCALE})`;
-                // Clear any inline opacity so CSS fade can run
+                if (scene) {
+                    // End right on the laptop screen, not past into mush
+                    scene.style.transform = `scale(${1 + MAX_SCALE}) translateZ(0)`;
+                }
                 landing.style.opacity = '';
                 landing.classList.add('is-deep', 'is-finishing');
             } catch (e) {}
             detach();
-            // Always unlock + remove — never leave a stuck blank overlay
             const cleanup = () => {
                 try {
                     landing.classList.add('is-done');
@@ -1115,50 +1132,63 @@
                 }
             };
             setTimeout(cleanup, 620);
-            // Safety net if something blocks the timeout path
             setTimeout(unlockBody, 900);
         };
 
         const paint = () => {
             if (done) return;
             const t = ease(progress);
-            // Never set landing.style.opacity here — that blocked CSS finish fade before.
-            // Landing stays opaque via CSS until .is-finishing.
 
             if (scene) {
-                scene.style.transform = `scale(${1 + t * MAX_SCALE})`;
+                // translateZ(0) promotes layer → sharper compositing on GPU
+                scene.style.transform = `scale(${1 + t * MAX_SCALE}) translateZ(0)`;
             }
             if (copy) {
                 const fade = clamp01(1 - progress / COPY_FADE_BY);
                 copy.style.opacity = String(fade);
-                copy.style.transform = `translateY(${-t * 40}px) scale(${1 - t * 0.1})`;
+                copy.style.transform = `translateY(${-t * 28}px) scale(${1 - t * 0.06})`;
             }
             if (hint) {
                 hint.style.opacity = progress < 0.03
                     ? '1'
                     : String(clamp01(1 - progress / HINT_FADE_BY));
             }
-            const chromeFade = progress < 0.45 ? 1 : clamp01(1 - (progress - 0.45) / 0.4);
+            const chromeFade = progress < 0.4 ? 1 : clamp01(1 - (progress - 0.4) / 0.45);
             if (brand) brand.style.opacity = String(chromeFade);
-            // Keep Skip always readable / clickable
             if (skipBtn) skipBtn.style.opacity = '1';
 
             if (progress >= DEEP_AT) landing.classList.add('is-deep');
             else landing.classList.remove('is-deep');
         };
 
+        // Smooth interpolation toward target for less jank / blur streaking
+        const tick = () => {
+            raf = 0;
+            if (done) return;
+            const diff = target - progress;
+            if (Math.abs(diff) < 0.0008) {
+                progress = target;
+                paint();
+                if (progress >= FINISH_AT) finish();
+                return;
+            }
+            progress += diff * 0.18;
+            paint();
+            if (progress >= FINISH_AT) { finish(); return; }
+            raf = requestAnimationFrame(tick);
+        };
+
         const bump = (delta) => {
             if (done) return;
-            progress = clamp01(progress + delta);
-            paint();
-            if (progress >= FINISH_AT) finish();
+            target = clamp01(target + delta);
+            if (!raf) raf = requestAnimationFrame(tick);
         };
 
         const onWheel = (e) => {
             if (done) return;
             e.preventDefault();
-            // ~7–10 notches to fill laptop (slower, more controlled)
-            const step = Math.max(-0.04, Math.min(0.04, e.deltaY / 1600));
+            // ~8–12 notches to fill laptop; smaller steps = smoother dive
+            const step = Math.max(-0.035, Math.min(0.035, e.deltaY / 1800));
             bump(step);
         };
 
