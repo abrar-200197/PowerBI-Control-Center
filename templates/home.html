@@ -24,14 +24,15 @@
         opacity: 0;
         pointer-events: none;
     }
-    /* Full-bleed forest hero — same asset & framing as mercury.com */
+    /* Full-bleed forest hero — Mercury's real start-frame (desk on misty ridge) */
     .mercury-scene {
         position: absolute;
         inset: 0;
         overflow: hidden;
-        transform-origin: 50% 68%; /* dive toward desk/chair on the hill */
+        /* Dive toward the grassy hill / desk + laptop */
+        transform-origin: 50% 72%;
         will-change: transform;
-        background: #2c3a42; /* misty forest fallthrough while image loads */
+        background: #3d4a55; /* cool mist fallback while image loads */
     }
     .mercury-scene-photo {
         position: absolute;
@@ -39,28 +40,26 @@
         width: 100%;
         height: 100%;
         object-fit: cover;
-        /* Match mercury.com crop: keep grassy hill + desk lower-center */
-        object-position: center 55%;
+        /* Frame like mercury.com: sky/mist top, desk lower-center */
+        object-position: center 48%;
         display: block;
-        /* subtle cinematic grade close to their live page */
-        filter: saturate(1.02) contrast(1.03) brightness(1.02);
+        filter: none; /* keep original grade from their asset */
     }
-    /* Soft edge vignette only — do NOT crush the forest greens */
+    /* Very light vignette so headline stays readable — forest stays visible */
     .mercury-scene::after {
         content: "";
         position: absolute;
         inset: 0;
         pointer-events: none;
         background:
-            radial-gradient(ellipse 85% 70% at 50% 42%,
-                rgba(20, 28, 36, 0.18) 0%,
-                rgba(20, 28, 36, 0.05) 42%,
-                rgba(12, 18, 26, 0.28) 100%),
+            radial-gradient(ellipse 70% 45% at 50% 28%,
+                rgba(20, 28, 36, 0.28) 0%,
+                rgba(20, 28, 36, 0.0) 70%),
             linear-gradient(180deg,
-                rgba(30, 40, 52, 0.22) 0%,
-                rgba(30, 40, 52, 0.0) 28%,
-                rgba(30, 40, 52, 0.0) 62%,
-                rgba(12, 18, 26, 0.35) 100%);
+                rgba(18, 24, 32, 0.18) 0%,
+                rgba(18, 24, 32, 0.0) 30%,
+                rgba(18, 24, 32, 0.0) 70%,
+                rgba(10, 14, 20, 0.32) 100%);
     }
     .mercury-chrome {
         position: absolute;
@@ -168,88 +167,7 @@
         0%, 100% { transform: rotate(45deg) translate(0, 0); opacity: 0.65; }
         50% { transform: rotate(45deg) translate(3px, 3px); opacity: 1; }
     }
-    /* Live app frame that fills as zoom completes */
-    .mercury-app-frame {
-        position: absolute;
-        inset: 0;
-        z-index: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        pointer-events: none;
-        opacity: 0;
-    }
-    .mercury-app-card {
-        width: min(1100px, 88vw);
-        height: min(640px, 72vh);
-        border-radius: 14px;
-        overflow: hidden;
-        background: #F7FAFC;
-        box-shadow:
-            0 40px 100px rgba(0, 0, 0, 0.45),
-            0 0 0 1px rgba(255,255,255,0.12);
-        transform-origin: 50% 50%;
-    }
-    .mercury-app-card-bar {
-        height: 36px;
-        background: linear-gradient(180deg, #fff, #EDF2F7);
-        border-bottom: 1px solid #E2E8F0;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 0 12px;
-    }
-    .mercury-app-card-bar i {
-        width: 9px; height: 9px; border-radius: 50%;
-        background: #CBD5E0;
-    }
-    .mercury-app-card-bar i:nth-child(1) { background: #FC8181; }
-    .mercury-app-card-bar i:nth-child(2) { background: #F6E05E; }
-    .mercury-app-card-bar i:nth-child(3) { background: #68D391; }
-    .mercury-app-card-body {
-        height: calc(100% - 36px);
-        padding: 18px;
-        display: grid;
-        grid-template-columns: 1.1fr 1fr;
-        gap: 14px;
-        background: linear-gradient(180deg, #fff 0%, #F7FAFC 100%);
-    }
-    .mercury-app-card-body .mock-kpi {
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        padding: 14px;
-        background: #fff;
-    }
-    .mercury-app-card-body .mock-kpi .lbl {
-        font-size: 11px; color: #718096; text-transform: uppercase; letter-spacing: 0.04em;
-    }
-    .mercury-app-card-body .mock-kpi .val {
-        font-size: 26px; font-weight: 700; color: #2B6CB0; margin-top: 6px;
-    }
-    .mercury-app-card-body .mock-table {
-        grid-column: 1 / -1;
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        background: #fff;
-        overflow: hidden;
-    }
-    .mercury-app-card-body .mock-row {
-        display: grid;
-        grid-template-columns: 2fr 1fr 1fr 1fr;
-        gap: 8px;
-        padding: 10px 14px;
-        font-size: 12px;
-        color: #4A5568;
-        border-bottom: 1px solid #EDF2F7;
-    }
-    .mercury-app-card-body .mock-row.head {
-        background: #F7FAFC;
-        font-weight: 650;
-        color: #2D3748;
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-    }
+    /* No fake dashboard plate — forest + desk/laptop is the whole scene */
     body.mercury-landing-open {
         overflow: hidden !important;
     }
@@ -260,7 +178,6 @@
     }
     @media (max-width: 720px) {
         .mercury-title { font-size: 30px; max-width: 14ch; }
-        .mercury-app-card-body { grid-template-columns: 1fr; }
     }
 
     /* Multi-filter clear chip */
@@ -761,31 +678,15 @@
 {% if show_login_landing %}
 <div id="mercuryLanding" class="mercury-landing" role="dialog" aria-label="Welcome — scroll to enter">
     <!-- Scene zooms on wheel (progress 0→1). No document scroll.
-         Photo = mercury.com forest hero (desk on grassy hill). -->
+         Real mercury.com forest start-frame (desk + laptop on misty ridge). -->
     <div class="mercury-scene" id="mercuryScene" aria-hidden="true">
         <img
             class="mercury-scene-photo"
-            src="{{ url_for('static', filename='img/mercury-hero.png') }}"
+            src="{{ url_for('static', filename='img/mercury-hero.jpg') }}"
             alt=""
             decoding="async"
             fetchpriority="high"
         />
-    </div>
-    <!-- App mock that grows with zoom, then real Home is revealed -->
-    <div class="mercury-app-frame" id="mercuryAppFrame" aria-hidden="true">
-        <div class="mercury-app-card" id="mercuryAppCard">
-            <div class="mercury-app-card-bar"><i></i><i></i><i></i></div>
-            <div class="mercury-app-card-body">
-                <div class="mock-kpi"><div class="lbl">Workspaces</div><div class="val">—</div></div>
-                <div class="mock-kpi"><div class="lbl">Reports</div><div class="val">—</div></div>
-                <div class="mock-table">
-                    <div class="mock-row head"><span>Workspace</span><span>Reports</span><span>Inactive</span><span>Orphaned</span></div>
-                    <div class="mock-row"><span>Finance</span><span>—</span><span>—</span><span>—</span></div>
-                    <div class="mock-row"><span>Operations</span><span>—</span><span>—</span><span>—</span></div>
-                    <div class="mock-row"><span>Sales</span><span>—</span><span>—</span><span>—</span></div>
-                </div>
-            </div>
-        </div>
     </div>
     <div class="mercury-chrome">
         <div class="mercury-nav">
@@ -1137,8 +1038,6 @@
         const landing = document.getElementById('mercuryLanding');
         if (!landing) return;
         const scene = document.getElementById('mercuryScene');
-        const appFrame = document.getElementById('mercuryAppFrame');
-        const appCard = document.getElementById('mercuryAppCard');
         const copy = document.getElementById('mercuryCopy');
         const hint = document.getElementById('mercuryHint');
         const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1166,27 +1065,23 @@
 
         const paint = () => {
             const t = ease(progress);
-            // Hero photo: start full frame, zoom INTO desk/laptop (scale 1 → ~2.6)
+            // Zoom into misty forest desk/laptop (no fake dashboard overlay)
             if (scene) {
-                scene.style.transform = `scale(${1 + t * 1.65})`;
+                scene.style.transform = `scale(${1 + t * 1.85})`;
             }
-            // Headline fades as we dive in
+            // Headline + chrome fade as we dive into the laptop
             if (copy) {
-                const fade = clamp01(1 - progress * 1.55);
+                const fade = clamp01(1 - progress * 1.45);
                 copy.style.opacity = String(fade);
-                copy.style.transform = `translateY(${-t * 28}px) scale(${1 - t * 0.08})`;
+                copy.style.transform = `translateY(${-t * 36}px) scale(${1 - t * 0.1})`;
             }
             if (hint) {
-                hint.style.opacity = progress < 0.08 ? '1' : String(clamp01(1 - progress * 4));
+                hint.style.opacity = progress < 0.06 ? '1' : String(clamp01(1 - progress * 5));
             }
-            // App card fades/scales up under the zoom (product reveal)
-            if (appFrame && appCard) {
-                const reveal = clamp01((progress - 0.22) / 0.78);
-                const r = ease(reveal);
-                appFrame.style.opacity = String(r);
-                appCard.style.transform = `scale(${0.55 + r * 0.55})`;
-                appCard.style.borderRadius = `${14 * (1 - r * 0.85)}px`;
-            }
+            // Landing softens near end so real Home shows through
+            landing.style.opacity = progress > 0.82
+                ? String(clamp01(1 - (progress - 0.82) / 0.18))
+                : '1';
         };
 
         const bump = (delta) => {
