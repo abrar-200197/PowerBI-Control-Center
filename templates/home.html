@@ -6,81 +6,82 @@
 
 {% block extra_css %}
 <style>
-    /* ===== Post-login landing (Mercury-style: scroll / click to enter — NO auto zoom) ===== */
+    /* ===== Mercury-style post-login: fixed viewport, wheel = zoom into app ===== */
     .mercury-landing {
         position: fixed;
         inset: 0;
         z-index: 99990;
-        overflow-y: auto;
-        overflow-x: hidden;
-        background: #0c1222;
-        color: #f7fafc;
+        overflow: hidden; /* no page scroll — wheel drives zoom */
+        background: #1a2228;
+        color: #fff;
         opacity: 1;
-        transition: opacity 0.55s ease;
+        transition: opacity 0.45s ease;
+        touch-action: none;
+        user-select: none;
     }
     .mercury-landing.is-done {
         opacity: 0;
         pointer-events: none;
     }
-    .mercury-hero {
-        min-height: 100vh;
-        position: relative;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-        padding: 80px 24px 120px;
-        /* Atmosphere inspired by mercury.com hero — misty mountain gradient */
-        background:
-            radial-gradient(ellipse 90% 70% at 50% 55%, rgba(120, 160, 200, 0.22) 0%, transparent 55%),
-            linear-gradient(180deg,
-                #6a7f96 0%,
-                #8fa3b5 18%,
-                #b8c5ce 38%,
-                #d4d8d4 52%,
-                #9aab96 68%,
-                #4a5c48 82%,
-                #1a2420 100%);
+    /* Full-bleed hero photo (mercury.com desk/mountain) */
+    .mercury-scene {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        transform-origin: 50% 62%; /* aim at desk/laptop area */
+        will-change: transform;
     }
-    .mercury-hero::before {
+    .mercury-scene-bg {
+        position: absolute;
+        inset: -8%;
+        background:
+            #2a3540
+            url("{{ url_for('static', filename='img/mercury-hero.jpg') }}")
+            center 45% / cover no-repeat;
+        filter: saturate(1.05) contrast(1.02);
+    }
+    .mercury-scene-bg::after {
         content: "";
         position: absolute;
         inset: 0;
         background:
-            radial-gradient(ellipse 60% 40% at 50% 100%, rgba(20, 30, 25, 0.55), transparent 60%),
-            linear-gradient(180deg, rgba(12, 18, 34, 0.15) 0%, transparent 35%, rgba(12, 18, 34, 0.55) 100%);
+            linear-gradient(180deg, rgba(12, 18, 28, 0.42) 0%, rgba(12, 18, 28, 0.12) 38%, rgba(12, 18, 28, 0.08) 55%, rgba(12, 18, 28, 0.55) 100%);
+    }
+    .mercury-chrome {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
         pointer-events: none;
     }
     .mercury-nav {
-        position: absolute;
-        top: 0; left: 0; right: 0;
-        z-index: 2;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 18px 28px;
+        padding: 20px 28px;
+        pointer-events: auto;
     }
     .mercury-brand {
         display: flex;
         align-items: center;
         gap: 10px;
         font-weight: 700;
-        letter-spacing: 0.06em;
-        font-size: 13px;
+        letter-spacing: 0.08em;
+        font-size: 12px;
         text-transform: uppercase;
         color: #fff;
-        text-shadow: 0 1px 8px rgba(0,0,0,0.35);
+        text-shadow: 0 1px 10px rgba(0,0,0,0.4);
     }
     .mercury-brand .mark {
-        width: 26px; height: 26px;
+        width: 28px; height: 28px;
         border-radius: 50%;
         background:
-            conic-gradient(from 210deg, #a0aec0, #e2e8f0, #718096, #a0aec0);
-        box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+            radial-gradient(circle at 35% 35%, #e2e8f0, #94a3b8 45%, #475569 100%);
+        box-shadow: 0 0 0 2px rgba(255,255,255,0.35), 0 4px 14px rgba(0,0,0,0.3);
     }
     .mercury-skip {
-        border: 1px solid rgba(255,255,255,0.45);
+        border: 1px solid rgba(255,255,255,0.4);
         background: rgba(15, 23, 42, 0.28);
         color: #fff;
         border-radius: 999px;
@@ -88,131 +89,161 @@
         font-size: 12px;
         font-weight: 600;
         cursor: pointer;
-        backdrop-filter: blur(8px);
+        backdrop-filter: blur(10px);
+        pointer-events: auto;
     }
     .mercury-skip:hover { background: rgba(15, 23, 42, 0.5); }
-    .mercury-hero-inner {
-        position: relative;
-        z-index: 1;
-        max-width: 720px;
+    .mercury-hero-copy {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        padding: clamp(48px, 10vh, 100px) 24px 0;
+        text-align: center;
+        transition: opacity 0.25s ease, transform 0.25s ease;
     }
     .mercury-title {
-        margin: 0 0 14px;
-        font-size: clamp(32px, 5.5vw, 52px);
-        font-weight: 650;
-        letter-spacing: -0.02em;
-        line-height: 1.12;
+        margin: 0 0 12px;
+        font-size: clamp(34px, 5.2vw, 56px);
+        font-weight: 600;
+        letter-spacing: -0.025em;
+        line-height: 1.08;
         color: #fff;
-        text-shadow: 0 2px 24px rgba(0,0,0,0.35);
+        text-shadow: 0 2px 28px rgba(0,0,0,0.4);
+        max-width: 16ch;
     }
     .mercury-sub {
-        margin: 0 auto 28px;
-        max-width: 42ch;
-        font-size: clamp(15px, 2vw, 18px);
-        line-height: 1.5;
-        color: rgba(255,255,255,0.92);
-        text-shadow: 0 1px 12px rgba(0,0,0,0.3);
-    }
-    .mercury-cta-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        justify-content: center;
-        align-items: center;
-    }
-    .mercury-cta {
-        border: none;
-        border-radius: 999px;
-        padding: 12px 22px;
-        font-size: 14px;
-        font-weight: 650;
-        cursor: pointer;
-        background: #5b6cff;
-        color: #fff;
-        box-shadow: 0 8px 24px rgba(30, 40, 120, 0.35);
-    }
-    .mercury-cta:hover { background: #4a59e8; }
-    .mercury-cta.ghost {
-        background: rgba(255,255,255,0.18);
-        border: 1px solid rgba(255,255,255,0.4);
-        box-shadow: none;
-        color: #fff;
-        backdrop-filter: blur(6px);
-    }
-    .mercury-cta.ghost:hover { background: rgba(255,255,255,0.28); }
-    .mercury-desk {
-        position: absolute;
-        left: 50%;
-        bottom: 8%;
-        transform: translateX(-50%);
-        z-index: 1;
-        width: min(280px, 42vw);
-        height: auto;
-        filter: drop-shadow(0 18px 30px rgba(0,0,0,0.4));
-        opacity: 0.95;
+        margin: 0;
+        max-width: 36ch;
+        font-size: clamp(15px, 1.8vw, 18px);
+        line-height: 1.45;
+        color: rgba(255,255,255,0.9);
+        text-shadow: 0 1px 14px rgba(0,0,0,0.35);
     }
     .mercury-scroll-hint {
         position: absolute;
-        bottom: 22px;
+        bottom: 28px;
         left: 50%;
         transform: translateX(-50%);
-        z-index: 2;
-        font-size: 12px;
+        z-index: 3;
+        font-size: 11px;
         font-weight: 600;
-        letter-spacing: 0.04em;
-        color: rgba(255,255,255,0.85);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.88);
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 6px;
-        text-shadow: 0 1px 8px rgba(0,0,0,0.4);
+        gap: 8px;
+        text-shadow: 0 1px 10px rgba(0,0,0,0.45);
+        transition: opacity 0.2s ease;
+        pointer-events: none;
     }
     .mercury-scroll-hint .chev {
-        width: 18px; height: 18px;
-        border-right: 2px solid rgba(255,255,255,0.85);
-        border-bottom: 2px solid rgba(255,255,255,0.85);
+        width: 16px; height: 16px;
+        border-right: 2px solid rgba(255,255,255,0.9);
+        border-bottom: 2px solid rgba(255,255,255,0.9);
         transform: rotate(45deg);
-        animation: mercuryBob 1.6s ease-in-out infinite;
+        animation: mercuryBob 1.5s ease-in-out infinite;
     }
     @keyframes mercuryBob {
-        0%, 100% { transform: rotate(45deg) translate(0, 0); opacity: 0.7; }
-        50% { transform: rotate(45deg) translate(4px, 4px); opacity: 1; }
+        0%, 100% { transform: rotate(45deg) translate(0, 0); opacity: 0.65; }
+        50% { transform: rotate(45deg) translate(3px, 3px); opacity: 1; }
     }
-    .mercury-panel {
-        min-height: 42vh;
-        background: #0c1222;
-        color: #e2e8f0;
-        padding: 56px 24px 72px;
+    /* Live app frame that fills as zoom completes */
+    .mercury-app-frame {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
         display: flex;
-        flex-direction: column;
         align-items: center;
-        text-align: center;
+        justify-content: center;
+        pointer-events: none;
+        opacity: 0;
     }
-    .mercury-panel h2 {
-        margin: 0 0 10px;
-        font-size: 26px;
+    .mercury-app-card {
+        width: min(1100px, 88vw);
+        height: min(640px, 72vh);
+        border-radius: 14px;
+        overflow: hidden;
+        background: #F7FAFC;
+        box-shadow:
+            0 40px 100px rgba(0, 0, 0, 0.45),
+            0 0 0 1px rgba(255,255,255,0.12);
+        transform-origin: 50% 50%;
+    }
+    .mercury-app-card-bar {
+        height: 36px;
+        background: linear-gradient(180deg, #fff, #EDF2F7);
+        border-bottom: 1px solid #E2E8F0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 12px;
+    }
+    .mercury-app-card-bar i {
+        width: 9px; height: 9px; border-radius: 50%;
+        background: #CBD5E0;
+    }
+    .mercury-app-card-bar i:nth-child(1) { background: #FC8181; }
+    .mercury-app-card-bar i:nth-child(2) { background: #F6E05E; }
+    .mercury-app-card-bar i:nth-child(3) { background: #68D391; }
+    .mercury-app-card-body {
+        height: calc(100% - 36px);
+        padding: 18px;
+        display: grid;
+        grid-template-columns: 1.1fr 1fr;
+        gap: 14px;
+        background: linear-gradient(180deg, #fff 0%, #F7FAFC 100%);
+    }
+    .mercury-app-card-body .mock-kpi {
+        border: 1px solid #E2E8F0;
+        border-radius: 10px;
+        padding: 14px;
+        background: #fff;
+    }
+    .mercury-app-card-body .mock-kpi .lbl {
+        font-size: 11px; color: #718096; text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .mercury-app-card-body .mock-kpi .val {
+        font-size: 26px; font-weight: 700; color: #2B6CB0; margin-top: 6px;
+    }
+    .mercury-app-card-body .mock-table {
+        grid-column: 1 / -1;
+        border: 1px solid #E2E8F0;
+        border-radius: 10px;
+        background: #fff;
+        overflow: hidden;
+    }
+    .mercury-app-card-body .mock-row {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr 1fr;
+        gap: 8px;
+        padding: 10px 14px;
+        font-size: 12px;
+        color: #4A5568;
+        border-bottom: 1px solid #EDF2F7;
+    }
+    .mercury-app-card-body .mock-row.head {
+        background: #F7FAFC;
         font-weight: 650;
-        color: #fff;
+        color: #2D3748;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
     }
-    .mercury-panel p {
-        margin: 0 0 22px;
-        max-width: 48ch;
-        color: #a0aec0;
-        line-height: 1.5;
-        font-size: 15px;
-    }
-    body.mercury-landing-open .main-wrapper,
-    body.mercury-landing-open .sidebar,
-    body.mercury-landing-open header {
-        /* Keep app under the full-screen landing */
+    body.mercury-landing-open {
+        overflow: hidden !important;
     }
     @media (prefers-reduced-motion: reduce) {
         .mercury-landing { transition: none !important; }
         .mercury-scroll-hint .chev { animation: none !important; }
+        .mercury-scene { transform: none !important; }
     }
     @media (max-width: 720px) {
-        .mercury-desk { bottom: 14%; width: min(200px, 55vw); }
-        .mercury-title { font-size: 30px; }
+        .mercury-title { font-size: 30px; max-width: 14ch; }
+        .mercury-app-card-body { grid-template-columns: 1fr; }
     }
 
     /* Multi-filter clear chip */
@@ -711,41 +742,41 @@
 
 {% block content %}
 {% if show_login_landing %}
-<div id="mercuryLanding" class="mercury-landing" role="dialog" aria-label="Welcome">
-    <section class="mercury-hero" aria-label="Hero">
+<div id="mercuryLanding" class="mercury-landing" role="dialog" aria-label="Welcome — scroll to enter">
+    <!-- Scene zooms on wheel (progress 0→1). No document scroll. -->
+    <div class="mercury-scene" id="mercuryScene" aria-hidden="true">
+        <div class="mercury-scene-bg"></div>
+    </div>
+    <!-- App mock that grows with zoom, then real Home is revealed -->
+    <div class="mercury-app-frame" id="mercuryAppFrame" aria-hidden="true">
+        <div class="mercury-app-card" id="mercuryAppCard">
+            <div class="mercury-app-card-bar"><i></i><i></i><i></i></div>
+            <div class="mercury-app-card-body">
+                <div class="mock-kpi"><div class="lbl">Workspaces</div><div class="val">—</div></div>
+                <div class="mock-kpi"><div class="lbl">Reports</div><div class="val">—</div></div>
+                <div class="mock-table">
+                    <div class="mock-row head"><span>Workspace</span><span>Reports</span><span>Inactive</span><span>Orphaned</span></div>
+                    <div class="mock-row"><span>Finance</span><span>—</span><span>—</span><span>—</span></div>
+                    <div class="mock-row"><span>Operations</span><span>—</span><span>—</span><span>—</span></div>
+                    <div class="mock-row"><span>Sales</span><span>—</span><span>—</span><span>—</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="mercury-chrome">
         <div class="mercury-nav">
             <div class="mercury-brand"><span class="mark" aria-hidden="true"></span> Power BI Control Center</div>
             <button type="button" class="mercury-skip" id="mercurySkip">Skip</button>
         </div>
-        <div class="mercury-hero-inner">
-            <h1 class="mercury-title">Workspace health &amp; ownership,<br>all in one place.</h1>
-            <p class="mercury-sub">Catalog, refresh, and usage signals for every Power BI report you can access — ready when you are.</p>
-            <div class="mercury-cta-row">
-                <button type="button" class="mercury-cta" id="mercuryEnter">Enter Control Center</button>
-                <button type="button" class="mercury-cta ghost" id="mercuryScrollMore">Scroll to continue</button>
-            </div>
+        <div class="mercury-hero-copy" id="mercuryCopy">
+            <h1 class="mercury-title">Workspace health &amp; ownership, all in one place.</h1>
+            <p class="mercury-sub">Scroll to zoom into Control Center</p>
         </div>
-        <!-- Simple desk / laptop silhouette (decorative) -->
-        <svg class="mercury-desk" viewBox="0 0 320 160" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <ellipse cx="160" cy="148" rx="110" ry="8" fill="rgba(0,0,0,0.25)"/>
-            <rect x="40" y="96" width="240" height="12" rx="2" fill="#5a4636"/>
-            <rect x="52" y="108" width="10" height="36" fill="#3d2f24"/>
-            <rect x="258" y="108" width="10" height="36" fill="#3d2f24"/>
-            <rect x="108" y="48" width="104" height="48" rx="4" fill="#2d3748"/>
-            <rect x="114" y="54" width="92" height="36" rx="2" fill="#63b3ed"/>
-            <rect x="130" y="96" width="60" height="6" rx="1" fill="#4a5568"/>
-            <rect x="210" y="72" width="36" height="24" rx="2" fill="#4a3728"/>
-        </svg>
-        <div class="mercury-scroll-hint" aria-hidden="true">
-            <span>Scroll</span>
-            <span class="chev"></span>
-        </div>
-    </section>
-    <section class="mercury-panel" id="mercuryPanel">
-        <h2>Your dashboards await</h2>
-        <p>Scroll here or use Enter to open Home — workspace health, inactive reports, and orphaned ownership signals.</p>
-        <button type="button" class="mercury-cta" id="mercuryEnterBottom">Open Home</button>
-    </section>
+    </div>
+    <div class="mercury-scroll-hint" id="mercuryHint" aria-hidden="true">
+        <span>Scroll</span>
+        <span class="chev"></span>
+    </div>
 </div>
 {% endif %}
 
@@ -1077,44 +1108,129 @@
     }
 
     function runMercuryLanding() {
+        // Mercury pattern: fixed viewport. Mouse-wheel "scroll down" raises zoom
+        // progress (scale up into the scene) until the real app is revealed.
         const landing = document.getElementById('mercuryLanding');
         if (!landing) return;
+        const scene = document.getElementById('mercuryScene');
+        const appFrame = document.getElementById('mercuryAppFrame');
+        const appCard = document.getElementById('mercuryAppCard');
+        const copy = document.getElementById('mercuryCopy');
+        const hint = document.getElementById('mercuryHint');
+        const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        let progress = 0; // 0..1
         let done = false;
+        let touchY = null;
+
+        const clamp01 = (v) => Math.max(0, Math.min(1, v));
+        const ease = (t) => 1 - Math.pow(1 - t, 2.4); // ease-out
+
         const finish = () => {
             if (done) return;
             done = true;
+            progress = 1;
+            paint();
             landing.classList.add('is-done');
             document.body.classList.remove('mercury-landing-open');
-            setTimeout(() => { try { landing.remove(); } catch (e) {} }, 560);
+            window.removeEventListener('wheel', onWheel);
+            window.removeEventListener('keydown', onKey);
+            landing.removeEventListener('touchstart', onTouchStart);
+            landing.removeEventListener('touchmove', onTouchMove);
+            setTimeout(() => { try { landing.remove(); } catch (e) {} }, 480);
         };
-        document.body.classList.add('mercury-landing-open');
-        // Enter / skip buttons only — NO automatic zoom timer
-        ['mercuryEnter', 'mercuryEnterBottom', 'mercurySkip'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.addEventListener('click', finish);
-        });
-        const scrollMore = document.getElementById('mercuryScrollMore');
-        if (scrollMore) {
-            scrollMore.addEventListener('click', () => {
-                const panel = document.getElementById('mercuryPanel');
-                if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            });
-        }
-        // Scroll far enough past hero → enter (like reaching the product section)
-        const onScroll = () => {
-            const y = landing.scrollTop || 0;
-            const heroH = landing.querySelector('.mercury-hero')?.offsetHeight || window.innerHeight;
-            if (y > heroH * 0.55) finish();
-        };
-        landing.addEventListener('scroll', onScroll, { passive: true });
-        // Esc skips
-        const onKey = (e) => {
-            if (e.key === 'Escape') {
-                finish();
-                window.removeEventListener('keydown', onKey);
+
+        const paint = () => {
+            const t = ease(progress);
+            // Hero photo: start full frame, zoom INTO desk/laptop (scale 1 → ~2.6)
+            if (scene) {
+                scene.style.transform = `scale(${1 + t * 1.65})`;
+            }
+            // Headline fades as we dive in
+            if (copy) {
+                const fade = clamp01(1 - progress * 1.55);
+                copy.style.opacity = String(fade);
+                copy.style.transform = `translateY(${-t * 28}px) scale(${1 - t * 0.08})`;
+            }
+            if (hint) {
+                hint.style.opacity = progress < 0.08 ? '1' : String(clamp01(1 - progress * 4));
+            }
+            // App card fades/scales up under the zoom (product reveal)
+            if (appFrame && appCard) {
+                const reveal = clamp01((progress - 0.22) / 0.78);
+                const r = ease(reveal);
+                appFrame.style.opacity = String(r);
+                appCard.style.transform = `scale(${0.55 + r * 0.55})`;
+                appCard.style.borderRadius = `${14 * (1 - r * 0.85)}px`;
             }
         };
+
+        const bump = (delta) => {
+            if (done) return;
+            // delta > 0 = scroll down = zoom IN
+            progress = clamp01(progress + delta);
+            paint();
+            if (progress >= 0.985) finish();
+        };
+
+        const onWheel = (e) => {
+            if (done) return;
+            e.preventDefault();
+            // Typical wheel deltaY ~100; normalize so ~2–3 notches completes
+            const step = Math.max(-0.12, Math.min(0.12, e.deltaY / 900));
+            bump(step);
+        };
+
+        const onTouchStart = (e) => {
+            if (!e.touches || !e.touches[0]) return;
+            touchY = e.touches[0].clientY;
+        };
+        const onTouchMove = (e) => {
+            if (touchY == null || !e.touches || !e.touches[0]) return;
+            e.preventDefault();
+            const y = e.touches[0].clientY;
+            const dy = touchY - y; // finger up = scroll down = zoom in
+            touchY = y;
+            bump(dy / 700);
+        };
+
+        const onKey = (e) => {
+            if (e.key === 'Escape') { finish(); return; }
+            if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
+                e.preventDefault();
+                bump(0.12);
+            } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+                e.preventDefault();
+                bump(-0.12);
+            } else if (e.key === 'Enter') {
+                finish();
+            }
+        };
+
+        document.body.classList.add('mercury-landing-open');
+        paint();
+
+        if (reduce) {
+            // Respect reduced motion: one click / Esc only
+            const skip = document.getElementById('mercurySkip');
+            if (skip) skip.addEventListener('click', finish);
+            window.addEventListener('keydown', onKey);
+            return;
+        }
+
+        // Non-passive so we can preventDefault and block page scroll
+        window.addEventListener('wheel', onWheel, { passive: false });
+        landing.addEventListener('touchstart', onTouchStart, { passive: true });
+        landing.addEventListener('touchmove', onTouchMove, { passive: false });
         window.addEventListener('keydown', onKey);
+
+        const skip = document.getElementById('mercurySkip');
+        if (skip) skip.addEventListener('click', finish);
+        // Click anywhere on scene also nudges zoom forward once
+        landing.addEventListener('click', (e) => {
+            if (e.target.closest('#mercurySkip')) return;
+            if (progress < 0.15) bump(0.18);
+        });
     }
 
     function renderWorkspaceTable(list) {
