@@ -6,142 +6,213 @@
 
 {% block extra_css %}
 <style>
-    /* ===== Post-login intro (Mercury-style slow zoom into the app) ===== */
-    .login-intro-stage {
+    /* ===== Post-login landing (Mercury-style: scroll / click to enter — NO auto zoom) ===== */
+    .mercury-landing {
         position: fixed;
         inset: 0;
         z-index: 99990;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #0c1222;
+        color: #f7fafc;
+        opacity: 1;
+        transition: opacity 0.55s ease;
+    }
+    .mercury-landing.is-done {
+        opacity: 0;
+        pointer-events: none;
+    }
+    .mercury-hero {
+        min-height: 100vh;
+        position: relative;
         display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
-        pointer-events: none;
-        opacity: 0;
-        transition: opacity 0.35s ease;
+        text-align: center;
+        padding: 80px 24px 120px;
+        /* Atmosphere inspired by mercury.com hero — misty mountain gradient */
+        background:
+            radial-gradient(ellipse 90% 70% at 50% 55%, rgba(120, 160, 200, 0.22) 0%, transparent 55%),
+            linear-gradient(180deg,
+                #6a7f96 0%,
+                #8fa3b5 18%,
+                #b8c5ce 38%,
+                #d4d8d4 52%,
+                #9aab96 68%,
+                #4a5c48 82%,
+                #1a2420 100%);
     }
-    .login-intro-stage.is-on {
-        pointer-events: auto;
-        opacity: 1;
-    }
-    .login-intro-stage.is-done {
-        opacity: 0;
-        pointer-events: none;
-    }
-    .login-intro-veil {
+    .mercury-hero::before {
+        content: "";
         position: absolute;
         inset: 0;
         background:
-            radial-gradient(1200px 600px at 50% 40%, rgba(49, 130, 206, 0.18), transparent 60%),
-            linear-gradient(160deg, #0B1220 0%, #1A202C 55%, #2D3748 100%);
+            radial-gradient(ellipse 60% 40% at 50% 100%, rgba(20, 30, 25, 0.55), transparent 60%),
+            linear-gradient(180deg, rgba(12, 18, 34, 0.15) 0%, transparent 35%, rgba(12, 18, 34, 0.55) 100%);
+        pointer-events: none;
     }
-    .login-intro-card {
-        position: relative;
-        z-index: 1;
-        width: min(920px, 92vw);
-        height: min(560px, 78vh);
-        border-radius: 16px;
-        overflow: hidden;
-        box-shadow:
-            0 30px 80px rgba(0, 0, 0, 0.45),
-            0 0 0 1px rgba(255, 255, 255, 0.06);
-        transform: scale(0.72);
-        transform-origin: 50% 45%;
-        transition: transform 5s cubic-bezier(0.22, 1, 0.36, 1);
-        background: #F7FAFC;
-    }
-    .login-intro-stage.is-zoom .login-intro-card {
-        transform: scale(1);
-    }
-    .login-intro-card-inner {
-        padding: 28px 28px 20px;
-        height: 100%;
+    .mercury-nav {
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        z-index: 2;
         display: flex;
-        flex-direction: column;
-        gap: 16px;
-        background:
-            linear-gradient(180deg, #FFFFFF 0%, #F7FAFC 100%);
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 28px;
     }
-    .login-intro-brand {
+    .mercury-brand {
         display: flex;
         align-items: center;
         gap: 10px;
         font-weight: 700;
-        letter-spacing: 0.02em;
-        color: #1A365D;
-        font-size: 15px;
+        letter-spacing: 0.06em;
+        font-size: 13px;
+        text-transform: uppercase;
+        color: #fff;
+        text-shadow: 0 1px 8px rgba(0,0,0,0.35);
     }
-    .login-intro-brand .mark {
-        width: 28px;
-        height: 28px;
-        border-radius: 8px;
-        background: linear-gradient(135deg, #3182CE, #2B6CB0);
-        box-shadow: 0 6px 14px rgba(49, 130, 206, 0.35);
-    }
-    .login-intro-hero {
-        flex: 1;
-        border-radius: 12px;
-        border: 1px solid #E2E8F0;
+    .mercury-brand .mark {
+        width: 26px; height: 26px;
+        border-radius: 50%;
         background:
-            linear-gradient(135deg, rgba(49,130,206,0.08), rgba(72,187,120,0.06)),
-            #fff;
-        padding: 22px;
-        display: grid;
-        grid-template-columns: 1.2fr 1fr;
-        gap: 16px;
-        min-height: 0;
+            conic-gradient(from 210deg, #a0aec0, #e2e8f0, #718096, #a0aec0);
+        box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
     }
-    .login-intro-title {
-        font-size: 28px;
-        line-height: 1.15;
-        font-weight: 750;
-        color: #1A202C;
-        margin: 0 0 8px;
-    }
-    .login-intro-sub {
-        margin: 0;
-        color: #4A5568;
-        font-size: 14px;
-        line-height: 1.45;
-        max-width: 36ch;
-    }
-    .login-intro-kpis {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
-        align-content: start;
-    }
-    .login-intro-kpi {
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        padding: 12px;
-        background: #fff;
-    }
-    .login-intro-kpi .lbl { font-size: 11px; color: #718096; text-transform: uppercase; letter-spacing: 0.04em; }
-    .login-intro-kpi .val { font-size: 22px; font-weight: 700; color: #2B6CB0; margin-top: 4px; }
-    .login-intro-skip {
-        position: absolute;
-        top: 18px;
-        right: 18px;
-        z-index: 2;
-        border: 1px solid rgba(255,255,255,0.25);
-        background: rgba(15, 23, 42, 0.35);
-        color: #EDF2F7;
+    .mercury-skip {
+        border: 1px solid rgba(255,255,255,0.45);
+        background: rgba(15, 23, 42, 0.28);
+        color: #fff;
         border-radius: 999px;
-        padding: 8px 14px;
+        padding: 8px 16px;
         font-size: 12px;
         font-weight: 600;
         cursor: pointer;
-        backdrop-filter: blur(6px);
-        pointer-events: auto;
+        backdrop-filter: blur(8px);
     }
-    .login-intro-skip:hover { background: rgba(15, 23, 42, 0.55); }
-    body.login-intro-lock { overflow: hidden; }
+    .mercury-skip:hover { background: rgba(15, 23, 42, 0.5); }
+    .mercury-hero-inner {
+        position: relative;
+        z-index: 1;
+        max-width: 720px;
+    }
+    .mercury-title {
+        margin: 0 0 14px;
+        font-size: clamp(32px, 5.5vw, 52px);
+        font-weight: 650;
+        letter-spacing: -0.02em;
+        line-height: 1.12;
+        color: #fff;
+        text-shadow: 0 2px 24px rgba(0,0,0,0.35);
+    }
+    .mercury-sub {
+        margin: 0 auto 28px;
+        max-width: 42ch;
+        font-size: clamp(15px, 2vw, 18px);
+        line-height: 1.5;
+        color: rgba(255,255,255,0.92);
+        text-shadow: 0 1px 12px rgba(0,0,0,0.3);
+    }
+    .mercury-cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: center;
+        align-items: center;
+    }
+    .mercury-cta {
+        border: none;
+        border-radius: 999px;
+        padding: 12px 22px;
+        font-size: 14px;
+        font-weight: 650;
+        cursor: pointer;
+        background: #5b6cff;
+        color: #fff;
+        box-shadow: 0 8px 24px rgba(30, 40, 120, 0.35);
+    }
+    .mercury-cta:hover { background: #4a59e8; }
+    .mercury-cta.ghost {
+        background: rgba(255,255,255,0.18);
+        border: 1px solid rgba(255,255,255,0.4);
+        box-shadow: none;
+        color: #fff;
+        backdrop-filter: blur(6px);
+    }
+    .mercury-cta.ghost:hover { background: rgba(255,255,255,0.28); }
+    .mercury-desk {
+        position: absolute;
+        left: 50%;
+        bottom: 8%;
+        transform: translateX(-50%);
+        z-index: 1;
+        width: min(280px, 42vw);
+        height: auto;
+        filter: drop-shadow(0 18px 30px rgba(0,0,0,0.4));
+        opacity: 0.95;
+    }
+    .mercury-scroll-hint {
+        position: absolute;
+        bottom: 22px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 2;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: rgba(255,255,255,0.85);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        text-shadow: 0 1px 8px rgba(0,0,0,0.4);
+    }
+    .mercury-scroll-hint .chev {
+        width: 18px; height: 18px;
+        border-right: 2px solid rgba(255,255,255,0.85);
+        border-bottom: 2px solid rgba(255,255,255,0.85);
+        transform: rotate(45deg);
+        animation: mercuryBob 1.6s ease-in-out infinite;
+    }
+    @keyframes mercuryBob {
+        0%, 100% { transform: rotate(45deg) translate(0, 0); opacity: 0.7; }
+        50% { transform: rotate(45deg) translate(4px, 4px); opacity: 1; }
+    }
+    .mercury-panel {
+        min-height: 42vh;
+        background: #0c1222;
+        color: #e2e8f0;
+        padding: 56px 24px 72px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+    }
+    .mercury-panel h2 {
+        margin: 0 0 10px;
+        font-size: 26px;
+        font-weight: 650;
+        color: #fff;
+    }
+    .mercury-panel p {
+        margin: 0 0 22px;
+        max-width: 48ch;
+        color: #a0aec0;
+        line-height: 1.5;
+        font-size: 15px;
+    }
+    body.mercury-landing-open .main-wrapper,
+    body.mercury-landing-open .sidebar,
+    body.mercury-landing-open header {
+        /* Keep app under the full-screen landing */
+    }
     @media (prefers-reduced-motion: reduce) {
-        .login-intro-card { transition: none !important; transform: scale(1) !important; }
-        .login-intro-stage { transition: none !important; }
+        .mercury-landing { transition: none !important; }
+        .mercury-scroll-hint .chev { animation: none !important; }
     }
     @media (max-width: 720px) {
-        .login-intro-hero { grid-template-columns: 1fr; }
-        .login-intro-title { font-size: 22px; }
+        .mercury-desk { bottom: 14%; width: min(200px, 55vw); }
+        .mercury-title { font-size: 30px; }
     }
 
     /* Multi-filter clear chip */
@@ -639,30 +710,42 @@
 {% endblock %}
 
 {% block content %}
-{% if show_login_intro %}
-<div id="loginIntro" class="login-intro-stage" aria-hidden="true">
-    <div class="login-intro-veil"></div>
-    <button type="button" class="login-intro-skip" id="loginIntroSkip">Skip</button>
-    <div class="login-intro-card" id="loginIntroCard">
-        <div class="login-intro-card-inner">
-            <div class="login-intro-brand">
-                <span class="mark" aria-hidden="true"></span>
-                <span>Power BI Control Center</span>
-            </div>
-            <div class="login-intro-hero">
-                <div>
-                    <h1 class="login-intro-title">Workspace health, ownership &amp; impact — in one place.</h1>
-                    <p class="login-intro-sub">Catalog, refresh, and usage signals load from SharePoint ops snapshots so your home view paints fast after sign-in.</p>
-                </div>
-                <div class="login-intro-kpis" aria-hidden="true">
-                    <div class="login-intro-kpi"><div class="lbl">Workspaces</div><div class="val">…</div></div>
-                    <div class="login-intro-kpi"><div class="lbl">Reports</div><div class="val">…</div></div>
-                    <div class="login-intro-kpi"><div class="lbl">Inactive</div><div class="val">…</div></div>
-                    <div class="login-intro-kpi"><div class="lbl">Orphaned</div><div class="val">…</div></div>
-                </div>
+{% if show_login_landing %}
+<div id="mercuryLanding" class="mercury-landing" role="dialog" aria-label="Welcome">
+    <section class="mercury-hero" aria-label="Hero">
+        <div class="mercury-nav">
+            <div class="mercury-brand"><span class="mark" aria-hidden="true"></span> Power BI Control Center</div>
+            <button type="button" class="mercury-skip" id="mercurySkip">Skip</button>
+        </div>
+        <div class="mercury-hero-inner">
+            <h1 class="mercury-title">Workspace health &amp; ownership,<br>all in one place.</h1>
+            <p class="mercury-sub">Catalog, refresh, and usage signals for every Power BI report you can access — ready when you are.</p>
+            <div class="mercury-cta-row">
+                <button type="button" class="mercury-cta" id="mercuryEnter">Enter Control Center</button>
+                <button type="button" class="mercury-cta ghost" id="mercuryScrollMore">Scroll to continue</button>
             </div>
         </div>
-    </div>
+        <!-- Simple desk / laptop silhouette (decorative) -->
+        <svg class="mercury-desk" viewBox="0 0 320 160" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <ellipse cx="160" cy="148" rx="110" ry="8" fill="rgba(0,0,0,0.25)"/>
+            <rect x="40" y="96" width="240" height="12" rx="2" fill="#5a4636"/>
+            <rect x="52" y="108" width="10" height="36" fill="#3d2f24"/>
+            <rect x="258" y="108" width="10" height="36" fill="#3d2f24"/>
+            <rect x="108" y="48" width="104" height="48" rx="4" fill="#2d3748"/>
+            <rect x="114" y="54" width="92" height="36" rx="2" fill="#63b3ed"/>
+            <rect x="130" y="96" width="60" height="6" rx="1" fill="#4a5568"/>
+            <rect x="210" y="72" width="36" height="24" rx="2" fill="#4a3728"/>
+        </svg>
+        <div class="mercury-scroll-hint" aria-hidden="true">
+            <span>Scroll</span>
+            <span class="chev"></span>
+        </div>
+    </section>
+    <section class="mercury-panel" id="mercuryPanel">
+        <h2>Your dashboards await</h2>
+        <p>Scroll here or use Enter to open Home — workspace health, inactive reports, and orphaned ownership signals.</p>
+        <button type="button" class="mercury-cta" id="mercuryEnterBottom">Open Home</button>
+    </section>
 </div>
 {% endif %}
 
@@ -993,32 +1076,38 @@
         updateHomeFilterReset();
     }
 
-    function runLoginIntro() {
-        const stage = document.getElementById('loginIntro');
-        if (!stage) return;
-        const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    function runMercuryLanding() {
+        const landing = document.getElementById('mercuryLanding');
+        if (!landing) return;
+        let done = false;
         const finish = () => {
-            stage.classList.add('is-done');
-            document.body.classList.remove('login-intro-lock');
-            setTimeout(() => { try { stage.remove(); } catch (e) {} }, 400);
+            if (done) return;
+            done = true;
+            landing.classList.add('is-done');
+            document.body.classList.remove('mercury-landing-open');
+            setTimeout(() => { try { landing.remove(); } catch (e) {} }, 560);
         };
-        document.body.classList.add('login-intro-lock');
-        stage.setAttribute('aria-hidden', 'false');
-        // paint, then fade in, then zoom
-        requestAnimationFrame(() => {
-            stage.classList.add('is-on');
-            if (reduce) {
-                setTimeout(finish, 400);
-                return;
-            }
-            // start zoom slightly after veil is visible
-            setTimeout(() => stage.classList.add('is-zoom'), 80);
-            // auto-complete after ~5s zoom
-            setTimeout(finish, 5200);
+        document.body.classList.add('mercury-landing-open');
+        // Enter / skip buttons only — NO automatic zoom timer
+        ['mercuryEnter', 'mercuryEnterBottom', 'mercurySkip'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('click', finish);
         });
-        const skip = document.getElementById('loginIntroSkip');
-        if (skip) skip.addEventListener('click', finish);
-        // Esc to skip
+        const scrollMore = document.getElementById('mercuryScrollMore');
+        if (scrollMore) {
+            scrollMore.addEventListener('click', () => {
+                const panel = document.getElementById('mercuryPanel');
+                if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+        }
+        // Scroll far enough past hero → enter (like reaching the product section)
+        const onScroll = () => {
+            const y = landing.scrollTop || 0;
+            const heroH = landing.querySelector('.mercury-hero')?.offsetHeight || window.innerHeight;
+            if (y > heroH * 0.55) finish();
+        };
+        landing.addEventListener('scroll', onScroll, { passive: true });
+        // Esc skips
         const onKey = (e) => {
             if (e.key === 'Escape') {
                 finish();
@@ -1155,7 +1244,7 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        runLoginIntro();
+        runMercuryLanding(); // manual enter only — never auto-zoom
         loadDashboard();
         const search = document.getElementById('workspaceSearch');
         const sort = document.getElementById('sortSelect');

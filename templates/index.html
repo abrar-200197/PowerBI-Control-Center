@@ -596,6 +596,8 @@
     let allWorkspaces = []; // Store all workspaces for filtering
     let statusFilter = null; // Filter for active/inactive reports
     let selectedReportId = null; // report dropdown filter
+    // Owner columns: all rows spin together until batch metadata returns (no per-row early finish)
+    let metadataBatchLoading = false;
     const VIEW_LOOKBACK_DAYS = 60;
 
     /** Parse ISO / epoch → Date or null */
@@ -986,20 +988,17 @@
 
             if (result.success) {
                 const opsFromCatalog = !!result.opsFromCatalog;
+                // Keep owner strings if catalog seeded them, but do NOT mark per-row
+                // metadata_loaded from partial people — all rows spin together
+                // until /api/reports-metadata batch returns (original UX).
                 reports = result.reports.map(r => {
                     const hasCatalogViews = r.view_count !== undefined && r.view_count !== null;
                     const hasCatalogRefresh = !!(
                         r.last_refreshed || r.last_refresh_status || r.refresh_schedule || r.refresh_type
                     );
-                    // Keep owner fields if server/catalog already provided them
-                    const hasPeople = !!(
-                        r.metadata_loaded ||
-                        r.created_by || r.modified_by ||
-                        r.created_date_time || r.modified_date_time
-                    );
                     return {
                         ...r,
-                        metadata_loaded: hasPeople,
+                        metadata_loaded: false,
                         details_loaded: false,
                         // Keep catalog views; only spinner when truly missing
                         view_count: hasCatalogViews ? r.view_count : undefined,
@@ -1008,6 +1007,7 @@
                         ops_from_catalog: r.ops_from_catalog || opsFromCatalog,
                     };
                 });
+                metadataBatchLoading = reports.length > 0;
                 console.log(`✅ Received ${reports.length} reports from server`);
 
                 // Show/hide filter header based on statusFilter
@@ -1224,7 +1224,7 @@
             if (result.success && result.reports) {
                 console.log(`✅ Got metadata for ${result.reports.length} reports`);
 
-                // Update reports with metadata (never overwrite good values with empty)
+                // Apply batch to all rows together, then flip loaded flag once
                 result.reports.forEach(metadata => {
                     const reportIndex = reports.findIndex(r => r.id === metadata.report_id);
                     if (reportIndex !== -1) {
@@ -1241,11 +1241,11 @@
                             modified_by: pick(metadata.modified_by, prev.modified_by),
                             modified_date_time: pick(metadata.modified_date_time, prev.modified_date_time),
                             created_date_time: pick(metadata.created_date_time, prev.created_date_time),
-                            metadata_loaded: true
                         };
                     }
                 });
 
+                metadataBatchLoading = false;
                 reports = reports.map(r => ({ ...r, metadata_loaded: true }));
                 renderReportsTable(reports);
                 showAlert('success', `✅ Metadata loaded successfully!`);
@@ -1259,6 +1259,7 @@
             showAlert('error', aborted
                 ? `Metadata timed out after ${timeoutMs / 1000}s. Rows show N/A for missing owners.`
                 : ('Failed to load metadata: ' + (error.message || error)));
+            metadataBatchLoading = false;
             reports = reports.map(r => ({ ...r, metadata_loaded: true }));
             renderReportsTable(reports);
             btn.disabled = false;
@@ -1326,18 +1327,13 @@
             return;
         }
 
-        // Skip if every visible row already has people/dates
-        if (reports.every(r => r.metadata_loaded || r.created_by || r.modified_by)) {
-            console.log('⏭️ Metadata already present — skip background fetch');
-            reports = reports.map(r => ({ ...r, metadata_loaded: true }));
-            renderReportsTable(reports);
-            return;
-        }
-
-        console.log(`🔄 Auto-loading metadata for ${reports.length} reports in background...`);
+        // Always run one batch load so every owner column finishes together.
+        // Do not skip just because a few rows already have created_by from catalog.
+        metadataBatchLoading = true;
+        console.log(`🔄 Auto-loading metadata for ${reports.length} reports in background (batch)…`);
         const t0 = performance.now();
         const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-        // Hard cap so UI never spins for 3–4 minutes with empty server logs
+        // Cap so UI never hangs silently for minutes; still one-shot for ALL rows
         const timeoutMs = 45000;
         const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
@@ -1353,7 +1349,6 @@
                     `in ${((performance.now() - t0) / 1000).toFixed(1)}s`
                 );
 
-                // Update reports with metadata (never overwrite good values with empty)
                 result.reports.forEach(metadata => {
                     const reportIndex = reports.findIndex(r => r.id === metadata.report_id);
                     if (reportIndex !== -1) {
@@ -1370,35 +1365,28 @@
                             modified_by: pick(metadata.modified_by, prev.modified_by),
                             modified_date_time: pick(metadata.modified_date_time, prev.modified_date_time),
                             created_date_time: pick(metadata.created_date_time, prev.created_date_time),
-                            metadata_loaded: true
                         };
                     }
                 });
-
-                // Mark any remaining rows loaded so spinners stop (show N/A, not spin forever)
-                reports = reports.map(r => ({ ...r, metadata_loaded: true }));
-                renderReportsTable(reports);
-
-                const mb = document.getElementById('metadataBtn');
-                if (mb) mb.style.display = 'none';
             } else {
-                console.warn('Metadata response not successful', result.error || result);
-                reports = reports.map(r => ({ ...r, metadata_loaded: true }));
-                renderReportsTable(reports);
+                console.warn('Metadata response not successful', result && result.error);
             }
         } catch (error) {
             const aborted = error && (error.name === 'AbortError' || String(error).includes('abort'));
             console.error(
                 aborted
-                    ? `Background metadata timed out after ${timeoutMs / 1000}s — stopping spinners`
+                    ? `Background metadata timed out after ${timeoutMs / 1000}s — stopping ALL spinners together`
                     : 'Background metadata loading failed:',
                 error
             );
-            // Stop spinners even on failure/timeout
-            reports = reports.map(r => ({ ...r, metadata_loaded: true }));
-            renderReportsTable(reports);
         } finally {
             if (timer) clearTimeout(timer);
+            // One flip for the whole table (no partial per-row finish)
+            metadataBatchLoading = false;
+            reports = reports.map(r => ({ ...r, metadata_loaded: true }));
+            renderReportsTable(reports);
+            const mb = document.getElementById('metadataBtn');
+            if (mb) mb.style.display = 'none';
         }
     }
 
@@ -1670,9 +1658,10 @@
 
         // ⚡ PERFORMANCE OPTIMIZATION: Render only current page of reports
         paginatedReports.forEach(report => {
-            // Show spinners ONLY for metadata (Created By, Modified By) while loading
-            // Dataset refresh info is now included in initial load, so no spinner needed
-            const isLoadingMetadata = !report.metadata_loaded && !report.created_by && !report.modified_by;
+            // Owner columns: ALL rows show spinners together until the batch metadata
+            // call finishes. Do not hide spinner on a single row just because
+            // that row already has created_by from catalog while others wait.
+            const isLoadingMetadata = metadataBatchLoading || !report.metadata_loaded;
 
             // Format creator info (Step 2 data) with title for full email on hover
             const createdBy = report.created_by ?

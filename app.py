@@ -391,8 +391,8 @@ def authorized():
         if old_user_id and old_user_id != new_user_id:
             clear_user_cache(old_user_id)
 
-        # One-shot post-login intro (Mercury-style slow zoom into the app)
-        session['show_login_intro'] = True
+        # Optional one-shot post-login landing (scroll-to-enter). Not auto-zoom.
+        session['show_login_landing'] = True
         return redirect(url_for("index"))
 
     flash('No authorization code received', 'error')
@@ -726,9 +726,9 @@ def test_sso():
 @login_required
 def index():
     """Home page - Dashboard Overview"""
-    # Consume one-shot login intro flag (set after SSO success)
-    show_login_intro = bool(session.pop('show_login_intro', False))
-    return render_template('home.html', show_login_intro=show_login_intro)
+    # Optional scroll-to-enter landing after SSO (user scrolls / clicks — no auto zoom)
+    show_login_landing = bool(session.pop('show_login_landing', False))
+    return render_template('home.html', show_login_landing=show_login_landing)
 
 
 @app.route('/documentation')
@@ -5290,6 +5290,8 @@ def _catalog_reports_shell(catalog_reports):
         )
         # Optional owner fields from catalog (after extract preserves them).
         # UI still runs /api/reports-metadata for live fill; seeding avoids N/A flash.
+        # Seed owner fields when catalog has them, but never mark metadata_loaded here.
+        # UI waits for ONE batch /api/reports-metadata so ALL rows stop spinning together.
         created_by = _pick_person(r.get('createdBy'), r.get('created_by'))
         modified_by = _pick_person(r.get('modifiedBy'), r.get('modified_by'))
         created_dt = _pick_datetime(
@@ -5298,7 +5300,6 @@ def _catalog_reports_shell(catalog_reports):
         modified_dt = _pick_datetime(
             r.get('modifiedDateTime'), r.get('modified_date_time'), r.get('modified_date')
         )
-        has_people = bool(created_by or modified_by or created_dt or modified_dt)
 
         last_ref = r.get('last_refreshed')
         days = r.get('days_since_refresh')
@@ -5330,8 +5331,7 @@ def _catalog_reports_shell(catalog_reports):
             'modified_by': modified_by or None,
             'created_date_time': created_dt or None,
             'modified_date_time': modified_dt or None,
-            # If catalog already has people/dates, table can render without waiting
-            'metadata_loaded': has_people,
+            'metadata_loaded': False,
             'last_accessed': None,
             'last_accessed_by': None,
             'last_modified': None,
@@ -5462,7 +5462,8 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
             'modified_by': modified_by or None,
             'created_date_time': created_dt or None,
             'modified_date_time': modified_dt or None,
-            'metadata_loaded': has_people,
+            # Always false — UI batch-loads owner columns together
+            'metadata_loaded': False,
             'last_accessed': None,
             'last_accessed_by': None,
             'last_modified': None,
