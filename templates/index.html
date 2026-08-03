@@ -829,9 +829,15 @@
                     const hasCatalogRefresh = !!(
                         r.last_refreshed || r.last_refresh_status || r.refresh_schedule || r.refresh_type
                     );
+                    // Keep owner fields if server/catalog already provided them
+                    const hasPeople = !!(
+                        r.metadata_loaded ||
+                        r.created_by || r.modified_by ||
+                        r.created_date_time || r.modified_date_time
+                    );
                     return {
                         ...r,
-                        metadata_loaded: false,
+                        metadata_loaded: hasPeople,
                         details_loaded: false,
                         // Keep catalog views; only spinner when truly missing
                         view_count: hasCatalogViews ? r.view_count : undefined,
@@ -1044,16 +1050,23 @@
             if (result.success && result.reports) {
                 console.log(`✅ Got metadata for ${result.reports.length} reports`);
 
-                // Update reports with metadata
+                // Update reports with metadata (never overwrite good values with empty)
                 result.reports.forEach(metadata => {
                     const reportIndex = reports.findIndex(r => r.id === metadata.report_id);
                     if (reportIndex !== -1) {
+                        const prev = reports[reportIndex];
+                        const pick = (incoming, existing) => {
+                            if (incoming !== undefined && incoming !== null && String(incoming).trim() !== '' && String(incoming).toUpperCase() !== 'N/A') {
+                                return incoming;
+                            }
+                            return existing;
+                        };
                         reports[reportIndex] = {
-                            ...reports[reportIndex],
-                            created_by: metadata.created_by,
-                            modified_by: metadata.modified_by,
-                            modified_date_time: metadata.modified_date_time,
-                            created_date_time: metadata.created_date_time,
+                            ...prev,
+                            created_by: pick(metadata.created_by, prev.created_by),
+                            modified_by: pick(metadata.modified_by, prev.modified_by),
+                            modified_date_time: pick(metadata.modified_date_time, prev.modified_date_time),
+                            created_date_time: pick(metadata.created_date_time, prev.created_date_time),
                             metadata_loaded: true
                         };
                     }
@@ -1137,16 +1150,23 @@
             if (result.success && result.reports) {
                 console.log(`✅ Got metadata for ${result.reports.length} reports`);
 
-                // Update reports with metadata
+                // Update reports with metadata (never overwrite good values with empty)
                 result.reports.forEach(metadata => {
                     const reportIndex = reports.findIndex(r => r.id === metadata.report_id);
                     if (reportIndex !== -1) {
+                        const prev = reports[reportIndex];
+                        const pick = (incoming, existing) => {
+                            if (incoming !== undefined && incoming !== null && String(incoming).trim() !== '' && String(incoming).toUpperCase() !== 'N/A') {
+                                return incoming;
+                            }
+                            return existing;
+                        };
                         reports[reportIndex] = {
-                            ...reports[reportIndex],
-                            created_by: metadata.created_by,
-                            modified_by: metadata.modified_by,
-                            modified_date_time: metadata.modified_date_time,
-                            created_date_time: metadata.created_date_time,
+                            ...prev,
+                            created_by: pick(metadata.created_by, prev.created_by),
+                            modified_by: pick(metadata.modified_by, prev.modified_by),
+                            modified_date_time: pick(metadata.modified_date_time, prev.modified_date_time),
+                            created_date_time: pick(metadata.created_date_time, prev.created_date_time),
                             metadata_loaded: true
                         };
                     }

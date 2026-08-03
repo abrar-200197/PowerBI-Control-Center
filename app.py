@@ -1049,10 +1049,117 @@ def api_catalog_impact_top():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _resolve_person_identity(*values):
+    """
+    Normalize creator/modifier identity from Power BI API variants.
+
+    Handles:
+      - plain UPN/email/display strings (users AND team/DL mailboxes)
+      - nested user objects (userPrincipalName, emailAddress, displayName, …)
+      - skips empty / Unknown / bare GUIDs (keeps GUID only as last resort)
+
+    Returns '' when nothing usable is found (UI maps that to N/A).
+    """
+    def _looks_like_guid(s: str) -> bool:
+        s = (s or '').strip()
+        if len(s) != 36 or s.count('-') != 4:
+            return False
+        hex_parts = s.replace('-', '')
+        return len(hex_parts) == 32 and all(c in '0123456789abcdefABCDEF' for c in hex_parts)
+
+    def _from_dict(d):
+        if not isinstance(d, dict):
+            return ''
+        # Nested shapes sometimes appear from admin / Graph-ish payloads
+        for nest_key in ('user', 'principal', 'identity', 'account'):
+            nested = d.get(nest_key)
+            if isinstance(nested, dict):
+                got = _from_dict(nested)
+                if got:
+                    return got
+        for key in (
+            'userPrincipalName', 'emailAddress', 'email', 'mail',
+            'principalName', 'upn', 'displayName', 'name',
+            'identifier', 'id', 'objectId',
+        ):
+            raw = d.get(key)
+            if raw is None:
+                continue
+            s = str(raw).strip()
+            if not s:
+                continue
+            if s.lower() in {'unknown', 'n/a', 'none', 'null', '-', '—', 'undefined'}:
+                continue
+            if _looks_like_guid(s) and '@' not in s:
+                continue  # prefer a human label later; GUID last-resort below
+            return s
+        # Last resort: any non-empty GUID id so row isn't blank
+        for key in ('id', 'objectId', 'identifier'):
+            raw = d.get(key)
+            if raw and _looks_like_guid(str(raw)):
+                return str(raw).strip()
+        return ''
+
+    guid_fallback = ''
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            got = _from_dict(value)
+            if got:
+                return got
+            continue
+        s = str(value).strip()
+        if not s:
+            continue
+        if s.lower() in {'unknown', 'n/a', 'none', 'null', '-', '—', 'undefined'}:
+            continue
+        if _looks_like_guid(s) and '@' not in s:
+            if not guid_fallback:
+                guid_fallback = s
+            continue
+        return s
+    return guid_fallback
+
+
+def _pick_person(*values):
+    """First non-empty resolved person/team identity."""
+    for v in values:
+        got = _resolve_person_identity(v)
+        if got:
+            return got
+    return ''
+
+
+def _pick_datetime(*values):
+    """First non-empty datetime-like string from API variants."""
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s and s.lower() not in {'unknown', 'n/a', 'none', 'null', '-', '—'}:
+            return s
+    return ''
+
+
 @app.route('/api/reports-metadata/<workspace_id>')
 @login_required
 def get_reports_metadata(workspace_id):
-    """Get report metadata including creator and modifier info from Scanner API"""
+    """
+    Creator / modifier / dates for reports in a workspace.
+
+    Multi-source (does not break existing UI contract):
+      1) Admin Scanner (createdBy / modifiedBy when tenant returns them)
+      2) Groups REST /reports overlay — often has people + dates when Scanner
+         omits team mailbox / DL / group principals
+      3) Catalog fill for remaining gaps (after extract preserves owner fields)
+
+    Response shape unchanged:
+      { success, workspace_id, reports: [{ report_id, report_name, created_by,
+        created_date_time, modified_by, modified_date_time, created_by_id,
+        modified_by_id }], cached }
+    Empty identity fields are '' (UI still shows N/A).
+    """
     try:
         from scanner_connector import PowerBIScanner
         import time
@@ -1070,37 +1177,204 @@ def get_reports_metadata(workspace_id):
                     'cached': True
                 })
 
-        print(f"\n🔍 Fetching report metadata from Scanner API for workspace: {workspace_id}")
+        print(f"\n🔍 Fetching report metadata (scanner + REST + catalog) for workspace: {workspace_id}")
+        by_id = {}
 
-        # Initialize Scanner API
-        scanner = PowerBIScanner()
-        scan_result = scanner.run_scan(workspace_id=workspace_id)
+        def _ensure_row(rid, name=''):
+            row = by_id.get(rid)
+            if not row:
+                row = {
+                    'report_id': rid,
+                    'report_name': name or '',
+                    'created_by': '',
+                    'created_date_time': '',
+                    'modified_by': '',
+                    'modified_date_time': '',
+                    'created_by_id': '',
+                    'modified_by_id': '',
+                }
+                by_id[rid] = row
+            elif name and not row.get('report_name'):
+                row['report_name'] = name
+            return row
 
-        if not scan_result or 'workspaces' not in scan_result:
-            print(f"❌ Scanner API returned no data")
+        def _merge_people(row, created_vals, modified_vals, created_dt_vals, modified_dt_vals,
+                          created_id_vals=(), modified_id_vals=()):
+            # Prefer first usable value already on row, then new sources
+            row['created_by'] = _pick_person(row.get('created_by'), *created_vals)
+            row['modified_by'] = _pick_person(row.get('modified_by'), *modified_vals)
+            row['created_date_time'] = _pick_datetime(row.get('created_date_time'), *created_dt_vals)
+            row['modified_date_time'] = _pick_datetime(row.get('modified_date_time'), *modified_dt_vals)
+            if not row.get('created_by_id'):
+                for v in created_id_vals:
+                    if v:
+                        row['created_by_id'] = str(v)
+                        break
+            if not row.get('modified_by_id'):
+                for v in modified_id_vals:
+                    if v:
+                        row['modified_by_id'] = str(v)
+                        break
+
+        # ---- 1) Scanner ----
+        scanner_count = 0
+        try:
+            scanner = PowerBIScanner()
+            scan_result = scanner.run_scan(workspace_id=workspace_id) or {}
+            for workspace in scan_result.get('workspaces') or []:
+                if workspace.get('id') != workspace_id:
+                    continue
+                for report in workspace.get('reports') or []:
+                    rid = report.get('id')
+                    if not rid:
+                        continue
+                    row = _ensure_row(rid, report.get('name') or '')
+                    _merge_people(
+                        row,
+                        created_vals=(
+                            report.get('createdBy'),
+                            report.get('createdByUser'),
+                            report.get('createdByUserPrincipalName'),
+                        ),
+                        modified_vals=(
+                            report.get('modifiedBy'),
+                            report.get('modifiedByUser'),
+                            report.get('modifiedByUserPrincipalName'),
+                        ),
+                        created_dt_vals=(
+                            report.get('createdDateTime'),
+                            report.get('createdDate'),
+                        ),
+                        modified_dt_vals=(
+                            report.get('modifiedDateTime'),
+                            report.get('modifiedDate'),
+                        ),
+                        created_id_vals=(report.get('createdById'),),
+                        modified_id_vals=(report.get('modifiedById'),),
+                    )
+                    scanner_count += 1
+                break
+            print(f"   🛰️ Scanner metadata rows: {scanner_count}")
+        except Exception as e:
+            print(f"   ⚠️ Scanner metadata failed (will try REST/catalog): {e}")
+
+        # ---- 2) Groups REST overlay (best for people + dates, incl. team mail) ----
+        rest_count = 0
+        rest_filled = 0
+        try:
+            headers = get_user_powerbi_headers()
+            url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports"
+            resp = requests.get(url, headers=headers, timeout=60)
+            if resp.status_code == 200:
+                for report in resp.json().get('value') or []:
+                    rid = report.get('id')
+                    if not rid:
+                        continue
+                    name = report.get('name') or ''
+                    if str(name).startswith('[App]'):
+                        continue
+                    row = _ensure_row(rid, name)
+                    before_c, before_m = row.get('created_by'), row.get('modified_by')
+                    _merge_people(
+                        row,
+                        created_vals=(
+                            report.get('createdBy'),
+                            report.get('createdByUser'),
+                            report.get('createdByUserPrincipalName'),
+                        ),
+                        modified_vals=(
+                            report.get('modifiedBy'),
+                            report.get('modifiedByUser'),
+                            report.get('modifiedByUserPrincipalName'),
+                        ),
+                        created_dt_vals=(
+                            report.get('createdDateTime'),
+                            report.get('createdDate'),
+                        ),
+                        modified_dt_vals=(
+                            report.get('modifiedDateTime'),
+                            report.get('modifiedDate'),
+                        ),
+                        created_id_vals=(report.get('createdById'),),
+                        modified_id_vals=(report.get('modifiedById'),),
+                    )
+                    rest_count += 1
+                    if (row.get('created_by') and not before_c) or (row.get('modified_by') and not before_m):
+                        rest_filled += 1
+                print(f"   🌐 REST reports overlaid: {rest_count} (filled people gaps: {rest_filled})")
+            else:
+                print(f"   ⚠️ REST reports HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            print(f"   ⚠️ REST metadata overlay failed: {e}")
+
+        # ---- 3) Catalog fill for remaining gaps ----
+        catalog_filled = 0
+        if CATALOG_AVAILABLE and catalog_service is not None:
+            try:
+                pack = catalog_service.get_workspace_reports(workspace_id)
+                if pack:
+                    for report in pack.get('reports') or []:
+                        rid = report.get('id')
+                        if not rid:
+                            continue
+                        row = by_id.get(rid)
+                        if not row:
+                            # Don't invent rows only from catalog if APIs returned none —
+                            # but if we already have any rows, filling known ids is fine;
+                            # also allow catalog-only when scanner+REST empty.
+                            row = _ensure_row(rid, report.get('name') or '')
+                        before = (row.get('created_by'), row.get('modified_by'),
+                                  row.get('created_date_time'), row.get('modified_date_time'))
+                        _merge_people(
+                            row,
+                            created_vals=(
+                                report.get('createdBy'),
+                                report.get('created_by'),
+                            ),
+                            modified_vals=(
+                                report.get('modifiedBy'),
+                                report.get('modified_by'),
+                            ),
+                            created_dt_vals=(
+                                report.get('createdDateTime'),
+                                report.get('created_date_time'),
+                                report.get('created_date'),
+                            ),
+                            modified_dt_vals=(
+                                report.get('modifiedDateTime'),
+                                report.get('modified_date_time'),
+                                report.get('modified_date'),
+                            ),
+                            created_id_vals=(report.get('createdById'), report.get('created_by_id')),
+                            modified_id_vals=(report.get('modifiedById'), report.get('modified_by_id')),
+                        )
+                        after = (row.get('created_by'), row.get('modified_by'),
+                                 row.get('created_date_time'), row.get('modified_date_time'))
+                        if after != before and any(after):
+                            catalog_filled += 1
+                    print(f"   📦 Catalog gap-fill updates: {catalog_filled}")
+            except Exception as e:
+                print(f"   ⚠️ Catalog metadata fill failed: {e}")
+
+        if not by_id:
             return jsonify({
                 'success': False,
-                'error': 'Scanner API returned no data'
+                'error': 'No report metadata from Scanner, REST, or catalog'
             }), 500
 
-        # Extract report metadata
-        reports_metadata = []
-        for workspace in scan_result.get('workspaces', []):
-            if workspace.get('id') == workspace_id:
-                for report in workspace.get('reports', []):
-                    metadata = {
-                        'report_id': report.get('id'),
-                        'report_name': report.get('name'),
-                        'created_by': report.get('createdBy', 'N/A'),
-                        'created_date_time': report.get('createdDateTime', ''),
-                        'modified_by': report.get('modifiedBy', 'N/A'),
-                        'modified_date_time': report.get('modifiedDateTime', ''),
-                        'created_by_id': report.get('createdById', ''),
-                        'modified_by_id': report.get('modifiedById', '')
-                    }
-                    reports_metadata.append(metadata)
-
-        print(f"✅ Found metadata for {len(reports_metadata)} reports")
+        # Stable list; keep empty string for missing people (UI → N/A)
+        reports_metadata = sorted(
+            by_id.values(),
+            key=lambda r: (r.get('report_name') or '').lower(),
+        )
+        with_people = sum(
+            1 for r in reports_metadata
+            if r.get('created_by') or r.get('modified_by')
+        )
+        print(
+            f"✅ Metadata for {len(reports_metadata)} reports "
+            f"({with_people} with created/modified identity)"
+        )
 
         # Cache the results
         reports_cache[cache_key] = (reports_metadata, time.time())
@@ -4982,6 +5256,18 @@ def _catalog_reports_shell(catalog_reports):
             or r.get('refresh_type')
             or r.get('view_count') is not None
         )
+        # Optional owner fields from catalog (after extract preserves them).
+        # UI still runs /api/reports-metadata for live fill; seeding avoids N/A flash.
+        created_by = _pick_person(r.get('createdBy'), r.get('created_by'))
+        modified_by = _pick_person(r.get('modifiedBy'), r.get('modified_by'))
+        created_dt = _pick_datetime(
+            r.get('createdDateTime'), r.get('created_date_time'), r.get('created_date')
+        )
+        modified_dt = _pick_datetime(
+            r.get('modifiedDateTime'), r.get('modified_date_time'), r.get('modified_date')
+        )
+        has_people = bool(created_by or modified_by or created_dt or modified_dt)
+
         report_list.append({
             'id': r.get('id'),
             'name': r.get('name'),
@@ -4999,6 +5285,12 @@ def _catalog_reports_shell(catalog_reports):
             'view_count': r.get('view_count'),
             'last_viewed': r.get('last_viewed'),
             'usage_loaded': r.get('view_count') is not None,
+            'created_by': created_by or None,
+            'modified_by': modified_by or None,
+            'created_date_time': created_dt or None,
+            'modified_date_time': modified_dt or None,
+            # If catalog already has people/dates, table can render without waiting
+            'metadata_loaded': has_people,
             'last_accessed': None,
             'last_accessed_by': None,
             'last_modified': None,
@@ -5080,6 +5372,15 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
     for r in catalog_reports:
         ds_id = r.get('datasetId') or ''
         info = dataset_refresh_map.get(ds_id, {})
+        created_by = _pick_person(r.get('createdBy'), r.get('created_by'))
+        modified_by = _pick_person(r.get('modifiedBy'), r.get('modified_by'))
+        created_dt = _pick_datetime(
+            r.get('createdDateTime'), r.get('created_date_time'), r.get('created_date')
+        )
+        modified_dt = _pick_datetime(
+            r.get('modifiedDateTime'), r.get('modified_date_time'), r.get('modified_date')
+        )
+        has_people = bool(created_by or modified_by or created_dt or modified_dt)
         report_list.append({
             'id': r.get('id'),
             'name': r.get('name'),
@@ -5092,6 +5393,14 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
             'refresh_type': info.get('refresh_type'),
             'refresh_note': info.get('refresh_note'),
             'dataset_workspace_id': info.get('dataset_workspace_id'),
+            'dataset_owner': r.get('dataset_owner'),
+            'view_count': r.get('view_count'),
+            'last_viewed': r.get('last_viewed'),
+            'created_by': created_by or None,
+            'modified_by': modified_by or None,
+            'created_date_time': created_dt or None,
+            'modified_date_time': modified_dt or None,
+            'metadata_loaded': has_people,
             'last_accessed': None,
             'last_accessed_by': None,
             'last_modified': None,

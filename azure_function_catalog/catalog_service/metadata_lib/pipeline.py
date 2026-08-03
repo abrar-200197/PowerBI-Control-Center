@@ -263,6 +263,13 @@ def _build_workspace_catalog(inventory: Dict[str, Any]) -> Dict[str, Any]:
                 "datasetId": r.get("datasetId"),
                 "reportType": r.get("reportType"),
                 "description": r.get("description"),
+                # Owner/date fields (when present on inventory from Scanner)
+                "createdBy": r.get("createdBy"),
+                "modifiedBy": r.get("modifiedBy"),
+                "createdDateTime": r.get("createdDateTime"),
+                "modifiedDateTime": r.get("modifiedDateTime"),
+                "createdById": r.get("createdById"),
+                "modifiedById": r.get("modifiedById"),
             }
             for r in (ws.get("reports") or [])
         ]

@@ -94,12 +94,20 @@ def normalize_workspaces(raw_workspaces: List[Dict[str, Any]]) -> Dict[str, Any]
 
         reports = []
         for r in ws.get("reports") or []:
+            # Preserve owner/date fields when Scanner returns them (users + team/DL).
+            # Live UI also overlays Groups REST; catalog storage avoids N/A gaps.
             reports.append({
                 "id": r.get("id"),
                 "name": r.get("name"),
                 "datasetId": r.get("datasetId"),
                 "reportType": r.get("reportType") or r.get("type"),
                 "description": r.get("description"),
+                "createdBy": r.get("createdBy") or r.get("createdByUserPrincipalName"),
+                "modifiedBy": r.get("modifiedBy") or r.get("modifiedByUserPrincipalName"),
+                "createdDateTime": r.get("createdDateTime") or r.get("createdDate"),
+                "modifiedDateTime": r.get("modifiedDateTime") or r.get("modifiedDate"),
+                "createdById": r.get("createdById"),
+                "modifiedById": r.get("modifiedById"),
             })
             stats["reportCount"] += 1
 
