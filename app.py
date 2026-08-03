@@ -5302,7 +5302,27 @@ def _catalog_reports_shell(catalog_reports):
         )
 
         last_ref = r.get('last_refreshed')
+        last_status = r.get('last_refresh_status')
+        refresh_note = r.get('refresh_note')
+        refresh_source = r.get('refresh_source')
         days = r.get('days_since_refresh')
+        # Fast paint: if ops has no scheduled timestamp, fall back to report modified
+        # (OneDrive-tab history is not in REST; modified is the closest public signal)
+        if not last_ref and modified_dt:
+            try:
+                from powerbi_connector import (
+                    refresh_info_from_content_modified as _cm,
+                    days_since_refresh as _dsr,
+                )
+                cm = _cm(None, {'modifiedDateTime': modified_dt}, dataset_workspace_id=None)
+                if cm and cm.get('last_refreshed'):
+                    last_ref = cm.get('last_refreshed')
+                    last_status = cm.get('last_refresh_status') or last_status or 'Completed'
+                    refresh_note = cm.get('refresh_note') or refresh_note
+                    refresh_source = cm.get('refresh_source') or 'content_modified'
+                    days = _dsr(last_ref)
+            except Exception:
+                pass
         if days is None and last_ref:
             try:
                 from powerbi_connector import days_since_refresh as _dsr
@@ -5318,9 +5338,10 @@ def _catalog_reports_shell(catalog_reports):
             'folderName': r.get('folderName'),
             'refresh_schedule': r.get('refresh_schedule'),
             'last_refreshed': last_ref,
-            'last_refresh_status': r.get('last_refresh_status'),
+            'last_refresh_status': last_status,
             'refresh_type': r.get('refresh_type'),
-            'refresh_note': r.get('refresh_note'),
+            'refresh_note': refresh_note,
+            'refresh_source': refresh_source,
             'days_since_refresh': days,
             'dataset_workspace_id': r.get('dataset_workspace_id'),
             'dataset_owner': r.get('dataset_owner'),
@@ -5360,6 +5381,7 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
         _empty_refresh_info,
         merge_refresh_candidates,
         days_since_refresh,
+        refresh_info_from_content_modified,
     )
 
     report_list = []
@@ -5418,18 +5440,18 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
     for r in catalog_reports:
         ds_id = r.get('datasetId') or ''
         live = dataset_refresh_map.get(ds_id, {}) or {}
-        # Catalog / SharePoint ops snapshot (often has history when live API is empty)
+        # Catalog / SharePoint ops snapshot (scheduled + admin + prior fallbacks)
         catalog_ops = {
             'last_refreshed': r.get('last_refreshed'),
             'last_refresh_status': r.get('last_refresh_status'),
             'refresh_schedule': r.get('refresh_schedule'),
             'refresh_type': r.get('refresh_type'),
             'refresh_note': r.get('refresh_note'),
+            'refresh_source': r.get('refresh_source'),
+            'history_refresh_type': r.get('history_refresh_type'),
             'dataset_owner': r.get('dataset_owner'),
             'dataset_workspace_id': r.get('dataset_workspace_id') or workspace_id,
         }
-        # Latest timestamp wins between live history and catalog ops
-        info = merge_refresh_candidates(live, catalog_ops)
         created_by = _pick_person(r.get('createdBy'), r.get('created_by'))
         modified_by = _pick_person(r.get('modifiedBy'), r.get('modified_by'))
         created_dt = _pick_datetime(
@@ -5438,6 +5460,20 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
         modified_dt = _pick_datetime(
             r.get('modifiedDateTime'), r.get('modified_date_time'), r.get('modified_date')
         )
+        # Content-modified fallback when scheduled + catalog ops both lack a timestamp
+        # (common for OneDrive-only models — portal OneDrive tab is not in REST APIs)
+        content_side = None
+        if not live.get('last_refreshed') and not catalog_ops.get('last_refreshed') and modified_dt:
+            content_side = refresh_info_from_content_modified(
+                None,
+                {
+                    'modifiedDateTime': modified_dt,
+                    'name': r.get('name'),
+                },
+                dataset_workspace_id=workspace_id,
+            )
+        # Latest timestamp wins across live scheduled, catalog ops, content-modified
+        info = merge_refresh_candidates(live, catalog_ops, content_side or {})
         has_people = bool(created_by or modified_by or created_dt or modified_dt)
         days = info.get('days_since_refresh')
         if days is None:
@@ -5453,6 +5489,7 @@ def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
             'last_refresh_status': info.get('last_refresh_status'),
             'refresh_type': info.get('refresh_type'),
             'refresh_note': info.get('refresh_note'),
+            'refresh_source': info.get('refresh_source'),
             'days_since_refresh': days,
             'dataset_workspace_id': info.get('dataset_workspace_id'),
             'dataset_owner': info.get('dataset_owner') or r.get('dataset_owner'),

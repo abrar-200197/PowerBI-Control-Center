@@ -24,7 +24,14 @@ import msal
 import requests
 
 from catalog_service import catalog_config as cfg
-from powerbi_connector import resolve_dataset_refresh_info, _empty_refresh_info
+from powerbi_connector import (
+    resolve_dataset_refresh_info,
+    _empty_refresh_info,
+    merge_refresh_candidates,
+    refresh_info_from_admin_last_refresh,
+    refresh_info_from_content_modified,
+    days_since_refresh,
+)
 
 logger = logging.getLogger("ops_snapshot")
 
@@ -119,12 +126,112 @@ def collect_dataset_targets(catalog: Dict[str, Any]) -> List[Dict[str, str]]:
     return out
 
 
+def fetch_admin_refreshables_map(
+    auth: Optional[OpsAuth] = None,
+    *,
+    page_size: int = 1000,
+    max_pages: int = 50,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Admin capacities/refreshables → {datasetId: refresh_info}.
+
+    Complements GET .../refreshes (which never returns OneDrive-tab history).
+    When admin lastRefresh has a timestamp we merge it as an alternate source
+    so the UI can show whichever of scheduled vs admin is latest.
+    Failures are non-fatal (empty map) so ops never breaks.
+    """
+    auth = auth or OpsAuth()
+    headers = auth.headers()
+    out: Dict[str, Dict[str, Any]] = {}
+    base = "https://api.powerbi.com/v1.0/myorg/admin/capacities/refreshables"
+    skip = 0
+    pages = 0
+    try:
+        while pages < max_pages:
+            pages += 1
+            url = f"{base}?$top={int(page_size)}&$skip={int(skip)}"
+            resp = requests.get(url, headers=headers, timeout=min(HTTP_TIMEOUT, 60))
+            if resp.status_code in (401, 403):
+                logger.warning(
+                    "Admin refreshables unauthorized (HTTP %s) — SP needs Fabric admin / tenant read",
+                    resp.status_code,
+                )
+                break
+            if resp.status_code != 200:
+                logger.warning(
+                    "Admin refreshables HTTP %s: %s",
+                    resp.status_code,
+                    (resp.text or "")[:200],
+                )
+                break
+            payload = resp.json() if resp.content else {}
+            rows = payload.get("value") or []
+            if not rows:
+                break
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                ds_id = row.get("id") or ""
+                if not ds_id:
+                    continue
+                ws_id = None
+                grp = row.get("group") or {}
+                if isinstance(grp, dict):
+                    ws_id = grp.get("id")
+                info = refresh_info_from_admin_last_refresh(
+                    row.get("lastRefresh") or {},
+                    dataset_workspace_id=ws_id,
+                )
+                if not info:
+                    continue
+                # Prefer schedule from admin when present
+                sched = row.get("refreshSchedule") or {}
+                if isinstance(sched, dict) and sched:
+                    enabled = bool(sched.get("enabled"))
+                    days = sched.get("days") or []
+                    times = sched.get("times") or []
+                    if enabled and days and times:
+                        info["refresh_schedule"] = (
+                            f"Scheduled: {', '.join(days)} at {', '.join(times)}"
+                        )
+                        info["schedule_days"] = list(days)
+                        info["schedule_times"] = list(times)
+                    elif enabled:
+                        info["refresh_schedule"] = "Enabled (incomplete)"
+                    elif not info.get("refresh_schedule") or info.get("refresh_schedule") == "Unknown":
+                        info["refresh_schedule"] = "No Schedule"
+                owners = row.get("configuredBy") or []
+                if isinstance(owners, list) and owners and not info.get("dataset_owner"):
+                    info["dataset_owner"] = owners[0]
+                info["datasetName"] = row.get("name") or info.get("datasetName")
+                info["refresh_source"] = info.get("refresh_source") or "admin"
+                out[str(ds_id)] = info
+            if len(rows) < page_size:
+                break
+            skip += len(rows)
+        logger.info("Admin refreshables loaded: %s dataset(s) with lastRefresh", len(out))
+    except Exception as exc:
+        logger.warning("Admin refreshables failed (non-fatal): %s", exc)
+    return out
+
+
 def build_refresh_snapshot(
     targets: List[Dict[str, str]],
     auth: Optional[OpsAuth] = None,
     workers: int = REFRESH_WORKERS,
+    catalog: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Fetch refresh info for unique datasets (service principal)."""
+    """
+    Fetch refresh info for unique datasets (service principal).
+
+    For each dataset, pick LATEST of:
+      1) Scheduled / OnDemand / ViaApi history (GET .../refreshes)
+      2) Admin refreshables lastRefresh (bulk)
+      3) Content-modified fallback (report/dataset timestamps) when history empty
+
+    OneDrive-tab history is NOT returned by Microsoft REST APIs — we document that
+    in refresh_note when still blank after all sources.
+    """
     auth = auth or OpsAuth()
     headers = auth.headers()
     results: Dict[str, Any] = {}
@@ -133,13 +240,49 @@ def build_refresh_snapshot(
             "generatedAt": _utc_now().isoformat(),
             "datasetCount": 0,
             "datasets": {},
+            "sources": {"scheduled": 0, "admin": 0, "content_modified": 0},
         }
+
+    # Optional: newest report modifiedDateTime per dataset (content-modified fallback)
+    report_mod_by_ds: Dict[str, Dict[str, Any]] = {}
+    if isinstance(catalog, dict):
+        for ws in catalog.get("workspaces") or []:
+            for r in ws.get("reports") or []:
+                ds_id = r.get("datasetId") or ""
+                if not ds_id:
+                    continue
+                mod = (
+                    r.get("modifiedDateTime")
+                    or r.get("modified_date_time")
+                    or r.get("modifiedDate")
+                    or r.get("modified_date")
+                )
+                if not mod:
+                    continue
+                prev = report_mod_by_ds.get(ds_id)
+                if not prev:
+                    report_mod_by_ds[ds_id] = {
+                        "modifiedDateTime": mod,
+                        "name": r.get("name"),
+                    }
+                    continue
+                # keep newest
+                from powerbi_connector import parse_refresh_timestamp
+                cur_dt = parse_refresh_timestamp(mod)
+                prev_dt = parse_refresh_timestamp(prev.get("modifiedDateTime"))
+                if cur_dt and (prev_dt is None or cur_dt > prev_dt):
+                    report_mod_by_ds[ds_id] = {
+                        "modifiedDateTime": mod,
+                        "name": r.get("name"),
+                    }
+
+    admin_map = fetch_admin_refreshables_map(auth=auth)
 
     def _one(t: Dict[str, str]) -> Tuple[str, Dict[str, Any]]:
         ds_id = t["datasetId"]
         ws_id = t.get("workspaceId") or None
         try:
-            info = resolve_dataset_refresh_info(
+            scheduled = resolve_dataset_refresh_info(
                 headers=headers,
                 workspace_id=ws_id or "",
                 dataset_id=ds_id,
@@ -147,11 +290,9 @@ def build_refresh_snapshot(
                 history_top=5,
                 timeout=min(HTTP_TIMEOUT, 12),
             )
-            info["datasetName"] = t.get("datasetName")
-            return ds_id, info
         except Exception as exc:
             logger.warning("Refresh snapshot failed %s: %s", ds_id[:8], exc)
-            return ds_id, _empty_refresh_info(
+            scheduled = _empty_refresh_info(
                 refresh_schedule="Error",
                 last_refresh_status="Error",
                 refresh_type="error",
@@ -159,7 +300,27 @@ def build_refresh_snapshot(
                 dataset_workspace_id=ws_id,
             )
 
-    logger.info("Ops refresh snapshot: %s unique datasets (workers=%s)", len(targets), workers)
+        admin_side = admin_map.get(ds_id) or {}
+        content_side = None
+        # Only build content-modified when scheduled still has no timestamp
+        if not scheduled.get("last_refreshed") and not (admin_side or {}).get("last_refreshed"):
+            content_side = refresh_info_from_content_modified(
+                None,
+                report_mod_by_ds.get(ds_id),
+                dataset_workspace_id=ws_id,
+            )
+
+        info = merge_refresh_candidates(scheduled, admin_side, content_side or {})
+        info["datasetName"] = t.get("datasetName") or info.get("datasetName") or ""
+        info["days_since_refresh"] = days_since_refresh(info.get("last_refreshed"))
+        return ds_id, info
+
+    logger.info(
+        "Ops refresh snapshot: %s unique datasets (workers=%s, admin_hits=%s)",
+        len(targets),
+        workers,
+        len(admin_map),
+    )
     done = 0
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         futs = {ex.submit(_one, t): t["datasetId"] for t in targets}
@@ -170,10 +331,22 @@ def build_refresh_snapshot(
             if done % 50 == 0 or done == len(targets):
                 logger.info("  refresh progress %s/%s", done, len(targets))
 
+    src_counts = {"scheduled": 0, "admin": 0, "content_modified": 0, "other": 0, "none": 0}
+    for info in results.values():
+        src = str((info or {}).get("refresh_source") or "none")
+        if src in src_counts:
+            src_counts[src] += 1
+        elif (info or {}).get("last_refreshed"):
+            src_counts["other"] += 1
+        else:
+            src_counts["none"] += 1
+
     return {
         "generatedAt": _utc_now().isoformat(),
         "datasetCount": len(results),
         "datasets": results,
+        "sources": src_counts,
+        "adminRefreshablesCount": len(admin_map),
     }
 
 
@@ -463,6 +636,8 @@ def enrich_workspace_catalog(
             ds["refresh_schedule"] = info.get("refresh_schedule")
             ds["refresh_type"] = info.get("refresh_type")
             ds["refresh_note"] = info.get("refresh_note")
+            ds["refresh_source"] = info.get("refresh_source")
+            ds["history_refresh_type"] = info.get("history_refresh_type")
             ds["days_since_refresh"] = _days_since(info.get("last_refreshed"), as_of)
             ds["is_refreshable"] = info.get("is_refreshable")
             ds["dataset_owner"] = info.get("dataset_owner")
@@ -478,6 +653,8 @@ def enrich_workspace_catalog(
             r["refresh_schedule"] = info.get("refresh_schedule")
             r["refresh_type"] = info.get("refresh_type")
             r["refresh_note"] = info.get("refresh_note")
+            r["refresh_source"] = info.get("refresh_source")
+            r["history_refresh_type"] = info.get("history_refresh_type")
             r["days_since_refresh"] = _days_since(info.get("last_refreshed"), as_of)
             r["dataset_owner"] = info.get("dataset_owner")
             r["dataset_workspace_id"] = info.get("dataset_workspace_id")
@@ -535,11 +712,16 @@ def run_ops_enrichment(
 
     if not skip_refresh:
         targets = collect_dataset_targets(catalog)
-        refresh_snap = build_refresh_snapshot(targets, auth=auth)
+        refresh_snap = build_refresh_snapshot(targets, auth=auth, catalog=catalog)
         p = write_dir / "refresh_snapshot.json"
         p.write_text(json.dumps(refresh_snap, ensure_ascii=False, indent=2), encoding="utf-8")
         paths["refresh_snapshot"] = p
-        logger.info("Wrote %s (%s datasets)", p, refresh_snap.get("datasetCount"))
+        logger.info(
+            "Wrote %s (%s datasets, sources=%s)",
+            p,
+            refresh_snap.get("datasetCount"),
+            refresh_snap.get("sources"),
+        )
 
     if not skip_usage:
         # Keep usage incremental state inside the temp write_dir (not a permanent

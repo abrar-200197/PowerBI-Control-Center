@@ -345,6 +345,10 @@ def _empty_refresh_info(**overrides):
         'schedule_summary': None,
         'refresh_note': None,               # human-readable reason when timestamp missing
         'is_refreshable': None,
+        # scheduled | ondemand | viaapi | admin | content_modified | unknown
+        'refresh_source': None,
+        # Scheduled history type from API when present (Scheduled/OnDemand/ViaApi/...)
+        'history_refresh_type': None,
     }
     info.update(overrides)
     return info
@@ -373,6 +377,24 @@ def _is_in_progress_status(status):
     return normalized == 'InProgress'
 
 
+def _history_refresh_source_label(entry):
+    """Map Power BI history refreshType → UI/source label."""
+    if not entry:
+        return 'scheduled'
+    rt = str(entry.get('refreshType') or entry.get('type') or '').strip().lower()
+    if rt in ('scheduled',):
+        return 'scheduled'
+    if rt in ('ondemand', 'on demand', 'on_demand'):
+        return 'ondemand'
+    if rt in ('viaapi', 'via api', 'via_api', 'viaenhancedapi'):
+        return 'viaapi'
+    if rt in ('viaxmlaendpoint', 'via xmla endpoint'):
+        return 'viaxmla'
+    if 'onedrive' in rt:
+        return 'onedrive'
+    return rt or 'scheduled'
+
+
 def pick_best_refresh_from_history(refreshes):
     """
     Choose the best last-refresh timestamp/status from history.
@@ -381,31 +403,46 @@ def pick_best_refresh_from_history(refreshes):
     status is Unknown/InProgress. In that case walk to the next entries and use
     the newest record that has an endTime (typically the previous completed run).
 
+    NOTE: Microsoft documents that OneDrive refresh history is NOT returned by
+    GET .../refreshes. This picker only sees Scheduled / OnDemand / ViaApi / XMLA
+    rows that the Scheduled tab would show.
+
     Returns dict:
-      last_refreshed, last_refresh_status, refresh_note, source_index
+      last_refreshed, last_refresh_status, refresh_note, source_index,
+      refresh_source, history_refresh_type
     """
+    empty = {
+        'last_refreshed': None,
+        'last_refresh_status': None,
+        'refresh_note': 'No refresh history',
+        'source_index': None,
+        'refresh_source': None,
+        'history_refresh_type': None,
+    }
     if not refreshes:
-        return {
-            'last_refreshed': None,
-            'last_refresh_status': None,
-            'refresh_note': 'No refresh history',
-            'source_index': None,
-        }
+        return empty
 
     latest = refreshes[0] or {}
     latest_status_raw = latest.get('status')
     latest_end = latest.get('endTime') or None
     latest_start = latest.get('startTime') or None
     latest_status = _normalize_refresh_status(latest_status_raw)
+    latest_type = latest.get('refreshType') or latest.get('type')
+
+    def _pack(entry, idx, status, note, ts_key='endTime'):
+        src = _history_refresh_source_label(entry)
+        return {
+            'last_refreshed': (entry or {}).get(ts_key),
+            'last_refresh_status': status,
+            'refresh_note': note,
+            'source_index': idx,
+            'refresh_source': src,
+            'history_refresh_type': (entry or {}).get('refreshType') or (entry or {}).get('type'),
+        }
 
     # Ideal case: newest entry already finished
     if latest_end:
-        return {
-            'last_refreshed': latest_end,
-            'last_refresh_status': latest_status or 'Completed',
-            'refresh_note': None,
-            'source_index': 0,
-        }
+        return _pack(latest, 0, latest_status or 'Completed', None, 'endTime')
 
     # Newest has no endTime — walk history for the first finished entry
     finished_idx = None
@@ -422,34 +459,38 @@ def pick_best_refresh_from_history(refreshes):
     if finished:
         finished_status = _normalize_refresh_status(finished.get('status')) or 'Completed'
         if _is_in_progress_status(latest_status_raw):
-            # Keep UI honest: a run is in progress, but still show last finished time
-            return {
-                'last_refreshed': finished.get('endTime'),
-                'last_refresh_status': 'InProgress',
-                'refresh_note': f'Refresh in progress; showing last completed ({finished_status})',
-                'source_index': finished_idx,
-            }
-        return {
-            'last_refreshed': finished.get('endTime'),
-            'last_refresh_status': finished_status,
-            'refresh_note': f'Latest entry had no endTime; used history item #{finished_idx + 1}',
-            'source_index': finished_idx,
-        }
+            return _pack(
+                finished,
+                finished_idx,
+                'InProgress',
+                f'Refresh in progress; showing last completed ({finished_status})',
+                'endTime',
+            )
+        return _pack(
+            finished,
+            finished_idx,
+            finished_status,
+            f'Latest entry had no endTime; used history item #{finished_idx + 1}',
+            'endTime',
+        )
 
-    # No finished entry at all — fall back to startTime of newest (in progress / never finished)
+    # No finished entry at all — fall back to startTime of newest
     if latest_start:
-        return {
-            'last_refreshed': latest_start,
-            'last_refresh_status': latest_status or 'InProgress',
-            'refresh_note': 'No completed refresh found; showing start time',
-            'source_index': 0,
-        }
+        return _pack(
+            latest,
+            0,
+            latest_status or 'InProgress',
+            'No completed refresh found; showing start time',
+            'startTime',
+        )
 
     return {
         'last_refreshed': None,
         'last_refresh_status': latest_status,
         'refresh_note': 'Refresh history present but no timestamps',
         'source_index': 0,
+        'refresh_source': _history_refresh_source_label(latest),
+        'history_refresh_type': latest_type,
     }
 
 
@@ -540,6 +581,231 @@ def _classify_dataset_type(dataset_info, history_status_code=None):
         return 'import'
 
     return 'unknown'
+
+
+def parse_refresh_timestamp(value):
+    """Parse ISO / epoch refresh timestamps to aware UTC datetime, or None."""
+    if value is None or value == '':
+        return None
+    try:
+        from datetime import datetime, timezone
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if ts > 1e12:
+                ts /= 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        s = str(value).strip()
+        if not s or s.lower() in {'unknown', 'n/a', 'none', 'null', '-', '—'}:
+            return None
+        if s.endswith('Z'):
+            s = s[:-1] + '+00:00'
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def days_since_refresh(value, as_of=None):
+    """Whole days since last refresh; None if timestamp unknown."""
+    from datetime import datetime, timezone
+    dt = parse_refresh_timestamp(value)
+    if not dt:
+        return None
+    now = as_of or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return max(0, (now - dt).days)
+
+
+def merge_refresh_candidates(*sources, prefer_keys=None):
+    """
+    Merge multiple refresh info dicts and pick the LATEST last_refreshed.
+
+    Sources may include:
+      - Scheduled / OnDemand / ViaApi history from GET .../refreshes
+      - Admin refreshables lastRefresh (capacity path)
+      - Catalog/SharePoint ops snapshot
+      - Content-modified / model-modified fallbacks (when no history API row)
+
+    Rule (what the UI needs):
+      - only scheduled → show scheduled latest
+      - only alternate  → show that latest
+      - both           → show whichever timestamp is newer
+
+    Microsoft does NOT expose OneDrive-tab history via /refreshes. When scheduled
+    history is empty we still try every alternate API source we have; if still
+    empty the note explains the OneDrive API gap.
+    """
+    prefer_keys = prefer_keys or (
+        'refresh_schedule', 'refresh_type', 'refresh_note',
+        'dataset_owner', 'dataset_workspace_id', 'is_refreshable',
+        'schedule_days', 'schedule_times', 'schedule_summary',
+        'history_refresh_type',
+    )
+    cleaned = [s for s in sources if isinstance(s, dict) and s]
+    if not cleaned:
+        return _empty_refresh_info()
+
+    best = None
+    best_dt = None
+    for src in cleaned:
+        ts = src.get('last_refreshed')
+        dt = parse_refresh_timestamp(ts)
+        if dt is None:
+            continue
+        if best_dt is None or dt > best_dt:
+            best_dt = dt
+            best = src
+
+    # Base: first source that has any useful structure, else first
+    base = dict(cleaned[0])
+    for src in cleaned[1:]:
+        for k in prefer_keys:
+            if not base.get(k) and src.get(k) not in (None, '', 'Unknown', 'N/A'):
+                base[k] = src.get(k)
+
+    if best is not None:
+        base['last_refreshed'] = best.get('last_refreshed')
+        # Prefer status / source labels from the same winner
+        if best.get('last_refresh_status'):
+            base['last_refresh_status'] = best.get('last_refresh_status')
+        if best.get('refresh_source'):
+            base['refresh_source'] = best.get('refresh_source')
+        if best.get('history_refresh_type'):
+            base['history_refresh_type'] = best.get('history_refresh_type')
+
+        note_bits = []
+        if best.get('refresh_note'):
+            note_bits.append(str(best.get('refresh_note')))
+        sources_with_ts = [
+            s for s in cleaned if parse_refresh_timestamp(s.get('last_refreshed'))
+        ]
+        if len(sources_with_ts) > 1:
+            labels = []
+            for s in sources_with_ts:
+                labels.append(str(s.get('refresh_source') or 'history'))
+            uniq = []
+            for lb in labels:
+                if lb not in uniq:
+                    uniq.append(lb)
+            note_bits.append('latest of ' + ' + '.join(uniq))
+        elif any(not parse_refresh_timestamp(s.get('last_refreshed')) for s in cleaned):
+            note_bits.append('filled from alternate refresh source')
+
+        # Drop empty / duplicate notes
+        seen_n = set()
+        clean_notes = []
+        for n in note_bits:
+            n = (n or '').strip()
+            if not n or n in seen_n:
+                continue
+            seen_n.add(n)
+            clean_notes.append(n)
+        if clean_notes:
+            base['refresh_note'] = '; '.join(clean_notes)
+    else:
+        # No timestamps anywhere — still take best status label available
+        for src in cleaned:
+            if src.get('last_refresh_status') and not base.get('last_refresh_status'):
+                base['last_refresh_status'] = src.get('last_refresh_status')
+            if src.get('refresh_note') and not base.get('refresh_note'):
+                base['refresh_note'] = src.get('refresh_note')
+            if src.get('refresh_source') and not base.get('refresh_source'):
+                base['refresh_source'] = src.get('refresh_source')
+
+        # Clarify OneDrive-only case for the UI (Scheduled tab empty, portal OneDrive has rows)
+        status = str(base.get('last_refresh_status') or '').lower()
+        if status in ('', 'no history', 'none', 'null') or not base.get('last_refreshed'):
+            base['last_refresh_status'] = base.get('last_refresh_status') or 'No History'
+            note = str(base.get('refresh_note') or '')
+            if 'onedrive' not in note.lower():
+                extra = (
+                    'Scheduled refresh history empty. '
+                    'OneDrive-tab history is not returned by Power BI REST APIs.'
+                )
+                base['refresh_note'] = f"{note}; {extra}".strip('; ') if note else extra
+            if not base.get('refresh_source'):
+                base['refresh_source'] = 'none'
+
+    base['days_since_refresh'] = days_since_refresh(base.get('last_refreshed'))
+    return base
+
+
+def refresh_info_from_admin_last_refresh(last_refresh, *, dataset_workspace_id=None):
+    """
+    Build a refresh-info dict from Admin refreshables `lastRefresh` object.
+    May capture some refreshes not visible on the plain history endpoint.
+    """
+    if not isinstance(last_refresh, dict) or not last_refresh:
+        return None
+    picked = pick_best_refresh_from_history([last_refresh])
+    if not picked.get('last_refreshed') and not picked.get('last_refresh_status'):
+        return None
+    return _empty_refresh_info(
+        last_refreshed=picked.get('last_refreshed'),
+        last_refresh_status=picked.get('last_refresh_status') or 'Completed',
+        refresh_type='import',
+        refresh_source=picked.get('refresh_source') or 'admin',
+        history_refresh_type=picked.get('history_refresh_type') or last_refresh.get('refreshType'),
+        refresh_note=picked.get('refresh_note') or 'From admin refreshables lastRefresh',
+        dataset_workspace_id=dataset_workspace_id,
+    )
+
+
+def refresh_info_from_content_modified(dataset_info, report_meta=None, *, dataset_workspace_id=None):
+    """
+    Last-resort timestamp when Scheduled/Admin history is empty.
+
+    Uses the newest of:
+      - dataset createdDate (weak)
+      - report modifiedDateTime from catalog/scanner (Often updates when a OneDrive
+        .pbix sync changes the bound report/model — not a true OneDrive history row,
+        but better than blank for OneDrive-only models.)
+
+    Never pretends this is Scheduled history.
+    """
+    candidates = []
+    if isinstance(dataset_info, dict):
+        for k in (
+            'createdDate', 'createdDateTime',
+            'modifiedDateTime', 'modifiedDate', 'lastModified',
+        ):
+            if dataset_info.get(k):
+                candidates.append(dataset_info.get(k))
+    if isinstance(report_meta, dict):
+        for k in (
+            'modifiedDateTime', 'modified_date_time', 'modifiedDate',
+            'modified_date', 'lastModified',
+        ):
+            if report_meta.get(k):
+                candidates.append(report_meta.get(k))
+
+    best_ts = None
+    best_dt = None
+    for raw in candidates:
+        dt = parse_refresh_timestamp(raw)
+        if dt is None:
+            continue
+        if best_dt is None or dt > best_dt:
+            best_dt = dt
+            best_ts = raw
+    if not best_ts:
+        return None
+    return _empty_refresh_info(
+        last_refreshed=best_ts,
+        last_refresh_status='Completed',
+        refresh_type='import',
+        refresh_source='content_modified',
+        refresh_note=(
+            'No Scheduled refresh history; using latest content modified time '
+            '(OneDrive-tab history is not available via REST API)'
+        ),
+        dataset_workspace_id=dataset_workspace_id,
+        is_refreshable=(dataset_info or {}).get('isRefreshable') if isinstance(dataset_info, dict) else None,
+        dataset_owner=(dataset_info or {}).get('configuredBy', 'Unknown') if isinstance(dataset_info, dict) else 'Unknown',
+    )
 
 
 def resolve_dataset_refresh_info(
@@ -685,25 +951,32 @@ def resolve_dataset_refresh_info(
             print(f"      ℹ️ {label} dataset (no import refresh)")
             return refresh_info
 
-        # ---- Parse history with endTime fallback ----
+        # ---- Parse Scheduled/OnDemand history (OneDrive tab is NOT in this API) ----
+        scheduled_side = None
         if history_status == 200:
             picked = pick_best_refresh_from_history(history)
-            refresh_info['last_refreshed'] = picked['last_refreshed']
-            refresh_info['last_refresh_status'] = picked['last_refresh_status']
-            refresh_info['refresh_note'] = picked['refresh_note']
-            if picked['last_refreshed']:
+            scheduled_side = {
+                'last_refreshed': picked.get('last_refreshed'),
+                'last_refresh_status': picked.get('last_refresh_status'),
+                'refresh_note': picked.get('refresh_note'),
+                'refresh_source': picked.get('refresh_source') or 'scheduled',
+                'history_refresh_type': picked.get('history_refresh_type'),
+            }
+            if picked.get('last_refreshed'):
                 print(
-                    f"      ✅ Last refresh: {picked['last_refreshed']} - "
+                    f"      ✅ Scheduled history: {picked['last_refreshed']} - "
                     f"{picked['last_refresh_status']}"
-                    + (f" ({picked['refresh_note']})" if picked['refresh_note'] else "")
+                    + (f" ({picked['refresh_note']})" if picked.get('refresh_note') else "")
                 )
             else:
-                print(f"      ⚠️ {picked['refresh_note'] or 'No usable refresh timestamp'}")
-                if not refresh_info['last_refresh_status']:
-                    if refresh_info.get('is_refreshable') is False:
-                        refresh_info['last_refresh_status'] = 'Not Refreshable'
-                    else:
-                        refresh_info['last_refresh_status'] = 'No History'
+                print(
+                    f"      ⚠️ Scheduled history empty: "
+                    f"{picked.get('refresh_note') or 'No usable timestamp'}"
+                )
+                if refresh_info.get('is_refreshable') is False:
+                    refresh_info['last_refresh_status'] = 'Not Refreshable'
+                else:
+                    refresh_info['last_refresh_status'] = 'No History'
         elif history_status in (401, 403):
             refresh_info['last_refresh_status'] = 'Access Denied'
             refresh_info['refresh_type'] = 'error'
@@ -726,6 +999,40 @@ def resolve_dataset_refresh_info(
                     + (f' (HTTP {history_status})' if history_status else '')
                 )
 
+        # Content-modified fallback (report/dataset timestamps). Useful when the
+        # portal only has OneDrive-tab history which REST does not expose.
+        content_side = None
+        if not (scheduled_side and scheduled_side.get('last_refreshed')):
+            content_side = refresh_info_from_content_modified(
+                dataset_info,
+                dataset_workspace_id=refresh_info.get('dataset_workspace_id'),
+            )
+
+        # Latest of scheduled history + content-modified (and any pre-seeded fields)
+        merged = merge_refresh_candidates(
+            refresh_info,
+            scheduled_side or {},
+            content_side or {},
+        )
+        for k, v in merged.items():
+            if v is not None and v != '':
+                refresh_info[k] = v
+        if refresh_info.get('last_refreshed'):
+            print(
+                f"      ✅ Selected refresh: {refresh_info.get('last_refreshed')} "
+                f"[{refresh_info.get('refresh_source') or '?'}] "
+                f"{refresh_info.get('last_refresh_status')}"
+            )
+        elif refresh_info.get('last_refresh_status') in (None, 'No History'):
+            # Explicit OneDrive gap message for UI tooltips
+            refresh_info['last_refresh_status'] = 'No History'
+            note = str(refresh_info.get('refresh_note') or '')
+            if 'onedrive' not in note.lower():
+                refresh_info['refresh_note'] = (
+                    (note + '; ' if note else '')
+                    + 'Scheduled history empty. OneDrive-tab history is not returned by Power BI REST APIs.'
+                )
+
         # ---- Schedule (only meaningful for refreshable import models) ----
         is_refreshable = refresh_info.get('is_refreshable')
         schedule_data = None
@@ -743,12 +1050,21 @@ def resolve_dataset_refresh_info(
                     break
 
         schedule_fields = _format_refresh_schedule(schedule_data, is_refreshable, refresh_info['refresh_type'])
-        refresh_info.update(schedule_fields)
+        # Don't let "No Schedule" wipe a stronger prior label unless empty
+        for k, v in schedule_fields.items():
+            if k == 'refresh_schedule' and refresh_info.get('refresh_schedule') not in (
+                None, '', 'Unknown', 'N/A',
+            ):
+                # Keep existing explicit DQ/error labels
+                if str(refresh_info.get('refresh_schedule')).startswith(('DirectQuery', 'Not ', 'Error')):
+                    continue
+            refresh_info[k] = v
 
         # If still unknown schedule but we know not refreshable
         if refresh_info['refresh_type'] == 'not_refreshable':
             refresh_info['refresh_schedule'] = 'Not Refreshable'
 
+        refresh_info['days_since_refresh'] = days_since_refresh(refresh_info.get('last_refreshed'))
         return refresh_info
 
     except Exception as e:
