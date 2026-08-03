@@ -12,7 +12,8 @@
         inset: 0;
         z-index: 99990;
         overflow: hidden; /* no page scroll — wheel drives zoom */
-        background: #1a2228;
+        /* Cool mist under forest photo (matches mercury.com sky/ridge tones) */
+        background: #3a4a55;
         color: #fff;
         opacity: 1;
         transition: opacity 0.45s ease;
@@ -23,29 +24,43 @@
         opacity: 0;
         pointer-events: none;
     }
-    /* Full-bleed hero photo (mercury.com desk/mountain) */
+    /* Full-bleed forest hero — same asset & framing as mercury.com */
     .mercury-scene {
         position: absolute;
         inset: 0;
         overflow: hidden;
-        transform-origin: 50% 62%; /* aim at desk/laptop area */
+        transform-origin: 50% 68%; /* dive toward desk/chair on the hill */
         will-change: transform;
+        background: #2c3a42; /* misty forest fallthrough while image loads */
     }
-    .mercury-scene-bg {
+    .mercury-scene-photo {
         position: absolute;
-        inset: -8%;
-        background:
-            #2a3540
-            url("{{ url_for('static', filename='img/mercury-hero.jpg') }}")
-            center 45% / cover no-repeat;
-        filter: saturate(1.05) contrast(1.02);
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        /* Match mercury.com crop: keep grassy hill + desk lower-center */
+        object-position: center 55%;
+        display: block;
+        /* subtle cinematic grade close to their live page */
+        filter: saturate(1.02) contrast(1.03) brightness(1.02);
     }
-    .mercury-scene-bg::after {
+    /* Soft edge vignette only — do NOT crush the forest greens */
+    .mercury-scene::after {
         content: "";
         position: absolute;
         inset: 0;
+        pointer-events: none;
         background:
-            linear-gradient(180deg, rgba(12, 18, 28, 0.42) 0%, rgba(12, 18, 28, 0.12) 38%, rgba(12, 18, 28, 0.08) 55%, rgba(12, 18, 28, 0.55) 100%);
+            radial-gradient(ellipse 85% 70% at 50% 42%,
+                rgba(20, 28, 36, 0.18) 0%,
+                rgba(20, 28, 36, 0.05) 42%,
+                rgba(12, 18, 26, 0.28) 100%),
+            linear-gradient(180deg,
+                rgba(30, 40, 52, 0.22) 0%,
+                rgba(30, 40, 52, 0.0) 28%,
+                rgba(30, 40, 52, 0.0) 62%,
+                rgba(12, 18, 26, 0.35) 100%);
     }
     .mercury-chrome {
         position: absolute;
@@ -99,27 +114,29 @@
         flex-direction: column;
         align-items: center;
         justify-content: flex-start;
-        padding: clamp(48px, 10vh, 100px) 24px 0;
+        /* Sit in misty sky band above the desk — like mercury.com */
+        padding: clamp(72px, 14vh, 140px) 24px 0;
         text-align: center;
         transition: opacity 0.25s ease, transform 0.25s ease;
     }
     .mercury-title {
-        margin: 0 0 12px;
-        font-size: clamp(34px, 5.2vw, 56px);
-        font-weight: 600;
-        letter-spacing: -0.025em;
-        line-height: 1.08;
+        margin: 0 0 14px;
+        font-size: clamp(36px, 5.4vw, 58px);
+        font-weight: 560;
+        letter-spacing: -0.03em;
+        line-height: 1.06;
         color: #fff;
-        text-shadow: 0 2px 28px rgba(0,0,0,0.4);
-        max-width: 16ch;
+        text-shadow: 0 2px 32px rgba(0,0,0,0.35);
+        max-width: 18ch;
     }
     .mercury-sub {
         margin: 0;
-        max-width: 36ch;
-        font-size: clamp(15px, 1.8vw, 18px);
+        max-width: 38ch;
+        font-size: clamp(15px, 1.7vw, 18px);
         line-height: 1.45;
-        color: rgba(255,255,255,0.9);
-        text-shadow: 0 1px 14px rgba(0,0,0,0.35);
+        font-weight: 450;
+        color: rgba(255,255,255,0.92);
+        text-shadow: 0 1px 16px rgba(0,0,0,0.3);
     }
     .mercury-scroll-hint {
         position: absolute;
@@ -743,9 +760,16 @@
 {% block content %}
 {% if show_login_landing %}
 <div id="mercuryLanding" class="mercury-landing" role="dialog" aria-label="Welcome — scroll to enter">
-    <!-- Scene zooms on wheel (progress 0→1). No document scroll. -->
+    <!-- Scene zooms on wheel (progress 0→1). No document scroll.
+         Photo = mercury.com forest hero (desk on grassy hill). -->
     <div class="mercury-scene" id="mercuryScene" aria-hidden="true">
-        <div class="mercury-scene-bg"></div>
+        <img
+            class="mercury-scene-photo"
+            src="{{ url_for('static', filename='img/mercury-hero.png') }}"
+            alt=""
+            decoding="async"
+            fetchpriority="high"
+        />
     </div>
     <!-- App mock that grows with zoom, then real Home is revealed -->
     <div class="mercury-app-frame" id="mercuryAppFrame" aria-hidden="true">
