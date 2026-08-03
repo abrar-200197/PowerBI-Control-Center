@@ -12,34 +12,39 @@
         inset: 0;
         z-index: 99990;
         overflow: hidden; /* no page scroll — wheel drives zoom */
-        /* Solid base so real Home never bleeds through during zoom */
+        /* Solid mist base — covers Home underneath without hiding it in DOM */
         background: #2a3540;
         color: #fff;
         opacity: 1;
-        /* Only fade on finish — never mid-zoom */
         transition: none;
         touch-action: none;
         user-select: none;
     }
     .mercury-landing.is-finishing {
-        transition: opacity 0.55s ease;
-        opacity: 0;
+        transition: opacity 0.6s ease;
+        opacity: 0 !important;
         pointer-events: none;
     }
     .mercury-landing.is-done {
-        opacity: 0;
+        opacity: 0 !important;
         pointer-events: none;
+        display: none;
     }
-    /* Full-bleed forest hero — Mercury's real start-frame (desk on misty ridge) */
+    /* Full-bleed forest hero — Mercury start-frame */
     .mercury-scene {
         position: absolute;
         inset: 0;
+        z-index: 0;
         overflow: hidden;
-        /* Aim straight at the laptop screen in the photo */
+        /* Aim at laptop area in the photo */
         transform-origin: 54% 64%;
         will-change: transform;
-        background: #2a3540;
-        /* Smooth scale driven by JS; ease only on finish snap */
+        background-color: #2a3540;
+        /* Dual paint: CSS bg + <img> so one failure never blanks the screen */
+        background-image: url("/static/img/mercury-hero.jpg");
+        background-repeat: no-repeat;
+        background-position: center 48%;
+        background-size: cover;
         transition: none;
     }
     .mercury-landing.is-finishing .mercury-scene {
@@ -51,12 +56,13 @@
         width: 100%;
         height: 100%;
         object-fit: cover;
-        /* Frame like mercury.com: sky/mist top, desk lower-center */
         object-position: center 48%;
         display: block;
-        filter: none; /* keep original grade from their asset */
+        opacity: 1;
+        pointer-events: none;
+        z-index: 1;
     }
-    /* Very light vignette so headline stays readable — forest stays visible */
+    /* Light vignette for headline readability */
     .mercury-scene::after {
         content: "";
         position: absolute;
@@ -73,7 +79,6 @@
                 rgba(10, 14, 20, 0.32) 100%);
         transition: opacity 0.4s ease;
     }
-    /* Clear the vignette when deep in the laptop so the dive feels clean */
     .mercury-landing.is-deep .mercury-scene::after {
         opacity: 0;
     }
@@ -183,18 +188,10 @@
         0%, 100% { transform: rotate(45deg) translate(0, 0); opacity: 0.65; }
         50% { transform: rotate(45deg) translate(3px, 3px); opacity: 1; }
     }
-    /* Hide real app chrome entirely while landing runs — no see-through overlap */
+    /* Landing is fixed+opaque over the app — do NOT hide Home in the DOM.
+       Hiding caused a blank slate if the hero image failed to paint. */
     body.mercury-landing-open {
         overflow: hidden !important;
-        background: #2a3540 !important;
-    }
-    body.mercury-landing-open .sidebar,
-    body.mercury-landing-open .main-wrapper,
-    body.mercury-landing-open .header,
-    body.mercury-landing-open .home-wrap {
-        visibility: hidden !important;
-        pointer-events: none !important;
-        opacity: 0 !important;
     }
     @media (prefers-reduced-motion: reduce) {
         .mercury-landing { transition: none !important; }
@@ -708,7 +705,7 @@
     <div class="mercury-scene" id="mercuryScene" aria-hidden="true">
         <img
             class="mercury-scene-photo"
-            src="{{ url_for('static', filename='img/mercury-hero.jpg') }}"
+            src="/static/img/mercury-hero.jpg"
             alt=""
             decoding="async"
             fetchpriority="high"
@@ -1059,36 +1056,31 @@
     }
 
     function runMercuryLanding() {
-        // Mercury pattern: fixed viewport. Wheel zooms into FULL laptop first;
-        // only then do we cross-fade to the real app (no mid-zoom overlap).
+        // Fixed viewport: wheel zooms forest → full laptop, THEN fade to Home.
+        // Landing stays opaque the whole way (covers Home underneath).
         const landing = document.getElementById('mercuryLanding');
         if (!landing) return;
         const scene = document.getElementById('mercuryScene');
+        const photo = landing.querySelector('.mercury-scene-photo');
         const copy = document.getElementById('mercuryCopy');
         const hint = document.getElementById('mercuryHint');
         const brand = landing.querySelector('.mercury-brand');
         const skipBtn = document.getElementById('mercurySkip');
         const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-        // progress 0 → ZOOM_END is pure zoom (landing fully opaque).
-        // Only after laptop fills frame do we call finish().
-        const ZOOM_END = 1;          // must reach full progress
-        const MAX_SCALE = 4.2;       // deep enough to fill on the laptop screen
-        const COPY_FADE_BY = 0.35;   // headline gone early
-        const HINT_FADE_BY = 0.18;
-        const DEEP_AT = 0.55;        // vignette off once we're in on the laptop
-        const FINISH_AT = 0.995;     // only exit after full laptop fill
+        // Tuned so you can scroll well into the laptop before exit
+        const MAX_SCALE = 3.6;     // 1 → 4.6× into the screen
+        const COPY_FADE_BY = 0.32;
+        const HINT_FADE_BY = 0.16;
+        const DEEP_AT = 0.5;
+        const FINISH_AT = 0.992;
 
-        let progress = 0; // 0..1
+        let progress = 0;
         let done = false;
         let touchY = null;
 
         const clamp01 = (v) => Math.max(0, Math.min(1, v));
-        // Gentle ease so early scroll moves forest slowly, late scroll pushes laptop
-        const ease = (t) => {
-            // smootherstep: slow → mid speed → slow into laptop
-            return t * t * t * (t * (t * 6 - 15) + 10);
-        };
+        const ease = (t) => t * t * t * (t * (t * 6 - 15) + 10); // smootherstep
 
         const detach = () => {
             window.removeEventListener('wheel', onWheel);
@@ -1097,49 +1089,59 @@
             landing.removeEventListener('touchmove', onTouchMove);
         };
 
+        const unlockBody = () => {
+            document.body.classList.remove('mercury-landing-open');
+        };
+
         const finish = () => {
             if (done) return;
             done = true;
-            progress = ZOOM_END;
-            // Final snap into the laptop screen, then fade the whole landing
-            if (scene) {
-                const endScale = 1 + MAX_SCALE;
-                scene.style.transform = `scale(${endScale})`;
-            }
-            landing.classList.add('is-deep', 'is-finishing');
-            // Keep body lock until fade completes so Home doesn't flash under
-            setTimeout(() => {
-                landing.classList.add('is-done');
-                document.body.classList.remove('mercury-landing-open');
-                detach();
-                try { landing.remove(); } catch (e) {}
-            }, 560);
+            progress = 1;
+            try {
+                if (scene) scene.style.transform = `scale(${1 + MAX_SCALE})`;
+                // Clear any inline opacity so CSS fade can run
+                landing.style.opacity = '';
+                landing.classList.add('is-deep', 'is-finishing');
+            } catch (e) {}
+            detach();
+            // Always unlock + remove — never leave a stuck blank overlay
+            const cleanup = () => {
+                try {
+                    landing.classList.add('is-done');
+                    unlockBody();
+                    landing.remove();
+                } catch (e) {
+                    unlockBody();
+                }
+            };
+            setTimeout(cleanup, 620);
+            // Safety net if something blocks the timeout path
+            setTimeout(unlockBody, 900);
         };
 
         const paint = () => {
             if (done) return;
             const t = ease(progress);
-            // Stay FULLY opaque for entire zoom — no cross-fade with Home
-            landing.style.opacity = '1';
+            // Never set landing.style.opacity here — that blocked CSS finish fade before.
+            // Landing stays opaque via CSS until .is-finishing.
 
             if (scene) {
-                // Scale 1 → ~5.2 so we go past chair and fill on the laptop
                 scene.style.transform = `scale(${1 + t * MAX_SCALE})`;
             }
             if (copy) {
                 const fade = clamp01(1 - progress / COPY_FADE_BY);
                 copy.style.opacity = String(fade);
-                copy.style.transform = `translateY(${-t * 48}px) scale(${1 - t * 0.12})`;
+                copy.style.transform = `translateY(${-t * 40}px) scale(${1 - t * 0.1})`;
             }
             if (hint) {
-                hint.style.opacity = progress < 0.04
+                hint.style.opacity = progress < 0.03
                     ? '1'
                     : String(clamp01(1 - progress / HINT_FADE_BY));
             }
-            // Soft-fade brand + skip once deep in the zoom (still on landing layer)
-            const chromeFade = progress < 0.5 ? 1 : clamp01(1 - (progress - 0.5) / 0.35);
+            const chromeFade = progress < 0.45 ? 1 : clamp01(1 - (progress - 0.45) / 0.4);
             if (brand) brand.style.opacity = String(chromeFade);
-            if (skipBtn) skipBtn.style.opacity = String(Math.max(chromeFade, 0.35));
+            // Keep Skip always readable / clickable
+            if (skipBtn) skipBtn.style.opacity = '1';
 
             if (progress >= DEEP_AT) landing.classList.add('is-deep');
             else landing.classList.remove('is-deep');
@@ -1147,19 +1149,16 @@
 
         const bump = (delta) => {
             if (done) return;
-            // delta > 0 = scroll down = zoom IN
             progress = clamp01(progress + delta);
             paint();
-            // Only hand off after the laptop fills the frame
             if (progress >= FINISH_AT) finish();
         };
 
         const onWheel = (e) => {
             if (done) return;
             e.preventDefault();
-            // Smaller steps so user can clearly reach full laptop before exit
-            // ~6–8 notches of scroll to complete (was ~2–3)
-            const step = Math.max(-0.045, Math.min(0.045, e.deltaY / 1400));
+            // ~7–10 notches to fill laptop (slower, more controlled)
+            const step = Math.max(-0.04, Math.min(0.04, e.deltaY / 1600));
             bump(step);
         };
 
@@ -1171,43 +1170,50 @@
             if (touchY == null || !e.touches || !e.touches[0]) return;
             e.preventDefault();
             const y = e.touches[0].clientY;
-            const dy = touchY - y; // finger up = scroll down = zoom in
+            const dy = touchY - y;
             touchY = y;
-            bump(dy / 1400);
+            bump(dy / 1600);
         };
 
         const onKey = (e) => {
             if (e.key === 'Escape') { finish(); return; }
             if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
                 e.preventDefault();
-                bump(0.06);
+                bump(0.05);
             } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
                 e.preventDefault();
-                bump(-0.06);
+                bump(-0.05);
             } else if (e.key === 'Enter') {
                 finish();
             }
         };
 
+        // If the hero image 404s, log it — CSS bg is the fallback paint path
+        if (photo) {
+            photo.addEventListener('error', () => {
+                console.warn('Mercury hero image failed to load:', photo.src);
+            }, { once: true });
+        }
+
         document.body.classList.add('mercury-landing-open');
         paint();
 
-        if (reduce) {
-            if (skipBtn) skipBtn.addEventListener('click', finish);
-            window.addEventListener('keydown', onKey);
-            return;
-        }
+        if (skipBtn) skipBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            finish();
+        });
+        window.addEventListener('keydown', onKey);
+
+        if (reduce) return;
 
         window.addEventListener('wheel', onWheel, { passive: false });
         landing.addEventListener('touchstart', onTouchStart, { passive: true });
         landing.addEventListener('touchmove', onTouchMove, { passive: false });
-        window.addEventListener('keydown', onKey);
-
-        if (skipBtn) skipBtn.addEventListener('click', finish);
-        // Click nudges zoom (does not skip to Home)
+        // Click on scene nudges zoom; never traps user (Skip always works)
         landing.addEventListener('click', (e) => {
             if (e.target.closest('#mercurySkip')) return;
-            if (progress < 0.9) bump(0.08);
+            if (progress < 0.92) bump(0.07);
         });
     }
 
