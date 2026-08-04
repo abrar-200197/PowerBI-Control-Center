@@ -1098,6 +1098,7 @@ def api_home_summary():
                     f"reports={summary.get('totalReports')} "
                     f"inactive={summary.get('inactiveReports')} "
                     f"orphaned={summary.get('orphanedReports')} "
+                    f"zeroViews={summary.get('zeroViewsReports')} "
                     f"opsEnrichedAt={summary.get('opsEnrichedAt')}"
                 )
                 return jsonify(summary)
@@ -1112,10 +1113,51 @@ def api_home_summary():
             'totalReports': None,
             'inactiveReports': None,
             'orphanedReports': None,
+            'zeroViewsReports': None,
             'workspaces': [],
         })
     except Exception as e:
         print(f"❌ home-summary error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/home-summary/details')
+@login_required
+def api_home_summary_details():
+    """
+    Row lists for Home KPI tabs.
+    ?metric=workspaces|reports|inactive|orphaned|zero_views
+    """
+    try:
+        metric = (request.args.get('metric') or 'workspaces').strip().lower()
+        try:
+            limit = int(request.args.get('limit') or 5000)
+        except Exception:
+            limit = 5000
+        limit = max(1, min(limit, 20000))
+        allowed = _user_allowed_workspace_ids()
+        if not CATALOG_AVAILABLE or catalog_service is None or not catalog_service.is_available():
+            return jsonify({
+                'success': False,
+                'error': 'Catalog not available',
+                'metric': metric,
+                'rows': [],
+            }), 503
+        details = catalog_service.build_home_details(
+            metric=metric,
+            allowed_workspace_ids=allowed if allowed is not None else None,
+            inactive_days=30,
+            limit=limit,
+        )
+        if not details:
+            return jsonify({'success': False, 'error': 'No details', 'metric': metric, 'rows': []}), 404
+        if details.get('success') is False:
+            return jsonify(details), 400
+        return jsonify(details)
+    except Exception as e:
+        print(f"❌ home-summary/details error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500

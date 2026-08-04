@@ -273,6 +273,33 @@
         min-height: 64px;
         box-shadow: var(--shadow-sm);
         color: var(--text);
+        cursor: pointer;
+        transition: border-color .15s ease, box-shadow .15s ease, transform .12s ease, background .15s ease;
+        user-select: none;
+        text-align: left;
+        width: 100%;
+        font: inherit;
+    }
+    .kpi:hover {
+        border-color: color-mix(in srgb, var(--info) 45%, var(--border));
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+    }
+    .kpi:focus-visible {
+        outline: 2px solid var(--info);
+        outline-offset: 2px;
+    }
+    .kpi.is-active {
+        border-color: var(--info);
+        background: color-mix(in srgb, var(--info) 8%, var(--bg-surface));
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--info) 35%, transparent), var(--shadow-sm);
+        transform: translateY(-1px);
+    }
+    .panel.is-emphasized {
+        border-color: color-mix(in srgb, var(--info) 28%, var(--border));
+        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.06);
+    }
+    .panel.is-emphasized .panel-title h2 {
+        font-size: 16px;
     }
 
     .kpi-icon {
@@ -643,6 +670,18 @@
         border-color: var(--border);
         box-shadow: var(--shadow-sm);
     }
+    html[data-theme="dark"] .kpi:hover {
+        border-color: #2B6CB0;
+        background: #1A2332;
+    }
+    html[data-theme="dark"] .kpi.is-active {
+        border-color: #63B3ED;
+        background: #0c2a43;
+        box-shadow: 0 0 0 1px rgba(99, 179, 237, 0.35);
+    }
+    html[data-theme="dark"] .panel.is-emphasized {
+        border-color: #2B6CB0;
+    }
     html[data-theme="dark"] .kpi-label { color: var(--text-muted); }
     html[data-theme="dark"] .kpi-value { color: var(--text-strong); }
     html[data-theme="dark"] .kpi-hint { color: var(--text-muted); }
@@ -778,48 +817,48 @@
 {% endif %}
 
 <div class="home-wrap">
-    <!-- Compact KPI strip -->
-    <div class="kpi-strip" role="region" aria-label="Summary metrics">
-        <div class="kpi">
+    <!-- KPI cards act as tabs for the detail panel below -->
+    <div class="kpi-strip" role="tablist" aria-label="Home metrics">
+        <button type="button" class="kpi is-active" role="tab" data-metric="workspaces" aria-selected="true" id="kpi-workspaces">
             <div class="kpi-icon ws"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Workspaces</div>
                 <div class="kpi-value" id="total-workspaces"><span class="spinner"></span></div>
                 <div class="kpi-hint">Accessible to you</div>
             </div>
-        </div>
-        <div class="kpi">
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="reports" aria-selected="false" id="kpi-reports">
             <div class="kpi-icon rp"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Reports</div>
                 <div class="kpi-value" id="total-reports"><span class="spinner"></span></div>
                 <div class="kpi-hint">Across your workspaces</div>
             </div>
-        </div>
-        <div class="kpi">
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="inactive" aria-selected="false" id="kpi-inactive">
             <div class="kpi-icon in"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Inactive</div>
                 <div class="kpi-value" id="inactive-reports"><span class="spinner"></span></div>
                 <div class="kpi-hint">No refresh in 30+ days</div>
             </div>
-        </div>
-        <div class="kpi">
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="orphaned" aria-selected="false" id="kpi-orphaned">
             <div class="kpi-icon or"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Orphaned</div>
                 <div class="kpi-value" id="orphaned-reports"><span class="spinner"></span></div>
                 <div class="kpi-hint">No active owner signal</div>
             </div>
-        </div>
-        <div class="kpi">
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="zero_views" aria-selected="false" id="kpi-zero-views">
             <div class="kpi-icon zv"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Zero views</div>
                 <div class="kpi-value" id="zero-views-reports"><span class="spinner"></span></div>
                 <div class="kpi-hint" id="zero-views-hint">0 views in last 60d</div>
             </div>
-        </div>
+        </button>
     </div>
 
     <div class="home-filter-reset" id="homeFilterReset">
@@ -827,11 +866,11 @@
         <button type="button" id="homeClearAllFilters">Clear all filters</button>
     </div>
 
-    <!-- Workspace panel -->
-    <section class="panel" aria-label="Your workspaces">
+    <!-- Detail panel — content switches with active KPI tab -->
+    <section class="panel is-emphasized" id="homeDetailPanel" aria-label="Home detail list">
         <div class="panel-toolbar">
             <div class="panel-title">
-                <h2>Your workspaces</h2>
+                <h2 id="detailPanelTitle">Your workspaces</h2>
                 <span class="panel-meta" id="workspace-count-label">—</span>
             </div>
             <div class="panel-actions">
@@ -839,20 +878,22 @@
                     <span class="dot"></span>
                     <span id="catalog-freshness-text">Loading…</span>
                 </span>
-                <select class="sort-select" id="sortSelect" aria-label="Sort workspaces">
+                <select class="sort-select" id="sortSelect" aria-label="Sort list">
                     <option value="name">Sort: Name</option>
                     <option value="reports-desc">Sort: Reports high → low</option>
                     <option value="inactive-desc">Sort: Inactive high → low</option>
+                    <option value="workspace">Sort: Workspace</option>
+                    <option value="days-desc">Sort: Days high → low</option>
                 </select>
                 <div class="search-box">
-                    <input type="search" id="workspaceSearch" placeholder="Filter workspaces…" autocomplete="off" />
+                    <input type="search" id="workspaceSearch" placeholder="Filter…" autocomplete="off" />
                 </div>
             </div>
         </div>
 
         <div class="table-scroll">
-            <table class="ws-table">
-                <thead>
+            <table class="ws-table" id="homeDetailTable">
+                <thead id="homeDetailHead">
                     <tr>
                         <th>Workspace</th>
                         <th class="col-num">Reports</th>
@@ -864,7 +905,7 @@
                     <tr>
                         <td colspan="4" class="empty-state">
                             <div class="loading-spinner"></div>
-                            <div style="margin-top: 10px;">Loading workspaces</div>
+                            <div style="margin-top: 10px;">Loading…</div>
                         </td>
                     </tr>
                 </tbody>
@@ -873,7 +914,7 @@
     </section>
 
     <div class="footer-note" id="home-footer-note">
-        Counts prefer precomputed catalog when available. Open a workspace for report catalog detail.
+        Click a KPI card to switch the list below. Open jumps to Report Catalog for that workspace.
     </div>
 </div>
 {% endblock %}
@@ -892,7 +933,61 @@
     let totalOrphanedReports = 0;
     let totalZeroViewsReports = 0;
     let usageLookbackDays = 60;
+    let inactiveDaysThreshold = 30;
     let catalogMeta = { source: null, opsEnrichedAt: null, generatedAt: null };
+    let activeMetric = 'workspaces';
+    const detailCache = {}; // metric -> { rows, count, capped, loaded }
+    let detailLoadToken = 0;
+
+    const METRIC_META = {
+        workspaces: {
+            title: 'Your workspaces',
+            searchPh: 'Filter workspaces…',
+            empty: 'No workspaces match your filter',
+            sorts: [
+                { v: 'name', t: 'Sort: Name' },
+                { v: 'reports-desc', t: 'Sort: Reports high → low' },
+                { v: 'inactive-desc', t: 'Sort: Inactive high → low' },
+            ],
+        },
+        reports: {
+            title: 'All reports',
+            searchPh: 'Filter reports or workspaces…',
+            empty: 'No reports match your filter',
+            sorts: [
+                { v: 'name', t: 'Sort: Report name' },
+                { v: 'workspace', t: 'Sort: Workspace' },
+            ],
+        },
+        inactive: {
+            title: 'Inactive reports',
+            searchPh: 'Filter inactive reports…',
+            empty: 'No inactive reports match your filter',
+            sorts: [
+                { v: 'days-desc', t: 'Sort: Days high → low' },
+                { v: 'name', t: 'Sort: Report name' },
+                { v: 'workspace', t: 'Sort: Workspace' },
+            ],
+        },
+        orphaned: {
+            title: 'Orphaned reports',
+            searchPh: 'Filter orphaned reports…',
+            empty: 'No orphaned reports match your filter',
+            sorts: [
+                { v: 'workspace', t: 'Sort: Workspace' },
+                { v: 'name', t: 'Sort: Report name' },
+            ],
+        },
+        zero_views: {
+            title: 'Zero-view reports',
+            searchPh: 'Filter zero-view reports…',
+            empty: 'No zero-view reports match your filter',
+            sorts: [
+                { v: 'workspace', t: 'Sort: Workspace' },
+                { v: 'name', t: 'Sort: Report name' },
+            ],
+        },
+    };
 
     function setZeroViewsHint(days) {
         const el = document.getElementById('zero-views-hint');
@@ -900,6 +995,85 @@
         const d = Number(days) > 0 ? Number(days) : 60;
         usageLookbackDays = d;
         el.textContent = `0 views in last ${d}d`;
+        if (METRIC_META.zero_views) {
+            METRIC_META.zero_views.title = `Zero-view reports (${d}d)`;
+        }
+    }
+
+    function catalogOpenHref(workspaceId, reportId) {
+        if (!workspaceId) return '/documentation';
+        let u = `/documentation?workspace=${encodeURIComponent(workspaceId)}`;
+        if (reportId) u += `&report=${encodeURIComponent(reportId)}`;
+        return u;
+    }
+
+    function setActiveMetric(metric, { resetFilters } = { resetFilters: true }) {
+        if (!METRIC_META[metric]) metric = 'workspaces';
+        activeMetric = metric;
+        document.querySelectorAll('.kpi-strip .kpi[data-metric]').forEach((btn) => {
+            const on = btn.getAttribute('data-metric') === metric;
+            btn.classList.toggle('is-active', on);
+            btn.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        const panel = document.getElementById('homeDetailPanel');
+        if (panel) panel.classList.add('is-emphasized');
+        const title = document.getElementById('detailPanelTitle');
+        if (title) title.textContent = METRIC_META[metric].title;
+        const search = document.getElementById('workspaceSearch');
+        if (search) {
+            search.placeholder = METRIC_META[metric].searchPh;
+            if (resetFilters) search.value = '';
+        }
+        const sort = document.getElementById('sortSelect');
+        if (sort) {
+            const opts = METRIC_META[metric].sorts || [];
+            sort.innerHTML = opts.map((o) => `<option value="${o.v}">${o.t}</option>`).join('');
+            if (resetFilters && opts[0]) sort.value = opts[0].v;
+        }
+        applyFilterAndSort();
+    }
+
+    async function ensureDetailRows(metric) {
+        if (metric === 'workspaces') return null;
+        if (detailCache[metric] && detailCache[metric].loaded) return detailCache[metric];
+        const token = ++detailLoadToken;
+        const tbody = document.getElementById('workspace-list');
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="4" class="empty-state">
+                <div class="loading-spinner"></div>
+                <div style="margin-top:10px">Loading ${escapeHtml(METRIC_META[metric]?.title || metric)}…</div>
+            </td></tr>`;
+        }
+        try {
+            const res = await fetch(`/api/home-summary/details?metric=${encodeURIComponent(metric)}&limit=8000`, {
+                credentials: 'include',
+            });
+            const data = await res.json();
+            if (token !== detailLoadToken) return null;
+            if (!data.success) throw new Error(data.error || `HTTP ${res.status}`);
+            detailCache[metric] = {
+                loaded: true,
+                rows: data.rows || [],
+                count: data.count != null ? data.count : (data.rows || []).length,
+                capped: !!data.capped,
+                usageLookbackDays: data.usageLookbackDays,
+                inactiveDaysThreshold: data.inactiveDaysThreshold,
+            };
+            if (data.usageLookbackDays) setZeroViewsHint(data.usageLookbackDays);
+            if (data.inactiveDaysThreshold) inactiveDaysThreshold = data.inactiveDaysThreshold;
+            return detailCache[metric];
+        } catch (e) {
+            if (token !== detailLoadToken) return null;
+            detailCache[metric] = { loaded: false, error: e.message || String(e), rows: [] };
+            if (tbody) {
+                tbody.innerHTML = `<tr><td colspan="4" class="empty-state">
+                    <div class="empty-state-icon">!</div>
+                    <div>Failed to load list</div>
+                    <div style="font-size:12px;margin-top:6px;color:#A0AEC0;">${escapeHtml(e.message || String(e))}</div>
+                </td></tr>`;
+            }
+            return detailCache[metric];
+        }
     }
 
     async function loadDashboard() {
@@ -1071,6 +1245,11 @@
         renderWorkspaceTable(workspaces);
     }
 
+    function defaultSortForMetric(metric) {
+        const sorts = METRIC_META[metric]?.sorts || [];
+        return sorts[0]?.v || 'name';
+    }
+
     function getFilteredSortedWorkspaces() {
         const q = (document.getElementById('workspaceSearch')?.value || '').trim().toLowerCase();
         const sort = document.getElementById('sortSelect')?.value || 'name';
@@ -1089,13 +1268,44 @@
         return list;
     }
 
+    function getFilteredSortedDetailRows(metric) {
+        const pack = detailCache[metric];
+        if (!pack || !pack.rows) return [];
+        const q = (document.getElementById('workspaceSearch')?.value || '').trim().toLowerCase();
+        const sort = document.getElementById('sortSelect')?.value || defaultSortForMetric(metric);
+        let list = pack.rows.slice();
+        if (q) {
+            list = list.filter((r) =>
+                (r.reportName || '').toLowerCase().includes(q) ||
+                (r.workspaceName || '').toLowerCase().includes(q) ||
+                (r.workspaceId || '').toLowerCase().includes(q) ||
+                (r.reportId || '').toLowerCase().includes(q)
+            );
+        }
+        list.sort((a, b) => {
+            if (sort === 'workspace') {
+                return (a.workspaceName || '').localeCompare(b.workspaceName || '', undefined, { sensitivity: 'base' })
+                    || (a.reportName || '').localeCompare(b.reportName || '', undefined, { sensitivity: 'base' });
+            }
+            if (sort === 'days-desc') {
+                const da = Number(a.daysSinceRefresh);
+                const db = Number(b.daysSinceRefresh);
+                const na = Number.isFinite(da) ? da : -1;
+                const nb = Number.isFinite(db) ? db : -1;
+                return nb - na || (a.reportName || '').localeCompare(b.reportName || '');
+            }
+            return (a.reportName || '').localeCompare(b.reportName || '', undefined, { sensitivity: 'base' })
+                || (a.workspaceName || '').localeCompare(b.workspaceName || '');
+        });
+        return list;
+    }
+
     function countHomeFilters() {
-        // Treat search text + non-default sort as independent filters
         let n = 0;
         const q = (document.getElementById('workspaceSearch')?.value || '').trim();
-        const sort = document.getElementById('sortSelect')?.value || 'name';
+        const sort = document.getElementById('sortSelect')?.value || defaultSortForMetric(activeMetric);
         if (q) n += 1;
-        if (sort && sort !== 'name') n += 1;
+        if (sort && sort !== defaultSortForMetric(activeMetric)) n += 1;
         return n;
     }
 
@@ -1108,10 +1318,10 @@
             bar.classList.add('is-on');
             if (hint) {
                 const q = (document.getElementById('workspaceSearch')?.value || '').trim();
-                const sort = document.getElementById('sortSelect')?.value || 'name';
+                const sort = document.getElementById('sortSelect')?.value || defaultSortForMetric(activeMetric);
                 const bits = [];
                 if (q) bits.push('search');
-                if (sort !== 'name') bits.push('sort');
+                if (sort !== defaultSortForMetric(activeMetric)) bits.push('sort');
                 hint.textContent = `${n} filters active (${bits.join(' + ')})`;
             }
         } else {
@@ -1123,17 +1333,69 @@
         const search = document.getElementById('workspaceSearch');
         const sort = document.getElementById('sortSelect');
         if (search) search.value = '';
-        if (sort) sort.value = 'name';
+        if (sort) sort.value = defaultSortForMetric(activeMetric);
         applyFilterAndSort();
     }
 
-    function applyFilterAndSort() {
-        const list = getFilteredSortedWorkspaces();
-        renderWorkspaceTable(list);
-        const total = workspaces.length;
+    function setDetailHead(metric) {
+        const head = document.getElementById('homeDetailHead');
+        if (!head) return;
+        if (metric === 'workspaces') {
+            head.innerHTML = `<tr>
+                <th>Workspace</th>
+                <th class="col-num">Reports</th>
+                <th class="col-num">Inactive</th>
+                <th class="col-action"></th>
+            </tr>`;
+            return;
+        }
+        if (metric === 'inactive') {
+            head.innerHTML = `<tr>
+                <th>Report</th>
+                <th>Workspace</th>
+                <th class="col-num">Days</th>
+                <th class="col-action"></th>
+            </tr>`;
+            return;
+        }
+        head.innerHTML = `<tr>
+            <th>Report</th>
+            <th>Workspace</th>
+            <th class="col-action"></th>
+        </tr>`;
+    }
+
+    async function applyFilterAndSort() {
+        const metric = activeMetric || 'workspaces';
+        const titleEl = document.getElementById('detailPanelTitle');
+        const meta = METRIC_META[metric] || METRIC_META.workspaces;
+        if (titleEl) titleEl.textContent = meta.title;
+        setDetailHead(metric);
+
+        if (metric === 'workspaces') {
+            const list = getFilteredSortedWorkspaces();
+            renderWorkspaceTable(list);
+            const total = workspaces.length;
+            const shown = list.length;
+            document.getElementById('workspace-count-label').textContent =
+                shown === total ? `${total} workspace${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
+            updateHomeFilterReset();
+            return;
+        }
+
+        const pack = await ensureDetailRows(metric);
+        if (activeMetric !== metric) return;
+        if (!pack || pack.error) {
+            updateHomeFilterReset();
+            return;
+        }
+        const list = getFilteredSortedDetailRows(metric);
+        renderReportDetailTable(metric, list, pack);
+        const total = pack.count != null ? pack.count : (pack.rows || []).length;
         const shown = list.length;
-        document.getElementById('workspace-count-label').textContent =
-            shown === total ? `${total} workspace${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
+        let label = shown === total ? `${total} report${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
+        if (pack.capped) label += ' (capped)';
+        document.getElementById('workspace-count-label').textContent = label;
         updateHomeFilterReset();
     }
 
@@ -1453,6 +1715,65 @@
         });
     }
 
+    function renderReportDetailTable(metric, list, pack) {
+        const tbody = document.getElementById('workspace-list');
+        if (!tbody) return;
+        const emptyMsg = METRIC_META[metric]?.empty || 'No rows match your filter';
+        const colSpan = metric === 'inactive' ? 4 : 3;
+        if (!list || list.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${colSpan}" class="empty-state">
+                <div class="empty-state-icon"></div>
+                <div>${escapeHtml(emptyMsg)}</div>
+            </td></tr>`;
+            return;
+        }
+
+        // Cap DOM for very large filtered sets (still searchable)
+        const MAX_DOM = 800;
+        const slice = list.length > MAX_DOM ? list.slice(0, MAX_DOM) : list;
+        const more = list.length > MAX_DOM
+            ? `<tr><td colspan="${colSpan}" class="empty-state" style="padding:12px">
+                Showing first ${MAX_DOM} of ${list.length} — refine search to narrow.
+               </td></tr>`
+            : '';
+
+        tbody.innerHTML = slice.map((row) => {
+            const rid = row.reportId || '';
+            const rname = row.reportName || '—';
+            const wid = row.workspaceId || '';
+            const wname = row.workspaceName || '—';
+            const href = catalogOpenHref(wid, rid);
+            if (metric === 'inactive') {
+                const days = row.daysSinceRefresh;
+                const daysLabel = days != null && days !== '' ? String(days) : '—';
+                const lr = row.lastRefreshed
+                    ? (() => { try { return new Date(row.lastRefreshed).toLocaleString(); } catch (e) { return String(row.lastRefreshed); } })()
+                    : '';
+                return `<tr data-href="${escapeHtml(href)}" title="${escapeHtml(rname)}">
+                    <td><div class="ws-name">${escapeHtml(rname)}</div>
+                        ${lr ? `<div class="ws-id">Last refresh: ${escapeHtml(lr)}</div>` : ''}
+                    </td>
+                    <td><div class="ws-name" style="font-weight:500">${escapeHtml(wname)}</div></td>
+                    <td class="col-num"><span class="pill pill-inactive">${escapeHtml(daysLabel)}</span></td>
+                    <td class="col-action"><a class="open-link" href="${escapeHtml(href)}">Open</a></td>
+                </tr>`;
+            }
+            return `<tr data-href="${escapeHtml(href)}" title="${escapeHtml(rname)}">
+                <td><div class="ws-name">${escapeHtml(rname)}</div></td>
+                <td><div class="ws-name" style="font-weight:500">${escapeHtml(wname)}</div></td>
+                <td class="col-action"><a class="open-link" href="${escapeHtml(href)}">Open</a></td>
+            </tr>`;
+        }).join('') + more;
+
+        tbody.querySelectorAll('tr[data-href]').forEach((tr) => {
+            tr.addEventListener('click', (e) => {
+                if (e.target.closest('a, button, input, select, textarea')) return;
+                const href = tr.getAttribute('data-href');
+                if (href) window.location.href = href;
+            });
+        });
+    }
+
     // Fallback live loaders (unchanged behavior)
     async function loadReportCounts() {
         const promises = workspaces.map(async workspace => {
@@ -1533,6 +1854,18 @@
 
     document.addEventListener('DOMContentLoaded', () => {
         runMercuryLanding(); // manual enter only — never auto-zoom
+        // KPI cards = tabs for detail panel
+        document.querySelectorAll('.kpi-strip .kpi[data-metric]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const m = btn.getAttribute('data-metric') || 'workspaces';
+                if (m === activeMetric) {
+                    applyFilterAndSort();
+                    return;
+                }
+                setActiveMetric(m, { resetFilters: true });
+            });
+        });
+        setActiveMetric('workspaces', { resetFilters: true });
         loadDashboard();
         const search = document.getElementById('workspaceSearch');
         const sort = document.getElementById('sortSelect');

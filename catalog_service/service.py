@@ -316,6 +316,176 @@ class CatalogService:
             return self._home_from_thin_index(thin, allowed_workspace_ids, inactive_days)
         return self._home_from_full_catalog(allowed_workspace_ids, inactive_days)
 
+    def build_home_details(
+        self,
+        metric: str,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+        inactive_days: int = 30,
+        limit: int = 5000,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Row lists for Home KPI tabs (server-side, ACL-scoped).
+
+        metric:
+          workspaces | reports | inactive | orphaned | zero_views
+        """
+        metric = (metric or "workspaces").strip().lower().replace("-", "_")
+        if metric in ("zeroviews", "zero_view", "views"):
+            metric = "zero_views"
+        if metric not in ("workspaces", "reports", "inactive", "orphaned", "zero_views"):
+            return {
+                "success": False,
+                "error": f"Unknown metric: {metric}",
+            }
+
+        try:
+            from catalog_service.thin_packs import (
+                USAGE_LOOKBACK_DAYS,
+                _is_inactive,
+                _is_orphaned,
+                _is_zero_views,
+            )
+        except Exception:
+            USAGE_LOOKBACK_DAYS = 60
+
+            def _is_inactive(report, ds, inactive_days, now):  # type: ignore
+                return False
+
+            def _is_orphaned(report):  # type: ignore
+                return False
+
+            def _is_zero_views(report):  # type: ignore
+                vc = report.get("view_count")
+                if vc is None:
+                    return False
+                try:
+                    return int(vc) == 0
+                except Exception:
+                    return False
+
+        # Workspaces tab: thin index is enough
+        if metric == "workspaces":
+            summary = self.build_home_summary(allowed_workspace_ids, inactive_days)
+            if not summary:
+                return None
+            rows = []
+            for w in summary.get("workspaces") or []:
+                rows.append({
+                    "workspaceId": w.get("id"),
+                    "workspaceName": w.get("name") or "",
+                    "reportCount": int(w.get("reportCount") or 0),
+                    "inactiveCount": int(w.get("inactiveCount") or 0),
+                    "orphanedCount": int(w.get("orphanedCount") or 0),
+                    "zeroViewsCount": int(w.get("zeroViewsCount") or 0),
+                })
+            rows.sort(key=lambda r: (r.get("workspaceName") or "").lower())
+            return {
+                "success": True,
+                "metric": metric,
+                "count": len(rows),
+                "rows": rows,
+                "inactiveDaysThreshold": inactive_days,
+                "usageLookbackDays": summary.get("usageLookbackDays") or USAGE_LOOKBACK_DAYS,
+                "opsEnrichedAt": summary.get("opsEnrichedAt"),
+                "generatedAt": summary.get("generatedAt"),
+                "source": summary.get("source") or "catalog",
+            }
+
+        cat = self.get_workspace_catalog()
+        if not cat:
+            return None
+        datasets_map = cat.get("datasets") or {}
+        now = datetime.now(timezone.utc)
+        rows: List[Dict[str, Any]] = []
+        capped = False
+
+        for ws in cat.get("workspaces") or []:
+            wid = ws.get("id")
+            if not wid:
+                continue
+            if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
+                continue
+            wname = ws.get("name") or ""
+            for r in ws.get("reports") or []:
+                if str(r.get("name") or "").startswith("[App]"):
+                    continue
+                ds = datasets_map.get(r.get("datasetId") or "") or {}
+                include = False
+                extra: Dict[str, Any] = {}
+                if metric == "reports":
+                    include = True
+                elif metric == "inactive":
+                    include = _is_inactive(r, ds, inactive_days, now)
+                    if include:
+                        extra = {
+                            "lastRefreshed": r.get("last_refreshed") or ds.get("last_refreshed"),
+                            "daysSinceRefresh": r.get("days_since_refresh")
+                            if r.get("days_since_refresh") is not None
+                            else ds.get("days_since_refresh"),
+                            "refreshStatus": r.get("last_refresh_status") or ds.get("last_refresh_status"),
+                        }
+                elif metric == "orphaned":
+                    include = _is_orphaned(r)
+                elif metric == "zero_views":
+                    include = _is_zero_views(r)
+                    if include:
+                        extra = {
+                            "viewCount": int(r.get("view_count") or 0),
+                            "lastViewed": r.get("last_viewed"),
+                        }
+                if not include:
+                    continue
+                rows.append({
+                    "reportId": r.get("id"),
+                    "reportName": r.get("name") or "",
+                    "workspaceId": wid,
+                    "workspaceName": wname,
+                    "datasetId": r.get("datasetId") or "",
+                    **extra,
+                })
+                if len(rows) >= max(1, int(limit)):
+                    capped = True
+                    break
+            if capped:
+                break
+
+        if metric == "reports":
+            rows.sort(key=lambda r: (
+                (r.get("workspaceName") or "").lower(),
+                (r.get("reportName") or "").lower(),
+            ))
+        elif metric == "inactive":
+            def _days_key(row):
+                d = row.get("daysSinceRefresh")
+                try:
+                    return -int(d)
+                except Exception:
+                    return 0
+            rows.sort(key=lambda r: (_days_key(r), (r.get("reportName") or "").lower()))
+        else:
+            rows.sort(key=lambda r: (
+                (r.get("workspaceName") or "").lower(),
+                (r.get("reportName") or "").lower(),
+            ))
+
+        try:
+            uld = USAGE_LOOKBACK_DAYS
+        except Exception:
+            uld = 60
+        return {
+            "success": True,
+            "metric": metric,
+            "count": len(rows),
+            "capped": capped,
+            "limit": int(limit),
+            "rows": rows,
+            "inactiveDaysThreshold": inactive_days,
+            "usageLookbackDays": int(uld),
+            "opsEnrichedAt": cat.get("opsEnrichedAt"),
+            "generatedAt": cat.get("generatedAt"),
+            "source": "catalog",
+        }
+
     def _home_from_thin_index(
         self,
         thin: Dict[str, Any],
