@@ -249,6 +249,161 @@ def build_ui_impact_tables(impact_index: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def build_ui_impact_reports(impact_index: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Invert impact_index: report → all source tables / files / connections.
+
+    Includes every source type present in the index (Sql, Excel, SharePoint,
+    ModelTable, etc.). Grid rows stay light; detailsByReportId holds full
+    source lists for the drawer (server-only — not sent as the full pack).
+    """
+    # reportId -> mutable aggregate
+    by_report: Dict[str, Dict[str, Any]] = {}
+
+    for key, entry in (impact_index.get("tables") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        table_key = entry.get("tableKey") or key
+        source_type = entry.get("sourceType") or "Unknown"
+        server = entry.get("server") or ""
+        database = entry.get("database") or ""
+        schema = entry.get("schema") or ""
+        table_name = entry.get("table") or ""
+        model_names_all = entry.get("modelTableNames") or []
+
+        for ds in entry.get("datasets") or []:
+            if not isinstance(ds, dict):
+                continue
+            ds_id = ds.get("datasetId") or ""
+            ds_name = ds.get("datasetName") or ""
+            model_table = ds.get("modelTableName") or ""
+            for rep in ds.get("reports") or []:
+                if not isinstance(rep, dict):
+                    continue
+                rid = rep.get("reportId")
+                if not rid:
+                    continue
+                if rid not in by_report:
+                    by_report[rid] = {
+                        "reportId": rid,
+                        "reportName": rep.get("reportName") or "",
+                        "workspaceId": rep.get("workspaceId") or ds.get("workspaceId") or "",
+                        "workspaceName": rep.get("workspaceName") or ds.get("workspaceName") or "",
+                        "reportType": rep.get("reportType") or "",
+                        "datasetIds": set(),
+                        "sourceTypes": set(),
+                        # tableKey -> source stub (merge datasets/model tables)
+                        "sources": {},
+                    }
+                agg = by_report[rid]
+                # Prefer non-empty names if we saw empties first
+                if not agg.get("reportName") and rep.get("reportName"):
+                    agg["reportName"] = rep.get("reportName")
+                if not agg.get("workspaceName") and (rep.get("workspaceName") or ds.get("workspaceName")):
+                    agg["workspaceName"] = rep.get("workspaceName") or ds.get("workspaceName") or ""
+                if not agg.get("workspaceId") and (rep.get("workspaceId") or ds.get("workspaceId")):
+                    agg["workspaceId"] = rep.get("workspaceId") or ds.get("workspaceId") or ""
+                if ds_id:
+                    agg["datasetIds"].add(ds_id)
+                if source_type:
+                    agg["sourceTypes"].add(str(source_type))
+
+                src = agg["sources"].get(table_key)
+                if src is None:
+                    src = {
+                        "tableKey": table_key,
+                        "table": table_name,
+                        "sourceType": source_type,
+                        "server": server,
+                        "database": database,
+                        "schema": schema,
+                        "modelTableNames": set(),
+                        "datasets": [],
+                    }
+                    agg["sources"][table_key] = src
+                if model_table:
+                    src["modelTableNames"].add(model_table)
+                for mn in model_names_all:
+                    if mn:
+                        src["modelTableNames"].add(mn)
+                # Enrich connection fields if missing
+                for fld, val in (("server", server), ("database", database), ("schema", schema)):
+                    if not src.get(fld) and val:
+                        src[fld] = val
+                # Track dataset link (unique)
+                existing_ds = {d.get("datasetId") for d in src["datasets"] if d.get("datasetId")}
+                if ds_id and ds_id not in existing_ds:
+                    src["datasets"].append({
+                        "datasetId": ds_id,
+                        "datasetName": ds_name,
+                        "workspaceId": ds.get("workspaceId") or agg.get("workspaceId") or "",
+                        "workspaceName": ds.get("workspaceName") or agg.get("workspaceName") or "",
+                        "modelTableName": model_table or "",
+                    })
+
+    rows: List[Dict[str, Any]] = []
+    details: Dict[str, List[Dict[str, Any]]] = {}
+
+    for rid, agg in by_report.items():
+        source_list: List[Dict[str, Any]] = []
+        for _tk, src in agg["sources"].items():
+            model_names = sorted(src["modelTableNames"]) if isinstance(src["modelTableNames"], set) else list(src.get("modelTableNames") or [])
+            source_list.append({
+                "tableKey": src.get("tableKey"),
+                "table": src.get("table") or "",
+                "sourceType": src.get("sourceType") or "Unknown",
+                "server": src.get("server") or "",
+                "database": src.get("database") or "",
+                "schema": src.get("schema") or "",
+                "modelTableNames": model_names,
+                "datasets": src.get("datasets") or [],
+            })
+        # Prefer physical/sql-like first, then by name
+        def _src_sort(s: Dict[str, Any]):
+            st = str(s.get("sourceType") or "").lower()
+            phys = 0 if st not in ("modeltable", "unknown", "") else 1
+            return (phys, (s.get("table") or "").lower(), s.get("tableKey") or "")
+        source_list.sort(key=_src_sort)
+
+        source_types = sorted(agg["sourceTypes"])
+        ds_ids = sorted(agg["datasetIds"])
+        rname = agg.get("reportName") or ""
+        wname = agg.get("workspaceName") or ""
+        rows.append({
+            "reportId": rid,
+            "reportName": rname,
+            "workspaceId": agg.get("workspaceId") or "",
+            "workspaceName": wname,
+            "reportType": agg.get("reportType") or "",
+            "tableCount": len(source_list),
+            "datasetCount": len(ds_ids),
+            "sourceTypes": source_types,
+            "searchText": " ".join([
+                rname,
+                wname,
+                rid,
+                agg.get("workspaceId") or "",
+                *source_types,
+                *[str(s.get("table") or "") for s in source_list[:40]],
+            ]).lower(),
+        })
+        details[rid] = source_list
+
+    rows.sort(key=lambda r: (
+        (r.get("workspaceName") or "").lower(),
+        (r.get("reportName") or "").lower(),
+    ))
+
+    return {
+        "generatedAt": impact_index.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
+        "schemaVersion": "1.0",
+        "reportCount": len(rows),
+        "rows": rows,
+        # Server drawer only — strip before any browser pack delivery if ever exposed
+        "detailsByReportId": details,
+    }
+
+
 def write_thin_packs(latest_dir: Path) -> Dict[str, Path]:
     """Build ui_*.json into latest_dir from full artifacts. Returns paths written."""
     latest_dir = Path(latest_dir)
@@ -269,4 +424,14 @@ def write_thin_packs(latest_dir: Path) -> Dict[str, Path]:
         p.write_text(json.dumps(tables, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         out["ui_impact_tables"] = p
         logger.info("Wrote %s (%.1f MB, %s rows)", p.name, p.stat().st_size / (1024 * 1024), tables["tableCount"])
+        reports_pack = build_ui_impact_reports(imp)
+        p = latest_dir / "ui_impact_reports.json"
+        p.write_text(json.dumps(reports_pack, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        out["ui_impact_reports"] = p
+        logger.info(
+            "Wrote %s (%.1f MB, %s reports)",
+            p.name,
+            p.stat().st_size / (1024 * 1024),
+            reports_pack.get("reportCount") or 0,
+        )
     return out

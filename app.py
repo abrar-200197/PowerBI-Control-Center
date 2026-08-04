@@ -821,9 +821,20 @@ def api_catalog_refresh():
         # Prefer thin packs first (fast UI), then heavy files for report/model APIs
         home = catalog_service.get_json('ui_home_index.json', force_refresh=True)
         tables = catalog_service.get_json('ui_impact_tables.json', force_refresh=True)
+        try:
+            impact_reports = catalog_service.get_json('ui_impact_reports.json', force_refresh=True)
+        except Exception:
+            impact_reports = None
         summary = catalog_service.get_summary(force_refresh=True)
         cat = catalog_service.get_workspace_catalog(force_refresh=True)
         impact = catalog_service.get_impact_index(force_refresh=True)
+        # Rebuild report→sources pack if SharePoint has old pack without it
+        if impact and (not impact_reports or not isinstance((impact_reports or {}).get('rows'), list)):
+            try:
+                catalog_service._ensure_thin_impact_pack(impact)
+                impact_reports = catalog_service.get_json('ui_impact_reports.json')
+            except Exception as exc:
+                print(f"⚠️ thin impact reports pack rebuild: {exc}")
         # Ops snapshot used for last refresh / views — reload so Catalog is not stuck on old ops
         try:
             catalog_service.get_json('refresh_snapshot.json', force_refresh=True)
@@ -861,6 +872,7 @@ def api_catalog_refresh():
             'ui_home_index': bool(home),
             'ui_home_detailLists': home_has_details,
             'ui_impact_tables': bool(tables),
+            'ui_impact_reports': bool(impact_reports),
             'workspace_catalog': bool(cat),
             'impact_index': bool(impact),
             'summary': bool(summary),
@@ -1002,6 +1014,79 @@ def api_catalog_impact_table_detail():
                 'workspaceCount': len({d.get('workspaceId') for d in datasets if d.get('workspaceId')}),
             }
         return jsonify({'success': True, 'table': entry})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/catalog/impact/reports')
+@login_required
+def api_catalog_impact_reports():
+    """
+    Thin report list for Impact Explorer «Report sources» tab (report → source counts).
+    No nested source lists on the wire — use /impact/report for drawer detail.
+    """
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
+    try:
+        force = request.args.get('refresh') in ('1', 'true', 'yes')
+        allowed = _user_allowed_workspace_ids()
+        rows_in = catalog_service.impact_report_rows(
+            force_refresh=force,
+            allowed_workspace_ids=allowed if allowed is not None else None,
+        )
+        rows = []
+        for r in rows_in or []:
+            rows.append({
+                'id': r.get('reportId'),
+                'n': r.get('reportName') or '',
+                'wid': r.get('workspaceId') or '',
+                'wn': r.get('workspaceName') or '',
+                'rt': r.get('reportType') or '',
+                'tc': int(r.get('tableCount') or 0),
+                'dc': int(r.get('datasetCount') or 0),
+                'st': r.get('sourceTypes') or [],
+            })
+        pack = catalog_service.get_json('ui_impact_reports.json') or {}
+        payload = {
+            'success': True,
+            'v': 1,
+            'count': len(rows),
+            'rows': rows,
+            'generatedAt': pack.get('generatedAt'),
+            'source': 'server-thin',
+        }
+        resp = jsonify(payload)
+        if not force:
+            resp.headers['Cache-Control'] = 'private, max-age=120'
+        else:
+            resp.headers['Cache-Control'] = 'no-store'
+        resp.headers['X-Data-Source'] = 'server-thin'
+        return resp
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/catalog/impact/report')
+@login_required
+def api_catalog_impact_report_detail():
+    """
+    All sources for one report (SQL / Excel / SharePoint / model tables / …).
+    Drawer payload for Report sources tab.
+    """
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
+    report_id = (request.args.get('report_id') or request.args.get('id') or '').strip()
+    if not report_id:
+        return jsonify({'success': False, 'error': 'report_id required'}), 400
+    try:
+        allowed = _user_allowed_workspace_ids()
+        detail = catalog_service.impact_report_detail(
+            report_id,
+            allowed_workspace_ids=allowed if allowed is not None else None,
+        )
+        if not detail:
+            return jsonify({'success': False, 'error': f'No sources for report {report_id}'}), 404
+        return jsonify({'success': True, 'report': detail})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

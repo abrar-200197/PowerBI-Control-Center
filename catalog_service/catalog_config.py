@@ -80,6 +80,7 @@ SHAREPOINT_PUBLISH_FILES = [
     # Thin UI packs (KB–low-MB) — browser / home never need the 300MB+ blobs
     "ui_home_index.json",
     "ui_impact_tables.json",
+    "ui_impact_reports.json",
 ]
 
 # Ops snapshot tuning (batch job)
@@ -143,6 +144,8 @@ BROWSER_ALLOWED_CATALOG_FILES = frozenset({
     "sources.json",
     "ui_home_index.json",
     "ui_impact_tables.json",
+    # Grid list only is safe; API strips detailsByReportId before browser use
+    "ui_impact_reports.json",
 })
 
 

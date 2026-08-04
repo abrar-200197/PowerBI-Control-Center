@@ -5,6 +5,8 @@
  * Server holds SP source-of-truth + disk mirror; UI calls thin APIs only:
  *   GET /api/catalog/impact/tables         — flat rows for grid
  *   GET /api/catalog/impact/table          — one table drawer detail
+ *   GET /api/catalog/impact/reports        — report → source counts grid
+ *   GET /api/catalog/impact/report         — one report's all sources
  *   GET /api/catalog/impact/lookup         — name search with blast radius
  *   GET /api/catalog/impact/model-details  — one semantic model popup
  *   GET /api/catalog/data/summary.json     — small stats
@@ -25,6 +27,15 @@ const state = {
   _reportTables: [],
   _modelDetails: null,
   _modelTab: "focus",
+  // Report sources tab (report → all tables/files/connections)
+  reportRows: [],
+  reportFiltered: [],
+  reportSortKey: "tableCount",
+  reportSortDir: "desc",
+  reportPage: 1,
+  selectedReportId: null,
+  reportDrawerSources: [],
+  reportsLoaded: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -443,6 +454,290 @@ function renderTable() {
   tb.querySelectorAll("[data-open]").forEach((btn) => {
     btn.addEventListener("click", () => openDrawer(btn.getAttribute("data-open")));
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* Report sources tab — report → all source tables / files / connections */
+/* ------------------------------------------------------------------ */
+
+const REPORTS_CACHE_KEY = "pbi_cc_impact_reports_v1";
+
+function expandReportRow(r) {
+  const isCompact = r && r.id != null && r.reportId == null;
+  if (isCompact || (r && r.id && r.tc != null)) {
+    const reportName = r.n || "—";
+    const workspaceName = r.wn || "";
+    const sourceTypes = r.st || [];
+    return {
+      reportId: r.id || "",
+      reportName,
+      workspaceId: r.wid || "",
+      workspaceName,
+      reportType: r.rt || "",
+      tableCount: r.tc || 0,
+      datasetCount: r.dc || 0,
+      sourceTypes,
+      searchText: [reportName, workspaceName, r.id, r.wid, ...sourceTypes].join(" ").toLowerCase(),
+    };
+  }
+  return {
+    reportId: r.reportId || "",
+    reportName: r.reportName || "—",
+    workspaceId: r.workspaceId || "",
+    workspaceName: r.workspaceName || "",
+    reportType: r.reportType || "",
+    tableCount: r.tableCount || 0,
+    datasetCount: r.datasetCount || 0,
+    sourceTypes: r.sourceTypes || [],
+    searchText: r.searchText || [
+      r.reportName, r.workspaceName, r.reportId, r.workspaceId, ...(r.sourceTypes || []),
+    ].join(" ").toLowerCase(),
+  };
+}
+
+function readReportsSessionCache() {
+  try {
+    const raw = sessionStorage.getItem(REPORTS_CACHE_KEY);
+    if (!raw) return null;
+    const pack = JSON.parse(raw);
+    if (!pack || !pack.ts || !Array.isArray(pack.rows)) return null;
+    if (Date.now() - pack.ts > IMPACT_CACHE_TTL_MS) return null;
+    return pack;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeReportsSessionCache(payload) {
+  try {
+    sessionStorage.setItem(
+      REPORTS_CACHE_KEY,
+      JSON.stringify({
+        ts: Date.now(),
+        generatedAt: payload.generatedAt || null,
+        rows: payload.rows || [],
+      })
+    );
+  } catch (_) { /* quota */ }
+}
+
+async function ensureReportRows(forceRefresh = false) {
+  if (state.reportsLoaded && !forceRefresh && state.reportRows.length) {
+    return state.reportRows;
+  }
+  if (forceRefresh) {
+    try { sessionStorage.removeItem(REPORTS_CACHE_KEY); } catch (_) { /* ignore */ }
+  }
+  if (!forceRefresh) {
+    const cached = readReportsSessionCache();
+    if (cached) {
+      state.reportRows = (cached.rows || []).map(expandReportRow);
+      state.reportsLoaded = true;
+      return state.reportRows;
+    }
+  }
+  const res = await fetchJsonNoCache("/api/catalog/impact/reports", {
+    refresh: forceRefresh,
+    timeoutMs: 180000,
+    allowHttpCache: !forceRefresh,
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `impact/reports HTTP ${res.status}`);
+  }
+  const pack = await res.json();
+  if (!pack.success) throw new Error(pack.error || "impact/reports failed");
+  writeReportsSessionCache(pack);
+  state.reportRows = (pack.rows || []).map(expandReportRow);
+  state.reportsLoaded = true;
+  return state.reportRows;
+}
+
+function applyReportFilters() {
+  const q = ($("#reportSearchInput")?.value || "").trim().toLowerCase();
+  const minS = Number($("#minSources")?.value || 0);
+  state.reportFiltered = state.reportRows.filter((r) => {
+    if (q && !(r.searchText || "").includes(q)) return false;
+    if ((r.tableCount || 0) < minS) return false;
+    return true;
+  });
+  sortReportFiltered();
+  state.reportPage = 1;
+  renderReportTable();
+}
+
+function sortReportFiltered() {
+  const k = state.reportSortKey;
+  const dir = state.reportSortDir === "asc" ? 1 : -1;
+  state.reportFiltered.sort((a, b) => {
+    const av = a[k], bv = b[k];
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+    return String(av || "").localeCompare(String(bv || ""), undefined, { sensitivity: "base" }) * dir;
+  });
+}
+
+function renderReportTable() {
+  const tb = $("#reportSourcesTable tbody");
+  if (!tb) return;
+  const total = state.reportFiltered.length;
+  const pages = Math.max(1, Math.ceil(total / state.pageSize));
+  if (state.reportPage > pages) state.reportPage = pages;
+  const start = (state.reportPage - 1) * state.pageSize;
+  const slice = state.reportFiltered.slice(start, start + state.pageSize);
+  if ($("#reportResultCount")) {
+    $("#reportResultCount").textContent = `${fmt(total)} reports · page ${state.reportPage}/${pages}`;
+  }
+  if ($("#reportPageInfo")) {
+    $("#reportPageInfo").textContent =
+      total === 0
+        ? "0"
+        : `${fmt(start + 1)}–${fmt(Math.min(start + state.pageSize, total))} of ${fmt(total)}`;
+  }
+  if ($("#reportPrevPage")) $("#reportPrevPage").disabled = state.reportPage <= 1;
+  if ($("#reportNextPage")) $("#reportNextPage").disabled = state.reportPage >= pages;
+
+  tb.innerHTML = slice.map((r) => {
+    const types = (r.sourceTypes || []).slice(0, 4);
+    const typesHtml = types.length
+      ? types.map((t) => `<span class="pill ${sourceClass(t)}">${escapeHtml(t)}</span>`).join(" ")
+      : `<span class="muted small">—</span>`;
+    const more = (r.sourceTypes || []).length > 4
+      ? ` <span class="muted small">+${(r.sourceTypes || []).length - 4}</span>`
+      : "";
+    return `
+    <tr>
+      <td>
+        <button class="linkish" data-open-report="${escapeAttr(r.reportId)}">${escapeHtml(r.reportName)}</button>
+        <div class="muted small mono">${escapeHtml(r.reportId || "")}</div>
+      </td>
+      <td>${escapeHtml(r.workspaceName || "—")}</td>
+      <td class="num"><strong>${fmt(r.tableCount)}</strong></td>
+      <td class="num">${fmt(r.datasetCount)}</td>
+      <td class="pill-cell">${typesHtml}${more}</td>
+      <td><button class="btn ghost sm" data-open-report="${escapeAttr(r.reportId)}">Sources</button></td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="6" class="muted">No reports match filters.</td></tr>`;
+
+  tb.querySelectorAll("[data-open-report]").forEach((btn) => {
+    btn.addEventListener("click", () => openReportSourcesDrawer(btn.getAttribute("data-open-report")));
+  });
+}
+
+async function openReportSourcesDrawer(reportId) {
+  if (!reportId) return;
+  state.selectedReportId = reportId;
+  const meta = state.reportRows.find((r) => String(r.reportId) === String(reportId));
+  $("#reportDrawerTitle").textContent = meta?.reportName || reportId;
+  $("#reportDrawerSub").textContent = meta
+    ? `${meta.workspaceName || "—"} · loading sources…`
+    : "Loading sources…";
+  if ($("#reportDrawerKpis")) {
+    $("#reportDrawerKpis").innerHTML = `<div class="muted small">Loading…</div>`;
+  }
+  $("#reportDrawerBody").innerHTML = `<div class="muted small" style="padding:12px">Loading all sources…</div>`;
+  $("#reportDrawer")?.classList.remove("hidden");
+  $("#reportDrawer")?.setAttribute("aria-hidden", "false");
+  $("#drawerBackdrop")?.classList.remove("hidden");
+  document.body.classList.add("drawer-open");
+
+  try {
+    const res = await fetchJsonNoCache(
+      `/api/catalog/impact/report?report_id=${encodeURIComponent(reportId)}`,
+      { timeoutMs: 120000 }
+    );
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.success) {
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    const report = body.report || {};
+    state.reportDrawerSources = report.sources || [];
+    $("#reportDrawerTitle").textContent = report.reportName || meta?.reportName || reportId;
+    $("#reportDrawerSub").textContent = [
+      report.workspaceName || meta?.workspaceName || "",
+      report.reportType ? `type ${report.reportType}` : "",
+    ].filter(Boolean).join(" · ");
+    if ($("#reportDrawerKpis")) {
+      const types = report.sourceTypes || [];
+      $("#reportDrawerKpis").innerHTML = `
+        <div class="dk"><div class="dk-v">${fmt(report.tableCount)}</div><div class="dk-l">Sources</div></div>
+        <div class="dk"><div class="dk-v">${fmt(report.datasetCount)}</div><div class="dk-l">Models</div></div>
+        <div class="dk"><div class="dk-v">${fmt(types.length)}</div><div class="dk-l">Source types</div></div>
+      `;
+    }
+    renderReportDrawerSources();
+  } catch (e) {
+    $("#reportDrawerBody").innerHTML =
+      `<div class="error-state" style="margin:8px"><strong>Failed to load sources</strong>
+       <div class="small" style="margin-top:6px">${escapeHtml(e.message || String(e))}</div></div>`;
+  }
+}
+
+function renderReportDrawerSources() {
+  const q = ($("#reportDrawerSourceFilter")?.value || "").trim().toLowerCase();
+  let list = state.reportDrawerSources || [];
+  if (q) {
+    list = list.filter((s) => {
+      const blob = [
+        s.table, s.tableKey, s.server, s.database, s.schema, s.sourceType,
+        ...(s.modelTableNames || []),
+        ...((s.datasets || []).map((d) => d.datasetName || "")),
+      ].join(" ").toLowerCase();
+      return blob.includes(q);
+    });
+  }
+  const body = $("#reportDrawerBody");
+  if (!body) return;
+  if (!list.length) {
+    body.innerHTML = `<div class="muted small" style="padding:12px">No sources${q ? " match filter" : ""}.</div>`;
+    return;
+  }
+  body.innerHTML = list.map((s) => {
+    const st = s.sourceType || "Unknown";
+    const phys = isPhysical({ sourceType: st });
+    const obj = [s.schema, s.table].filter(Boolean).join(".") || s.table || "—";
+    const loc = [s.server, s.database].filter(Boolean).join(" · ") || "";
+    const models = (s.modelTableNames || []).slice(0, 6);
+    const modelLine = models.length
+      ? `In model as: ${models.join(", ")}${(s.modelTableNames || []).length > 6 ? "…" : ""}`
+      : "";
+    const dsNames = (s.datasets || []).map((d) => d.datasetName).filter(Boolean).slice(0, 4);
+    const dsLine = dsNames.length ? `Models: ${dsNames.join(", ")}` : "";
+    const key = s.tableKey || "";
+    return `
+      <div class="drawer-item">
+        <div class="drawer-item-main">
+          <button type="button" class="linkish" data-jump-table="${escapeAttr(key)}" title="Open table impact">
+            ${escapeHtml(obj)}
+          </button>
+          <span class="pill ${sourceClass(st)}">${escapeHtml(phys ? st : "PBI only")}</span>
+        </div>
+        ${loc ? `<div class="muted small mono">${escapeHtml(loc)}</div>` : ""}
+        ${modelLine ? `<div class="muted small">${escapeHtml(modelLine)}</div>` : ""}
+        ${dsLine ? `<div class="muted small">${escapeHtml(dsLine)}</div>` : ""}
+        ${key ? `<div class="muted small mono">${escapeHtml(key)}</div>` : ""}
+      </div>`;
+  }).join("");
+
+  body.querySelectorAll("[data-jump-table]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.getAttribute("data-jump-table");
+      if (!key) return;
+      closeReportDrawer();
+      setView("tables");
+      openDrawer(key);
+    });
+  });
+}
+
+function closeReportDrawer() {
+  $("#reportDrawer")?.classList.add("hidden");
+  $("#reportDrawer")?.setAttribute("aria-hidden", "true");
+  // Only hide backdrop if table drawer is also closed
+  if ($("#drawer")?.classList.contains("hidden")) {
+    $("#drawerBackdrop")?.classList.add("hidden");
+    document.body.classList.remove("drawer-open");
+  }
+  state.selectedReportId = null;
 }
 
 function renderDashboard() {
@@ -1096,11 +1391,11 @@ async function runLookup() {
   box.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openDrawer(b.getAttribute("data-open"))));
 }
 
-function exportCsv(rows, filename) {
-  const headers = ["table", "sourceType", "server", "database", "schema", "reportCount", "datasetCount", "workspaceCount", "tableKey"];
-  const lines = [headers.join(",")];
+function exportCsv(rows, filename, headers) {
+  const cols = headers || ["table", "sourceType", "server", "database", "schema", "reportCount", "datasetCount", "workspaceCount", "tableKey"];
+  const lines = [cols.join(",")];
   for (const r of rows) {
-    lines.push(headers.map((h) => csvEscape(r[h])).join(","));
+    lines.push(cols.map((h) => csvEscape(r[h])).join(","));
   }
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
@@ -1454,25 +1749,17 @@ function openSqlModal(tableIndex) {
   modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 }
 
-function closeReportDrawer() {
-  $("#reportDrawer").classList.add("hidden");
-  $("#reportDrawer").setAttribute("aria-hidden", "true");
-  // keep backdrop if table drawer still open
-  if ($("#drawer").classList.contains("hidden")) {
-    $("#drawerBackdrop").classList.add("hidden");
-  }
-}
-
 function closeAllDrawers() {
   closeModelModal();
   closeDrawer();
   closeReportDrawer();
-  $("#drawerBackdrop").classList.add("hidden");
+  $("#drawerBackdrop")?.classList.add("hidden");
+  document.body.classList.remove("drawer-open");
 }
 
 function setView(name) {
-  // Only Table impact + Impact lookup — top side-by-side tabs (no nested sidebar).
-  const allowed = new Set(["tables", "lookup"]);
+  // Table impact | Report sources | Impact lookup
+  const allowed = new Set(["tables", "reports", "lookup"]);
   if (!allowed.has(name)) name = "tables";
 
   document.querySelectorAll(".nav-item, .section-tab").forEach((b) => {
@@ -1485,19 +1772,31 @@ function setView(name) {
   if (target) target.classList.remove("hidden");
   const titles = {
     tables: ["Table impact", "Search every source table → reports / datasets / workspaces"],
+    reports: ["Report sources", "Pick a report → every SQL / Excel / file / model table it uses"],
     lookup: ["Impact lookup", "If we change table X, which reports are affected?"],
   };
   const pair = titles[name] || titles.tables;
-  // Title is the selected tab — avoid a second big heading under the tabs
   if ($("#viewTitle") && !$("#viewTitle").classList.contains("hidden")) {
     $("#viewTitle").textContent = pair[0];
   }
   if ($("#viewSubtitle")) $("#viewSubtitle").textContent = pair[1];
 
-  // Export actions apply to the tables grid only
-  const exportMode = name === "tables";
+  // Export applies to the active grid
+  const exportMode = name === "tables" || name === "reports";
   if ($("#exportCsvBtn")) $("#exportCsvBtn").style.display = exportMode ? "" : "none";
   if ($("#exportFilteredBtn")) $("#exportFilteredBtn").style.display = exportMode ? "" : "none";
+
+  // Lazy-load report→sources pack when user opens the tab
+  if (name === "reports") {
+    ensureReportRows(false)
+      .then(() => applyReportFilters())
+      .catch((e) => {
+        const tb = $("#reportSourcesTable tbody");
+        if (tb) {
+          tb.innerHTML = `<tr><td colspan="6" class="muted">Failed to load reports: ${escapeHtml(e.message || String(e))}</td></tr>`;
+        }
+      });
+  }
 }
 
 function wire() {
@@ -1532,6 +1831,55 @@ function wire() {
     sortFiltered();
     renderTable();
   });
+
+  // Report sources tab
+  ["reportSearchInput", "minSources"].forEach((id) => {
+    const el = $(`#${id}`);
+    if (!el) return;
+    el.addEventListener("input", applyReportFilters);
+    el.addEventListener("change", applyReportFilters);
+  });
+  $("#clearReportFilters")?.addEventListener("click", () => {
+    if ($("#reportSearchInput")) $("#reportSearchInput").value = "";
+    if ($("#minSources")) $("#minSources").value = "1";
+    applyReportFilters();
+  });
+  $("#reportPrevPage")?.addEventListener("click", () => {
+    state.reportPage--;
+    renderReportTable();
+  });
+  $("#reportNextPage")?.addEventListener("click", () => {
+    state.reportPage++;
+    renderReportTable();
+  });
+  $("#reportSourcesTable thead")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th[data-rsort]");
+    if (!th) return;
+    const key = th.dataset.rsort;
+    if (state.reportSortKey === key) {
+      state.reportSortDir = state.reportSortDir === "asc" ? "desc" : "asc";
+    } else {
+      state.reportSortKey = key;
+      state.reportSortDir = key.endsWith("Count") || key === "tableCount" || key === "datasetCount"
+        ? "desc"
+        : "asc";
+    }
+    sortReportFiltered();
+    renderReportTable();
+  });
+  $("#reportDrawerSourceFilter")?.addEventListener("input", renderReportDrawerSources);
+  $("#copySourcesBtn")?.addEventListener("click", async () => {
+    const names = (state.reportDrawerSources || [])
+      .map((s) => [s.schema, s.table].filter(Boolean).join(".") || s.table || s.tableKey || "")
+      .filter(Boolean)
+      .join("\n");
+    await navigator.clipboard.writeText(names);
+    if ($("#copySourcesBtn")) {
+      $("#copySourcesBtn").textContent = "Copied";
+      setTimeout(() => { if ($("#copySourcesBtn")) $("#copySourcesBtn").textContent = "Copy names"; }, 1200);
+    }
+  });
+
   $("#closeDrawer")?.addEventListener("click", closeDrawer);
   $("#closeReportDrawer")?.addEventListener("click", closeReportDrawer);
   $("#closeModelModal")?.addEventListener("click", closeModelModal);
@@ -1561,8 +1909,30 @@ function wire() {
   });
   $("#lookupBtn")?.addEventListener("click", runLookup);
   $("#lookupInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") runLookup(); });
-  $("#exportCsvBtn")?.addEventListener("click", () => exportCsv(state.rows, "impact_all_tables.csv"));
-  $("#exportFilteredBtn")?.addEventListener("click", () => exportCsv(state.filtered, "impact_filtered_tables.csv"));
+  $("#exportCsvBtn")?.addEventListener("click", () => {
+    const onReports = $("#view-reports") && !$("#view-reports").classList.contains("hidden");
+    if (onReports) {
+      exportCsv(
+        state.reportRows,
+        "impact_all_reports.csv",
+        ["reportName", "workspaceName", "tableCount", "datasetCount", "reportId", "workspaceId"]
+      );
+    } else {
+      exportCsv(state.rows, "impact_all_tables.csv");
+    }
+  });
+  $("#exportFilteredBtn")?.addEventListener("click", () => {
+    const onReports = $("#view-reports") && !$("#view-reports").classList.contains("hidden");
+    if (onReports) {
+      exportCsv(
+        state.reportFiltered,
+        "impact_filtered_reports.csv",
+        ["reportName", "workspaceName", "tableCount", "datasetCount", "reportId", "workspaceId"]
+      );
+    } else {
+      exportCsv(state.filtered, "impact_filtered_tables.csv");
+    }
+  });
   $("#reloadBtn")?.addEventListener("click", () => loadData(true));
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;

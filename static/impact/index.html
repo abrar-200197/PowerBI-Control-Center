@@ -21,6 +21,9 @@
         <button class="section-tab nav-item active" data-view="tables" type="button" role="tab" aria-selected="true">
           Table impact
         </button>
+        <button class="section-tab nav-item" data-view="reports" type="button" role="tab" aria-selected="false">
+          Report sources
+        </button>
         <button class="section-tab nav-item" data-view="lookup" type="button" role="tab" aria-selected="false">
           Impact lookup
         </button>
@@ -121,6 +124,48 @@
           </div>
         </section>
 
+        <!-- REPORT SOURCES (report → all tables / files / connections) -->
+        <section id="view-reports" class="view hidden">
+          <div class="filters card filters-one-line">
+            <div class="filter-row one-line">
+              <label class="field grow">
+                <span class="sr-only">Search reports</span>
+                <input id="reportSearchInput" type="search" placeholder="Search report / workspace…" />
+              </label>
+              <label class="field field-sm">
+                <span class="sr-only">Min sources</span>
+                <input id="minSources" type="number" min="0" value="1" title="Min source tables" placeholder="Min sources" />
+              </label>
+              <button id="clearReportFilters" class="btn ghost sm" type="button">Clear</button>
+            </div>
+            <div class="filter-meta compact">
+              <span id="reportResultCount" class="muted small"></span>
+            </div>
+          </div>
+          <div class="card table-card">
+            <div class="table-wrap">
+              <table id="reportSourcesTable">
+                <thead>
+                  <tr>
+                    <th data-rsort="reportName">Report</th>
+                    <th data-rsort="workspaceName">Workspace</th>
+                    <th data-rsort="tableCount" class="num">Sources</th>
+                    <th data-rsort="datasetCount" class="num">Models</th>
+                    <th>Types</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <button id="reportPrevPage" class="btn ghost sm" type="button">Previous</button>
+              <span id="reportPageInfo" class="muted small"></span>
+              <button id="reportNextPage" class="btn ghost sm" type="button">Next</button>
+            </div>
+          </div>
+        </section>
+
         <!-- LOOKUP -->
         <section id="view-lookup" class="view hidden">
           <div class="card">
@@ -168,17 +213,26 @@
       </div>
     </aside>
 
-    <!-- REPORT DETAIL DRAWER (legacy path; kept for optional workspace views) -->
+    <!-- REPORT SOURCES DRAWER (report → all source tables / files / connections) -->
     <aside id="reportDrawer" class="drawer report-drawer-wide hidden" aria-hidden="true">
       <div class="drawer-head">
         <div>
-          <div class="eyebrow">Report details</div>
+          <div class="eyebrow">Report sources</div>
           <h2 id="reportDrawerTitle">—</h2>
           <div id="reportDrawerSub" class="muted small"></div>
         </div>
         <button id="closeReportDrawer" class="icon-btn" aria-label="Close">✕</button>
       </div>
-      <div id="reportDrawerBody"></div>
+      <div id="reportDrawerKpis" class="drawer-kpis"></div>
+      <div class="drawer-section">
+        <div class="section-title-row">
+          <h3>All sources used by this report</h3>
+          <button id="copySourcesBtn" class="btn ghost sm" type="button">Copy names</button>
+        </div>
+        <p class="muted small" style="margin:0 0 8px">SQL, Excel, SharePoint, files, and model tables from lineage — everything bound through the report’s dataset(s).</p>
+        <input id="reportDrawerSourceFilter" type="search" placeholder="Filter sources…" class="drawer-search" />
+        <div id="reportDrawerBody" class="drawer-list"></div>
+      </div>
     </aside>
     <div id="drawerBackdrop" class="backdrop hidden"></div>
 

@@ -124,7 +124,10 @@ class CatalogService:
 
     def get_impact_index(self, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         idx = self.get_json("impact_index.json", force_refresh=force_refresh)
-        if idx and "ui_impact_tables.json" not in _memory:
+        if idx and (
+            "ui_impact_tables.json" not in _memory
+            or "ui_impact_reports.json" not in _memory
+        ):
             try:
                 self._ensure_thin_impact_pack(idx)
             except Exception as exc:
@@ -147,7 +150,7 @@ class CatalogService:
             pass
 
     def _ensure_thin_impact_pack(self, idx: Dict[str, Any]) -> None:
-        from catalog_service.thin_packs import build_ui_impact_tables
+        from catalog_service.thin_packs import build_ui_impact_tables, build_ui_impact_reports
         tables = build_ui_impact_tables(idx)
         _memory["ui_impact_tables.json"] = {
             "data": tables, "loaded_at": time.time(), "source": "derived-in-process",
@@ -160,6 +163,18 @@ class CatalogService:
             )
         except Exception:
             pass
+        try:
+            reports_pack = build_ui_impact_reports(idx)
+            _memory["ui_impact_reports.json"] = {
+                "data": reports_pack, "loaded_at": time.time(), "source": "derived-in-process",
+            }
+            raw_r = json.dumps(reports_pack, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            self._write_disk_mirror(
+                "ui_impact_reports.json", raw_r,
+                sp_size=len(raw_r), sp_modified=reports_pack.get("generatedAt") or "",
+            )
+        except Exception as exc:
+            logger.warning("thin impact reports pack build skipped: %s", exc)
 
     def get_summary(self, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         return self.get_json("summary.json", force_refresh=force_refresh)
@@ -832,6 +847,107 @@ class CatalogService:
             })
         rows.sort(key=lambda r: (-(r.get("reportCount") or 0), r.get("tableKey") or ""))
         return rows
+
+    def impact_report_rows(
+        self,
+        force_refresh: bool = False,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Thin report list for Impact Explorer «Report sources» tab.
+        report → how many source tables/datasets (no nested source list on wire).
+        """
+        pack = self.get_json("ui_impact_reports.json", force_refresh=force_refresh)
+        if not pack or not isinstance(pack.get("rows"), list):
+            # Build from index in-process (first hit / older SP packs)
+            idx = self.get_impact_index(force_refresh=force_refresh)
+            if not idx:
+                return []
+            try:
+                self._ensure_thin_impact_pack(idx)
+            except Exception as exc:
+                logger.warning("impact report pack rebuild failed: %s", exc)
+            pack = (_memory.get("ui_impact_reports.json") or {}).get("data") or {}
+        rows = list(pack.get("rows") or [])
+        if allowed_workspace_ids is not None:
+            rows = [
+                r for r in rows
+                if (r.get("workspaceId") in allowed_workspace_ids)
+            ]
+        return rows
+
+    def impact_report_detail(
+        self,
+        report_id: str,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        All sources used by one report (SQL, Excel, SharePoint, model tables, …).
+        Prefers ui_impact_reports detailsByReportId; falls back to scanning impact_index.
+        """
+        rid = (report_id or "").strip()
+        if not rid:
+            return None
+
+        pack = self.get_json("ui_impact_reports.json")
+        if not pack or not isinstance(pack.get("detailsByReportId"), dict):
+            idx = self.get_impact_index()
+            if idx:
+                try:
+                    self._ensure_thin_impact_pack(idx)
+                except Exception:
+                    pass
+            pack = (_memory.get("ui_impact_reports.json") or {}).get("data") or pack
+
+        meta_row = None
+        for r in (pack or {}).get("rows") or []:
+            if str(r.get("reportId")) == rid:
+                meta_row = r
+                break
+
+        if meta_row and allowed_workspace_ids is not None:
+            wid = meta_row.get("workspaceId")
+            if wid and wid not in allowed_workspace_ids:
+                return None
+
+        details_map = (pack or {}).get("detailsByReportId") or {}
+        sources = details_map.get(rid)
+        if sources is None:
+            # Slow path: scan full index once
+            sources = self._sources_for_report_from_index(rid)
+        if sources is None:
+            return None
+
+        return {
+            "reportId": rid,
+            "reportName": (meta_row or {}).get("reportName") or "",
+            "workspaceId": (meta_row or {}).get("workspaceId") or "",
+            "workspaceName": (meta_row or {}).get("workspaceName") or "",
+            "reportType": (meta_row or {}).get("reportType") or "",
+            "tableCount": len(sources),
+            "datasetCount": (meta_row or {}).get("datasetCount") or len({
+                d.get("datasetId")
+                for s in sources
+                for d in (s.get("datasets") or [])
+                if d.get("datasetId")
+            }),
+            "sourceTypes": (meta_row or {}).get("sourceTypes") or sorted({
+                str(s.get("sourceType") or "Unknown") for s in sources
+            }),
+            "sources": sources,
+            "generatedAt": (pack or {}).get("generatedAt"),
+        }
+
+    def _sources_for_report_from_index(self, report_id: str) -> Optional[List[Dict[str, Any]]]:
+        idx = self.get_impact_index()
+        if not idx:
+            return None
+        from catalog_service.thin_packs import build_ui_impact_reports
+        pack = build_ui_impact_reports(idx)
+        details = pack.get("detailsByReportId") or {}
+        if report_id not in details:
+            return []
+        return details.get(report_id) or []
 
     def impact_table_detail(self, table_key: str) -> Optional[Dict[str, Any]]:
         """Full impact entry for one table (drawer). Loads index server-side only."""
