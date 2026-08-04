@@ -1292,7 +1292,7 @@
                         }
                         reports[i].usage_loaded = true;
                     });
-                    renderReportsTable(reports);
+                    rerenderReportsTable();
                     console.log('📊 Views from catalog/ops snapshot — skip live Activity Events API');
                     const usageBtn = document.getElementById('usageBtn');
                     if (usageBtn) usageBtn.style.display = 'inline-block'; // allow manual refresh
@@ -1425,7 +1425,7 @@
 
                 metadataBatchLoading = false;
                 reports = reports.map(r => ({ ...r, metadata_loaded: true }));
-                renderReportsTable(reports);
+                rerenderReportsTable();
                 showAlert('success', `✅ Metadata loaded successfully!`);
                 btn.style.display = 'none';
             } else {
@@ -1439,7 +1439,7 @@
                 : ('Failed to load metadata: ' + (error.message || error)));
             metadataBatchLoading = false;
             reports = reports.map(r => ({ ...r, metadata_loaded: true }));
-            renderReportsTable(reports);
+            rerenderReportsTable();
             btn.disabled = false;
             btn.innerHTML = originalText;
         } finally {
@@ -1494,7 +1494,7 @@
                 };
             });
             console.log(`✅ Background refresh dual-merged for ${merged} reports`);
-            renderReportsTable(reports);
+            rerenderReportsTable();
         } catch (e) {
             console.warn('Background refresh enrichment error', e);
         }
@@ -1562,7 +1562,7 @@
             // One flip for the whole table (no partial per-row finish)
             metadataBatchLoading = false;
             reports = reports.map(r => ({ ...r, metadata_loaded: true }));
-            renderReportsTable(reports);
+            rerenderReportsTable();
             const mb = document.getElementById('metadataBtn');
             if (mb) mb.style.display = 'none';
         }
@@ -1604,7 +1604,7 @@
                         usage_loaded: false
                     };
                 });
-                renderReportsTable(reports);
+                rerenderReportsTable();
                 return;
             }
 
@@ -1635,7 +1635,7 @@
                 console.log(`   📊 Active reports: ${activeCount} | Inactive reports: ${inactiveCount}`);
 
                 console.log('🎨 Re-rendering table with usage data...');
-                renderReportsTable(reports);
+                rerenderReportsTable();
 
                 // Hide the manual usage button since data is now loaded
                 const usageBtn = document.getElementById('usageBtn');
@@ -1653,7 +1653,7 @@
                         usage_loaded: false
                     };
                 });
-                renderReportsTable(reports);
+                rerenderReportsTable();
             }
         } catch (error) {
             console.error('❌ Background usage metrics loading failed:', error);
@@ -1669,7 +1669,7 @@
                     usage_loaded: false
                 };
             });
-            renderReportsTable(reports);
+            rerenderReportsTable();
 
             // Show the actual error so we can fix it
             showAlert('error', `❌ Failed to load usage data: ${error.message}. Check console for details.`, 10000);
@@ -1722,7 +1722,7 @@
         // Wait for all requests to complete, then re-render once
         await Promise.all(promises);
         console.log(`✅ All dataset details loaded, re-rendering table...`);
-        renderReportsTable(reports);
+        rerenderReportsTable();
     }
 
     function resolveReportFromUrl(reportList) {
@@ -1881,10 +1881,28 @@
     let currentPage = 1;
     const reportsPerPage = 50; // Show 50 reports per page for better performance
 
-    function renderReportsTable(reports, page = 1) {
+    /** Rows currently shown in the table (respects report dropdown / Home deep-link). */
+    function getVisibleReports(sourceList) {
+        const list = sourceList || reports || [];
+        if (!selectedReportId) return list;
+        return list.filter((r) => String(r.id) === String(selectedReportId));
+    }
+
+    /**
+     * Re-paint table after background enrichments without dropping an active report filter.
+     * Always pass the full `reports` array into metadata/usage merge — this filters for display.
+     */
+    function rerenderReportsTable(page) {
+        const p = page != null ? page : currentPage;
+        renderReportsTable(getVisibleReports(reports), p);
+    }
+
+    function renderReportsTable(reportsToShow, page = 1) {
         const tableDiv = document.getElementById('reportsTable');
         const exportBtn = document.getElementById('exportBtn');
         const decommissionBtn = document.getElementById('decommissionBtn');
+        // Parameter name kept as local list; never confuse with global `reports`
+        const reports = reportsToShow;
 
         if (!reports || reports.length === 0) {
             tableDiv.innerHTML = '<div class="no-data">📊 No reports found in workspace</div>';
@@ -2057,16 +2075,16 @@
         if (totalPages > 1) {
             html += `
                 <div style="display: flex; justify-content: center; align-items: center; margin-top: 20px; gap: 10px;">
-                    <button class="btn btn-sm btn-secondary" onclick="renderReportsTable(reports, ${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>
+                    <button class="btn btn-sm btn-secondary" onclick="rerenderReportsTable(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>
                         ← Previous
                     </button>
                     <span style="padding: 0 15px; color: #555;">
                         Page ${currentPage} of ${totalPages} (${totalReports} reports)
                     </span>
-                    <button class="btn btn-sm btn-secondary" onclick="renderReportsTable(reports, ${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>
+                    <button class="btn btn-sm btn-secondary" onclick="rerenderReportsTable(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>
                         Next →
                     </button>
-                    <select onchange="renderReportsTable(reports, parseInt(this.value))" style="margin-left: 10px; padding: 5px;">
+                    <select onchange="rerenderReportsTable(parseInt(this.value))" style="margin-left: 10px; padding: 5px;">
                         ${Array.from({length: totalPages}, (_, i) => i + 1).map(p =>
                             `<option value="${p}" ${p === currentPage ? 'selected' : ''}>Page ${p}</option>`
                         ).join('')}
