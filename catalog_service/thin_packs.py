@@ -92,28 +92,72 @@ def _is_zero_views(report: Dict[str, Any]) -> bool:
         return False
 
 
+def _detail_row(
+    r: Dict[str, Any],
+    wid: str,
+    wname: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    row = {
+        "reportId": r.get("id"),
+        "reportName": r.get("name") or "",
+        "workspaceId": wid,
+        "workspaceName": wname,
+        "datasetId": r.get("datasetId") or "",
+    }
+    if extra:
+        row.update(extra)
+    return row
+
+
 def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dict[str, Any]:
-    """Per-workspace counts only — typically < 200 KB for hundreds of workspaces."""
+    """
+    Per-workspace counts + Home KPI detail lists (report tabs).
+
+    Counts alone are ~200 KB; detail lists stay small (id/name/ws only) so Home
+    never needs the full ~300MB catalog for KPI drill-downs.
+    """
     datasets_map = catalog.get("datasets") or {}
     now = datetime.now(timezone.utc)
     workspaces: List[Dict[str, Any]] = []
+    reports_rows: List[Dict[str, Any]] = []
+    inactive_rows: List[Dict[str, Any]] = []
+    orphaned_rows: List[Dict[str, Any]] = []
+    zero_views_rows: List[Dict[str, Any]] = []
     total_r = total_i = total_o = total_a = total_zv = 0
     for ws in catalog.get("workspaces") or []:
         wid = ws.get("id")
         if not wid:
             continue
+        wname = ws.get("name") or ""
         rc = ic = oc = zc = 0
         for r in ws.get("reports") or []:
             if str(r.get("name") or "").startswith("[App]"):
                 continue
             ds = datasets_map.get(r.get("datasetId") or "") or {}
             rc += 1
+            reports_rows.append(_detail_row(r, wid, wname))
             if _is_inactive(r, ds, inactive_days, now):
                 ic += 1
+                days = r.get("days_since_refresh")
+                if days is None:
+                    days = ds.get("days_since_refresh")
+                if days is None:
+                    days = _parse_days(r.get("last_refreshed") or ds.get("last_refreshed"), now)
+                inactive_rows.append(_detail_row(r, wid, wname, {
+                    "lastRefreshed": r.get("last_refreshed") or ds.get("last_refreshed"),
+                    "daysSinceRefresh": days,
+                    "refreshStatus": r.get("last_refresh_status") or ds.get("last_refresh_status"),
+                }))
             if _is_orphaned(r):
                 oc += 1
+                orphaned_rows.append(_detail_row(r, wid, wname))
             if _is_zero_views(r):
                 zc += 1
+                zero_views_rows.append(_detail_row(r, wid, wname, {
+                    "viewCount": int(r.get("view_count") or r.get("views") or 0),
+                    "lastViewed": r.get("last_viewed"),
+                }))
         ac = max(0, rc - ic)
         total_r += rc
         total_i += ic
@@ -122,7 +166,7 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
         total_zv += zc
         workspaces.append({
             "id": wid,
-            "name": ws.get("name") or "",
+            "name": wname,
             "reportCount": rc,
             "inactiveCount": ic,
             "activeCount": ac,
@@ -130,6 +174,24 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
             "zeroViewsCount": zc,
         })
     workspaces.sort(key=lambda w: (w.get("name") or "").lower())
+
+    def _sort_ws_name(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        rows.sort(key=lambda r: (
+            (r.get("workspaceName") or "").lower(),
+            (r.get("reportName") or "").lower(),
+        ))
+        return rows
+
+    def _sort_inactive(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        def key(row):
+            try:
+                d = -int(row.get("daysSinceRefresh"))
+            except Exception:
+                d = 0
+            return (d, (row.get("reportName") or "").lower())
+        rows.sort(key=key)
+        return rows
+
     return {
         "generatedAt": catalog.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
         "opsEnrichedAt": catalog.get("opsEnrichedAt"),
@@ -142,6 +204,13 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
         "orphanedReports": total_o,
         "zeroViewsReports": total_zv,
         "workspaces": workspaces,
+        # KPI tab detail lists (ACL-filter on the server)
+        "detailLists": {
+            "reports": _sort_ws_name(reports_rows),
+            "inactive": _sort_inactive(inactive_rows),
+            "orphaned": _sort_ws_name(orphaned_rows),
+            "zero_views": _sort_ws_name(zero_views_rows),
+        },
     }
 
 

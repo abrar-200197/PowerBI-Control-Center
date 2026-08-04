@@ -326,6 +326,9 @@ class CatalogService:
         """
         Row lists for Home KPI tabs (server-side, ACL-scoped).
 
+        Prefer precomputed detailLists on ui_home_index.json so we never scan
+        the full ~300MB catalog on each tab click (App Service timeout → HTML).
+
         metric:
           workspaces | reports | inactive | orphaned | zero_views
         """
@@ -339,31 +342,11 @@ class CatalogService:
             }
 
         try:
-            from catalog_service.thin_packs import (
-                USAGE_LOOKBACK_DAYS,
-                _is_inactive,
-                _is_orphaned,
-                _is_zero_views,
-            )
+            from catalog_service.thin_packs import USAGE_LOOKBACK_DAYS
         except Exception:
             USAGE_LOOKBACK_DAYS = 60
 
-            def _is_inactive(report, ds, inactive_days, now):  # type: ignore
-                return False
-
-            def _is_orphaned(report):  # type: ignore
-                return False
-
-            def _is_zero_views(report):  # type: ignore
-                vc = report.get("view_count")
-                if vc is None:
-                    return False
-                try:
-                    return int(vc) == 0
-                except Exception:
-                    return False
-
-        # Workspaces tab: thin index is enough
+        # Workspaces tab: thin index counts are enough
         if metric == "workspaces":
             summary = self.build_home_summary(allowed_workspace_ids, inactive_days)
             if not summary:
@@ -391,13 +374,119 @@ class CatalogService:
                 "source": summary.get("source") or "catalog",
             }
 
+        # Report-level tabs: serve from thin pack detailLists (fast path)
+        thin = self.get_json("ui_home_index.json")
+        if thin and isinstance(thin.get("detailLists"), dict):
+            return self._home_details_from_thin(
+                thin, metric, allowed_workspace_ids, inactive_days, limit, USAGE_LOOKBACK_DAYS
+            )
+
+        # Thin pack exists but is older (no detailLists) — rebuild once in-process
+        if thin is not None:
+            try:
+                cat = self.get_workspace_catalog()
+                if cat:
+                    self._ensure_thin_home_pack(cat)
+                    thin2 = (_memory.get("ui_home_index.json") or {}).get("data")
+                    if thin2 and isinstance(thin2.get("detailLists"), dict):
+                        return self._home_details_from_thin(
+                            thin2, metric, allowed_workspace_ids, inactive_days, limit, USAGE_LOOKBACK_DAYS
+                        )
+            except Exception as exc:
+                logger.warning("home details thin rebuild failed: %s", exc)
+
+        # Last resort: scan full catalog (slow; may timeout on cold App Service)
+        return self._home_details_from_full_catalog(
+            metric, allowed_workspace_ids, inactive_days, limit, USAGE_LOOKBACK_DAYS
+        )
+
+    def _home_details_from_thin(
+        self,
+        thin: Dict[str, Any],
+        metric: str,
+        allowed_workspace_ids: Optional[Set[str]],
+        inactive_days: int,
+        limit: int,
+        usage_lookback_days: int,
+    ) -> Dict[str, Any]:
+        lists = thin.get("detailLists") or {}
+        src = lists.get(metric) or []
+        if not isinstance(src, list):
+            src = []
+        rows: List[Dict[str, Any]] = []
+        capped = False
+        lim = max(1, int(limit))
+        for r in src:
+            if not isinstance(r, dict):
+                continue
+            wid = r.get("workspaceId")
+            if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
+                continue
+            rows.append(r)
+            if len(rows) >= lim:
+                capped = True
+                break
+        return {
+            "success": True,
+            "metric": metric,
+            "count": len(rows),
+            "capped": capped,
+            "limit": lim,
+            "rows": rows,
+            "inactiveDaysThreshold": int(
+                thin.get("inactiveDaysThreshold") or inactive_days
+            ),
+            "usageLookbackDays": int(
+                thin.get("usageLookbackDays") or usage_lookback_days or 60
+            ),
+            "opsEnrichedAt": thin.get("opsEnrichedAt"),
+            "generatedAt": thin.get("generatedAt"),
+            "source": "ui_home_index",
+        }
+
+    def _home_details_from_full_catalog(
+        self,
+        metric: str,
+        allowed_workspace_ids: Optional[Set[str]],
+        inactive_days: int,
+        limit: int,
+        usage_lookback_days: int,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from catalog_service.thin_packs import (
+                _is_inactive,
+                _is_orphaned,
+                _is_zero_views,
+            )
+        except Exception:
+            def _is_inactive(report, ds, inactive_days, now):  # type: ignore
+                return False
+
+            def _is_orphaned(report):  # type: ignore
+                return False
+
+            def _is_zero_views(report):  # type: ignore
+                vc = report.get("view_count")
+                if vc is None:
+                    return False
+                try:
+                    return int(vc) == 0
+                except Exception:
+                    return False
+
         cat = self.get_workspace_catalog()
         if not cat:
             return None
+        # Opportunistically upgrade thin pack for next request
+        try:
+            self._ensure_thin_home_pack(cat)
+        except Exception:
+            pass
         datasets_map = cat.get("datasets") or {}
         now = datetime.now(timezone.utc)
         rows: List[Dict[str, Any]] = []
         capped = False
+        lim = max(1, int(limit))
 
         for ws in cat.get("workspaces") or []:
             wid = ws.get("id")
@@ -443,44 +532,21 @@ class CatalogService:
                     "datasetId": r.get("datasetId") or "",
                     **extra,
                 })
-                if len(rows) >= max(1, int(limit)):
+                if len(rows) >= lim:
                     capped = True
                     break
             if capped:
                 break
 
-        if metric == "reports":
-            rows.sort(key=lambda r: (
-                (r.get("workspaceName") or "").lower(),
-                (r.get("reportName") or "").lower(),
-            ))
-        elif metric == "inactive":
-            def _days_key(row):
-                d = row.get("daysSinceRefresh")
-                try:
-                    return -int(d)
-                except Exception:
-                    return 0
-            rows.sort(key=lambda r: (_days_key(r), (r.get("reportName") or "").lower()))
-        else:
-            rows.sort(key=lambda r: (
-                (r.get("workspaceName") or "").lower(),
-                (r.get("reportName") or "").lower(),
-            ))
-
-        try:
-            uld = USAGE_LOOKBACK_DAYS
-        except Exception:
-            uld = 60
         return {
             "success": True,
             "metric": metric,
             "count": len(rows),
             "capped": capped,
-            "limit": int(limit),
+            "limit": lim,
             "rows": rows,
             "inactiveDaysThreshold": inactive_days,
-            "usageLookbackDays": int(uld),
+            "usageLookbackDays": int(usage_lookback_days or 60),
             "opsEnrichedAt": cat.get("opsEnrichedAt"),
             "generatedAt": cat.get("generatedAt"),
             "source": "catalog",

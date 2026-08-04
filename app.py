@@ -834,6 +834,16 @@ def api_catalog_refresh():
         except Exception:
             pass
 
+        # Ensure Home KPI detail lists exist (older SP packs lack detailLists)
+        home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
+        if cat and not home_has_details:
+            try:
+                catalog_service._ensure_thin_home_pack(cat)
+                home = catalog_service.get_json('ui_home_index.json')
+                home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
+            except Exception as exc:
+                print(f"⚠️ thin home pack rebuild after refresh: {exc}")
+
         # Drop in-process /api/reports shells so next load uses freshly pulled catalog
         cleared_reports = 0
         try:
@@ -849,6 +859,7 @@ def api_catalog_refresh():
         return jsonify({
             'success': True,
             'ui_home_index': bool(home),
+            'ui_home_detailLists': home_has_details,
             'ui_impact_tables': bool(tables),
             'workspace_catalog': bool(cat),
             'impact_index': bool(impact),

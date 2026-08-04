@@ -1042,15 +1042,32 @@
             tbody.innerHTML = `<tr><td colspan="4" class="empty-state">
                 <div class="loading-spinner"></div>
                 <div style="margin-top:10px">Loading ${escapeHtml(METRIC_META[metric]?.title || metric)}…</div>
+                <div style="font-size:12px;margin-top:6px;color:#A0AEC0">First open may take a moment while the server reads the catalog.</div>
             </td></tr>`;
         }
         try {
-            const res = await fetch(`/api/home-summary/details?metric=${encodeURIComponent(metric)}&limit=8000`, {
-                credentials: 'include',
-            });
-            const data = await res.json();
+            const res = await fetch(
+                `/api/home-summary/details?metric=${encodeURIComponent(metric)}&limit=5000`,
+                { credentials: 'include', headers: { 'Accept': 'application/json' } }
+            );
+            const raw = await res.text();
             if (token !== detailLoadToken) return null;
-            if (!data.success) throw new Error(data.error || `HTTP ${res.status}`);
+            let data = null;
+            try {
+                data = raw ? JSON.parse(raw) : null;
+            } catch (parseErr) {
+                const snippet = (raw || '').replace(/\s+/g, ' ').slice(0, 120);
+                if (res.status === 404 || /DOCTYPE|html/i.test(raw || '')) {
+                    throw new Error(
+                        `Details API not available on this server (HTTP ${res.status}). ` +
+                        'App Service may still be deploying the latest build — wait 1–2 min and hard-refresh (Ctrl+F5).'
+                    );
+                }
+                throw new Error(`Server returned non-JSON (HTTP ${res.status}): ${snippet}`);
+            }
+            if (!res.ok || !data || !data.success) {
+                throw new Error((data && data.error) || `HTTP ${res.status}`);
+            }
             detailCache[metric] = {
                 loaded: true,
                 rows: data.rows || [],
@@ -1064,15 +1081,21 @@
             return detailCache[metric];
         } catch (e) {
             if (token !== detailLoadToken) return null;
-            detailCache[metric] = { loaded: false, error: e.message || String(e), rows: [] };
+            // Don't permanently cache failures — allow retry on next click
+            const msg = e.message || String(e);
             if (tbody) {
                 tbody.innerHTML = `<tr><td colspan="4" class="empty-state">
                     <div class="empty-state-icon">!</div>
                     <div>Failed to load list</div>
-                    <div style="font-size:12px;margin-top:6px;color:#A0AEC0;">${escapeHtml(e.message || String(e))}</div>
+                    <div style="font-size:12px;margin-top:6px;color:#A0AEC0;max-width:420px;margin-left:auto;margin-right:auto">${escapeHtml(msg)}</div>
+                    <div style="margin-top:12px"><button type="button" class="open-link" id="homeDetailRetry">Retry</button></div>
                 </td></tr>`;
+                tbody.querySelector('#homeDetailRetry')?.addEventListener('click', () => {
+                    delete detailCache[metric];
+                    applyFilterAndSort();
+                });
             }
-            return detailCache[metric];
+            return { loaded: false, error: msg, rows: [] };
         }
     }
 
