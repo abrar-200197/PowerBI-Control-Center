@@ -323,7 +323,19 @@ class CatalogService:
         inactive_days: int,
     ) -> Dict[str, Any]:
         workspaces_out: List[Dict[str, Any]] = []
-        total_reports = total_inactive = total_orphaned = total_active = 0
+        total_reports = total_inactive = total_orphaned = total_active = total_zero_views = 0
+        pack_has_zero = any(
+            "zeroViewsCount" in (w or {}) for w in (thin.get("workspaces") or [])
+        )
+        # Older packs lack zero-views; fill from full catalog when available (still server-side)
+        zero_by_ws: Dict[str, int] = {}
+        usage_days = thin.get("usageLookbackDays")
+        if not pack_has_zero:
+            try:
+                zero_by_ws, usage_days = self._zero_views_by_workspace(allowed_workspace_ids)
+            except Exception as exc:
+                logger.warning("home zero-views enrich skipped: %s", exc)
+
         for ws in thin.get("workspaces") or []:
             wid = ws.get("id")
             if not wid:
@@ -334,10 +346,15 @@ class CatalogService:
             ic = int(ws.get("inactiveCount") or 0)
             oc = int(ws.get("orphanedCount") or 0)
             ac = int(ws.get("activeCount") if ws.get("activeCount") is not None else max(0, rc - ic))
+            if pack_has_zero:
+                zc = int(ws.get("zeroViewsCount") or 0)
+            else:
+                zc = int(zero_by_ws.get(wid) or 0)
             total_reports += rc
             total_inactive += ic
             total_orphaned += oc
             total_active += ac
+            total_zero_views += zc
             workspaces_out.append({
                 "id": wid,
                 "name": ws.get("name") or "",
@@ -345,9 +362,15 @@ class CatalogService:
                 "inactiveCount": ic,
                 "activeCount": ac,
                 "orphanedCount": oc,
+                "zeroViewsCount": zc,
                 "from_catalog": True,
             })
         workspaces_out.sort(key=lambda w: (w.get("name") or "").lower())
+        try:
+            from catalog_service.thin_packs import USAGE_LOOKBACK_DAYS as _uld
+            usage_days = usage_days if usage_days is not None else _uld
+        except Exception:
+            usage_days = usage_days if usage_days is not None else 60
         return {
             "success": True,
             "source": "sharepoint-ui-pack",
@@ -359,9 +382,37 @@ class CatalogService:
             "activeReports": total_active,
             "inactiveReports": total_inactive,
             "orphanedReports": total_orphaned,
+            "zeroViewsReports": total_zero_views,
             "inactiveDaysThreshold": inactive_days,
+            "usageLookbackDays": int(usage_days or 60),
             "workspaces": workspaces_out,
         }
+
+    def _zero_views_by_workspace(
+        self,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+    ) -> Tuple[Dict[str, int], int]:
+        """Return ({workspaceId: zeroViewsCount}, usageLookbackDays) from catalog view_count."""
+        from catalog_service.thin_packs import USAGE_LOOKBACK_DAYS, _is_zero_views
+
+        cat = self.get_workspace_catalog()
+        out: Dict[str, int] = {}
+        if not cat:
+            return out, USAGE_LOOKBACK_DAYS
+        for ws in cat.get("workspaces") or []:
+            wid = ws.get("id")
+            if not wid:
+                continue
+            if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
+                continue
+            zc = 0
+            for r in ws.get("reports") or []:
+                if str(r.get("name") or "").startswith("[App]"):
+                    continue
+                if _is_zero_views(r):
+                    zc += 1
+            out[wid] = zc
+        return out, USAGE_LOOKBACK_DAYS
 
     def _home_from_full_catalog(
         self,
@@ -430,8 +481,19 @@ class CatalogService:
             owner = (report.get("configuredBy") or report.get("dataset_owner") or "").strip()
             return not creator and not modifier and not owner
 
+        def _is_zero_views(report: Dict[str, Any]) -> bool:
+            vc = report.get("view_count")
+            if vc is None and report.get("views") is not None:
+                vc = report.get("views")
+            if vc is None:
+                return False
+            try:
+                return int(vc) == 0
+            except Exception:
+                return False
+
         workspaces_out: List[Dict[str, Any]] = []
-        total_reports = total_inactive = total_orphaned = total_active = 0
+        total_reports = total_inactive = total_orphaned = total_active = total_zero_views = 0
 
         for ws in cat.get("workspaces") or []:
             wid = ws.get("id")
@@ -440,7 +502,7 @@ class CatalogService:
             if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
                 continue
 
-            ws_reports = ws_inactive = ws_orphaned = 0
+            ws_reports = ws_inactive = ws_orphaned = ws_zero = 0
             for r in ws.get("reports") or []:
                 if str(r.get("name") or "").startswith("[App]"):
                     continue
@@ -450,12 +512,15 @@ class CatalogService:
                     ws_inactive += 1
                 if _is_orphaned(r):
                     ws_orphaned += 1
+                if _is_zero_views(r):
+                    ws_zero += 1
 
             ws_active = max(0, ws_reports - ws_inactive)
             total_reports += ws_reports
             total_inactive += ws_inactive
             total_orphaned += ws_orphaned
             total_active += ws_active
+            total_zero_views += ws_zero
             workspaces_out.append({
                 "id": wid,
                 "name": ws.get("name") or "",
@@ -463,10 +528,15 @@ class CatalogService:
                 "inactiveCount": ws_inactive,
                 "activeCount": ws_active,
                 "orphanedCount": ws_orphaned,
+                "zeroViewsCount": ws_zero,
                 "from_catalog": True,
             })
 
         workspaces_out.sort(key=lambda w: (w.get("name") or "").lower())
+        try:
+            from catalog_service.thin_packs import USAGE_LOOKBACK_DAYS as _uld
+        except Exception:
+            _uld = 60
         return {
             "success": True,
             "source": "sharepoint",
@@ -478,7 +548,9 @@ class CatalogService:
             "activeReports": total_active,
             "inactiveReports": total_inactive,
             "orphanedReports": total_orphaned,
+            "zeroViewsReports": total_zero_views,
             "inactiveDaysThreshold": inactive_days,
+            "usageLookbackDays": int(_uld),
             "workspaces": workspaces_out,
         }
 
