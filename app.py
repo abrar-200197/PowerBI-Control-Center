@@ -810,7 +810,10 @@ def api_catalog_status():
 @app.route('/api/catalog/refresh', methods=['POST'])
 @login_required
 def api_catalog_refresh():
-    """Force re-download of catalog artifacts from SharePoint into server disk mirror."""
+    """
+    Force re-download of catalog artifacts from SharePoint into server memory/disk mirror.
+    Also clears per-user /api/reports response cache so Report Catalog picks up new ops.
+    """
     if not CATALOG_AVAILABLE or catalog_service is None:
         return jsonify({'success': False, 'error': 'Catalog not available'}), 503
     try:
@@ -821,6 +824,28 @@ def api_catalog_refresh():
         summary = catalog_service.get_summary(force_refresh=True)
         cat = catalog_service.get_workspace_catalog(force_refresh=True)
         impact = catalog_service.get_impact_index(force_refresh=True)
+        # Ops snapshot used for last refresh / views — reload so Catalog is not stuck on old ops
+        try:
+            catalog_service.get_json('refresh_snapshot.json', force_refresh=True)
+        except Exception:
+            pass
+        try:
+            catalog_service.get_json('usage_snapshot.json', force_refresh=True)
+        except Exception:
+            pass
+
+        # Drop in-process /api/reports shells so next load uses freshly pulled catalog
+        cleared_reports = 0
+        try:
+            global reports_cache
+            cleared_reports = len(reports_cache)
+            reports_cache = {}
+        except Exception:
+            pass
+
+        ops_at = None
+        if isinstance(cat, dict):
+            ops_at = cat.get('opsEnrichedAt') or cat.get('generatedAt')
         return jsonify({
             'success': True,
             'ui_home_index': bool(home),
@@ -828,6 +853,9 @@ def api_catalog_refresh():
             'workspace_catalog': bool(cat),
             'impact_index': bool(impact),
             'summary': bool(summary),
+            'opsEnrichedAt': ops_at,
+            'generatedAt': (cat or {}).get('generatedAt') if isinstance(cat, dict) else None,
+            'clearedReportsCacheEntries': cleared_reports,
             'status': catalog_service.status(),
         })
     except Exception as e:

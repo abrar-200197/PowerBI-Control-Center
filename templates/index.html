@@ -1035,39 +1035,58 @@
         }
     }
 
-    // ⚡ PERFORMANCE OPTIMIZATION: Cache refresh functionality
+    // Pull fresh catalog from SharePoint (ops/refresh fields) + clear report shells
     async function refreshData() {
         const btn = document.getElementById('refreshBtn');
         const originalText = btn.innerHTML;
 
         try {
             btn.disabled = true;
-            btn.innerHTML = '⏳ Clearing cache...';
+            btn.innerHTML = '⏳ Syncing catalog…';
 
-            // Call cache clear API
+            // 1) Force server to re-download workspace_catalog + ops from SharePoint
+            //    (sign-out does NOT do this — App Service keeps catalog in memory/disk)
+            let catalogMsg = '';
+            try {
+                const catRes = await fetch('/api/catalog/refresh', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                });
+                const catBody = await catRes.json().catch(() => ({}));
+                if (catRes.ok && catBody.success) {
+                    const ops = catBody.opsEnrichedAt || catBody.generatedAt || '';
+                    catalogMsg = ops
+                        ? `Catalog synced (ops ${new Date(ops).toLocaleString()}). `
+                        : 'Catalog synced from SharePoint. ';
+                } else {
+                    catalogMsg = `Catalog sync skipped (${catBody.error || catRes.status}). `;
+                }
+            } catch (e) {
+                catalogMsg = 'Catalog sync failed; clearing local cache only. ';
+                console.warn('catalog/refresh failed', e);
+            }
+
+            // 2) Clear per-user /api/reports response cache
             const response = await fetch('/api/clear-cache', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
             });
-
             const result = await response.json();
 
             if (result.success) {
-                showAlert('success', `Cache cleared! Refreshing data... (${result.cleared_count} entries cleared)`);
-
-                // Reload current workspace data
+                showAlert('success', `${catalogMsg}Reloading… (${result.cleared_count || 0} session cache entries)`);
                 if (currentWorkspaceId) {
                     await loadReports();
                 } else {
                     await loadWorkspaces();
                 }
             } else {
-                showAlert('error', 'Failed to clear cache: ' + result.error);
+                showAlert('error', catalogMsg + 'Failed to clear cache: ' + (result.error || 'unknown'));
             }
         } catch (error) {
-            showAlert('error', 'Error clearing cache: ' + error.message);
+            showAlert('error', 'Error refreshing: ' + error.message);
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalText;
