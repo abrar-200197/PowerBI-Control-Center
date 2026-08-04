@@ -1000,10 +1000,11 @@
         }
     }
 
-    function catalogOpenHref(workspaceId, reportId) {
+    function catalogOpenHref(workspaceId, reportId, reportName) {
         if (!workspaceId) return '/documentation';
         let u = `/documentation?workspace=${encodeURIComponent(workspaceId)}`;
         if (reportId) u += `&report=${encodeURIComponent(reportId)}`;
+        if (reportName) u += `&reportName=${encodeURIComponent(reportName)}`;
         return u;
     }
 
@@ -1765,7 +1766,7 @@
             const rname = row.reportName || '—';
             const wid = row.workspaceId || '';
             const wname = row.workspaceName || '—';
-            const href = catalogOpenHref(wid, rid);
+            const href = catalogOpenHref(wid, rid, row.reportName || '');
             if (metric === 'inactive') {
                 const days = row.daysSinceRefresh;
                 const daysLabel = days != null && days !== '' ? String(days) : '—';
