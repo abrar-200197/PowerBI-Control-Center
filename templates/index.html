@@ -714,6 +714,9 @@
     // Deep-link from Home KPI tabs: /documentation?workspace=…&report=…
     let pendingReportIdFromUrl = null;
     let pendingReportNameFromUrl = null;
+    // Guard: Select2/native change must not re-enter filter apply (stack overflow)
+    let suppressReportChange = false;
+    let applyingReportFilter = false;
     // Owner columns: all rows spin together until batch metadata returns (no per-row early finish)
     let metadataBatchLoading = false;
     const VIEW_LOOKBACK_DAYS = 60;
@@ -826,6 +829,8 @@
         statusFilter = null;
         currentFolderId = null;
         selectedReportId = null;
+        pendingReportIdFromUrl = null;
+        pendingReportNameFromUrl = null;
         // Strip filter query params but keep workspace
         try {
             const url = new URL(window.location.href);
@@ -833,17 +838,19 @@
             url.searchParams.delete('folder_id');
             url.searchParams.delete('folder');
             url.searchParams.delete('report');
+            url.searchParams.delete('report_id');
+            url.searchParams.delete('reportName');
+            url.searchParams.delete('report_name');
             window.history.replaceState({}, '', url.pathname + (url.search || '') + (url.hash || ''));
         } catch (e) { /* ignore */ }
         if (window.jQuery) {
             $('#folderSelect').val('').trigger('change.select2');
-            $('#reportSelect').val('').trigger('change.select2');
         } else {
             const fs = document.getElementById('folderSelect');
-            const rs = document.getElementById('reportSelect');
             if (fs) fs.value = '';
-            if (rs) rs.value = '';
         }
+        // Quiet report reset (no onchange recursion)
+        setReportSelectValue('');
         const header = document.getElementById('filterStatusHeader');
         if (header) header.style.display = 'none';
         const badge = document.getElementById('statusFilterBadge');
@@ -954,11 +961,9 @@
                     // Find the workspace in the list
                     const workspace = workspaces.find(w => w.id === preselectedWorkspace);
                     if (workspace) {
-                        // Set the value and trigger change
+                        // Single path: Select2 change → onWorkspaceChange → loadReports once
+                        // (do not also call loadReports here — that caused double loads / double errors)
                         $('#workspaceSelect').val(preselectedWorkspace).trigger('change');
-                        currentWorkspaceId = preselectedWorkspace;
-                        // Load reports for the pre-selected workspace
-                        loadReports();
                         console.log(`Pre-selected workspace: ${workspace.name}`);
                     } else {
                         console.log(`Pre-selected workspace not found: ${preselectedWorkspace}`);
@@ -1743,79 +1748,117 @@
         return wantId || null;
     }
 
-    function applyReportFilter(reportId, { fromUrl } = {}) {
-        selectedReportId = reportId || null;
-        if (window.jQuery && $('#reportSelect').length) {
-            // Avoid re-entrant onReportChange loops from Select2
-            $('#reportSelect').val(selectedReportId || '').trigger('change.select2');
-        } else {
-            const rs = document.getElementById('reportSelect');
-            if (rs) rs.value = selectedReportId || '';
+    function setReportSelectValue(reportId) {
+        /**
+         * Set Select2/native value without firing native onchange.
+         * The report <select> uses onchange="onReportChange()" — any .trigger('change')
+         * would re-enter applyReportFilter and blow the call stack.
+         */
+        suppressReportChange = true;
+        const el = document.getElementById('reportSelect');
+        const prevOnChange = el ? el.onchange : null;
+        try {
+            const val = reportId || '';
+            if (el) el.onchange = null; // detach native handler while we paint
+            if (window.jQuery && $('#reportSelect').length) {
+                $('#reportSelect').val(val);
+                try {
+                    // UI-only refresh; with onchange null this cannot recurse
+                    $('#reportSelect').trigger('change.select2');
+                } catch (e) { /* ignore select2 paint issues */ }
+            } else if (el) {
+                el.value = val;
+            }
+        } finally {
+            if (el) el.onchange = prevOnChange;
+            setTimeout(() => { suppressReportChange = false; }, 0);
         }
+    }
 
-        if (!selectedReportId) {
-            renderReportsTable(reports);
+    function applyReportFilter(reportId, { fromUrl, syncSelect } = {}) {
+        if (applyingReportFilter) return false;
+        applyingReportFilter = true;
+        try {
+            selectedReportId = reportId || null;
+            if (syncSelect !== false) {
+                setReportSelectValue(selectedReportId);
+            }
+
+            if (!selectedReportId) {
+                renderReportsTable(reports);
+                updateMultiFilterBar();
+                return false;
+            }
+
+            const filteredReports = reports.filter(
+                (report) => String(report.id) === String(selectedReportId)
+            );
+            if (filteredReports.length === 0) {
+                console.warn(`Report filter not found in workspace list: ${selectedReportId}`);
+                renderReportsTable(reports);
+                updateMultiFilterBar();
+                return false;
+            }
+
+            renderReportsTable(filteredReports);
             updateMultiFilterBar();
-            return false;
+            if (fromUrl) {
+                console.log(`Deep-link report applied: ${filteredReports[0]?.name} (${selectedReportId})`);
+                pendingReportIdFromUrl = null;
+                pendingReportNameFromUrl = null;
+            } else {
+                console.log(`Filtered to show report: ${filteredReports[0]?.name}`);
+            }
+            return true;
+        } finally {
+            applyingReportFilter = false;
         }
-
-        const filteredReports = reports.filter((report) => String(report.id) === String(selectedReportId));
-        if (filteredReports.length === 0) {
-            console.warn(`Report filter not found in workspace list: ${selectedReportId}`);
-            // Keep full table but still show clear-filters (user can dismiss)
-            renderReportsTable(reports);
-            updateMultiFilterBar();
-            return false;
-        }
-
-        renderReportsTable(filteredReports);
-        updateMultiFilterBar();
-        if (fromUrl) {
-            console.log(`Deep-link report applied: ${filteredReports[0]?.name} (${selectedReportId})`);
-            // One-shot URL apply so later reload/workspace change does not re-stick wrongly
-            pendingReportIdFromUrl = null;
-            pendingReportNameFromUrl = null;
-        } else {
-            console.log(`Filtered to show report: ${filteredReports[0]?.name}`);
-        }
-        return true;
     }
 
     function populateReportSelect(reportList) {
         const select = $('#reportSelect');
         const list = reportList || reports || [];
 
-        // Clear existing options
-        select.empty();
-        select.append(new Option('All Reports', '', false, false));
+        suppressReportChange = true;
+        try {
+            // Clear existing options
+            select.empty();
+            select.append(new Option('All Reports', '', false, false));
 
-        // Add all report options (sorted alphabetically)
-        const sortedReports = [...list].sort((a, b) => a.name.localeCompare(b.name));
+            // Add all report options (sorted alphabetically)
+            const sortedReports = [...list].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
-        sortedReports.forEach((report) => {
-            const optionText = report.datasetId ? report.name : `${report.name} (No dataset)`;
-            const option = new Option(optionText, report.id, false, false);
-            option.disabled = !report.datasetId;
-            select.append(option);
-        });
+            sortedReports.forEach((report) => {
+                const optionText = report.datasetId ? report.name : `${report.name} (No dataset)`;
+                const option = new Option(optionText, report.id, false, false);
+                option.disabled = !report.datasetId;
+                select.append(option);
+            });
+        } finally {
+            // Keep suppressed until after value + filter apply
+        }
 
         // Prefer deep-link / current selection; do not default-select first report
+        const fromUrl = !!(pendingReportIdFromUrl || pendingReportNameFromUrl);
         const targetId = resolveReportFromUrl(list);
         if (targetId && list.some((r) => String(r.id) === String(targetId))) {
             selectedReportId = targetId;
-            select.val(targetId);
-            // Apply table filter without relying on Select2 change alone
-            applyReportFilter(targetId, { fromUrl: !!(pendingReportIdFromUrl || pendingReportNameFromUrl) });
+            // Apply filter; setReportSelectValue handles suppress
+            applyReportFilter(targetId, { fromUrl, syncSelect: true });
         } else {
-            select.val('');
             selectedReportId = null;
-            select.trigger('change.select2');
-            // loadReports already rendered full table; keep clear bar in sync
+            setReportSelectValue('');
+            // loadReports already rendered full table
             updateMultiFilterBar();
         }
+        // Safety: clear suppress if setReportSelectValue path didn't run timeout yet
+        setTimeout(() => { suppressReportChange = false; }, 0);
     }
 
     function onReportChange() {
+        // Programmatic Select2/populate updates must not re-enter
+        if (suppressReportChange || applyingReportFilter) return;
+
         const val = document.getElementById('reportSelect')?.value || null;
         // Keep URL in sync when user changes report filter in Catalog
         try {
@@ -1828,7 +1871,8 @@
             window.history.replaceState({}, '', url.pathname + (url.search || '') + (url.hash || ''));
         } catch (e) { /* ignore */ }
 
-        applyReportFilter(val, { fromUrl: false });
+        // Dropdown already has the value — do not write Select2 again
+        applyReportFilter(val, { fromUrl: false, syncSelect: false });
     }
 
 
