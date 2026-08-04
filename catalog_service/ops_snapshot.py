@@ -36,6 +36,7 @@ from powerbi_connector import (
 logger = logging.getLogger("ops_snapshot")
 
 PBI_SCOPE = ["https://analysis.windows.net/powerbi/api/.default"]
+GRAPH_SCOPE = ["https://graph.microsoft.com/.default"]
 USAGE_LOOKBACK_DAYS = int(getattr(cfg, "USAGE_LOOKBACK_DAYS", None) or 60)
 REFRESH_WORKERS = int(getattr(cfg, "OPS_REFRESH_WORKERS", None) or 8)
 USAGE_DAY_WORKERS = int(getattr(cfg, "OPS_USAGE_DAY_WORKERS", None) or 6)
@@ -44,6 +45,130 @@ HTTP_TIMEOUT = int(getattr(cfg, "OPS_HTTP_TIMEOUT_SEC", None) or 30)
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _norm_user_key(raw: str) -> str:
+    """Normalize activity user ids for set membership (UPN / email style)."""
+    s = (raw or "").strip().lower()
+    if not s or s == "unknown":
+        return ""
+    # Activity sometimes returns bare GUID (UserKey) — keep as-is for exact match
+    return s
+
+
+def resolve_usage_exclude_users(auth: Optional[OpsAuth] = None) -> Set[str]:
+    """
+    UPNs / emails / keys to exclude from view counts.
+
+    Sources:
+      - USAGE_EXCLUDE_USER_UPNS (explicit list)
+      - Members of Azure AD groups named in USAGE_EXCLUDE_GROUP_NAMES
+        (default: Sg_GCC_CentralAnalytics_Unv)
+
+    Requires app permission GroupMember.Read.All or Directory.Read.All on Graph.
+    Failures are non-fatal (returns only explicit UPNs) so ops never blocks.
+    """
+    exclude: Set[str] = set()
+    for u in getattr(cfg, "USAGE_EXCLUDE_USER_UPNS", None) or []:
+        k = _norm_user_key(str(u))
+        if k:
+            exclude.add(k)
+
+    group_names = list(getattr(cfg, "USAGE_EXCLUDE_GROUP_NAMES", None) or [])
+    if not group_names:
+        return exclude
+
+    try:
+        auth = auth or OpsAuth()
+        headers = auth.graph_headers()
+    except Exception as exc:
+        logger.warning("Usage exclude: Graph auth unavailable (%s) — group filter skipped", exc)
+        return exclude
+
+    for gname in group_names:
+        try:
+            # Resolve group by displayName
+            url = "https://graph.microsoft.com/v1.0/groups"
+            params = {
+                "$filter": f"displayName eq '{gname.replace(chr(39), chr(39)+chr(39))}'",
+                "$select": "id,displayName",
+                "$top": "5",
+            }
+            resp = requests.get(url, headers=headers, params=params, timeout=min(HTTP_TIMEOUT, 45))
+            if resp.status_code in (401, 403):
+                logger.warning(
+                    "Usage exclude: Graph groups forbidden (HTTP %s). "
+                    "Grant app GroupMember.Read.All or Directory.Read.All. Body: %s",
+                    resp.status_code,
+                    (resp.text or "")[:200],
+                )
+                break
+            if resp.status_code != 200:
+                logger.warning(
+                    "Usage exclude: group lookup %r HTTP %s: %s",
+                    gname, resp.status_code, (resp.text or "")[:200],
+                )
+                continue
+            groups = (resp.json() or {}).get("value") or []
+            if not groups:
+                logger.warning("Usage exclude: group not found: %r", gname)
+                continue
+            gid = groups[0].get("id")
+            logger.info("Usage exclude: resolved group %r → %s", gname, gid)
+
+            # Transitive members (users only) — paginate
+            murl = (
+                f"https://graph.microsoft.com/v1.0/groups/{gid}/transitiveMembers"
+                f"/microsoft.graph.user?$select=userPrincipalName,mail,id&$top=999"
+            )
+            member_count = 0
+            while murl:
+                mresp = requests.get(murl, headers=headers, timeout=min(HTTP_TIMEOUT, 60))
+                if mresp.status_code != 200:
+                    logger.warning(
+                        "Usage exclude: members of %r HTTP %s: %s",
+                        gname, mresp.status_code, (mresp.text or "")[:200],
+                    )
+                    break
+                payload = mresp.json() or {}
+                for u in payload.get("value") or []:
+                    for fld in ("userPrincipalName", "mail", "id"):
+                        k = _norm_user_key(str(u.get(fld) or ""))
+                        if k:
+                            exclude.add(k)
+                            # also bare local-part for looser Activity match
+                            if "@" in k:
+                                exclude.add(k.split("@", 1)[0])
+                    member_count += 1
+                murl = payload.get("@odata.nextLink")
+            logger.info(
+                "Usage exclude: group %r members≈%s total_exclude_keys=%s",
+                gname, member_count, len(exclude),
+            )
+        except Exception as exc:
+            logger.warning("Usage exclude: failed for group %r: %s", gname, exc)
+
+    return exclude
+
+
+def _activity_user_excluded(activity: Dict[str, Any], exclude: Set[str]) -> bool:
+    """True if this ViewReport event should not count toward stakeholder views."""
+    if not exclude:
+        return False
+    candidates = []
+    for fld in ("UserId", "UserEmail", "UserKey", "UserPrincipalName"):
+        v = activity.get(fld)
+        if v:
+            candidates.append(str(v))
+    for raw in candidates:
+        k = _norm_user_key(raw)
+        if not k:
+            continue
+        if k in exclude:
+            return True
+        if "@" in k and k.split("@", 1)[0] in exclude:
+            return True
+    return False
 
 
 def _day_str(dt: datetime) -> str:
@@ -55,7 +180,7 @@ def _parse_day(s: str) -> datetime:
 
 
 class OpsAuth:
-    """Service-principal token for admin + dataset APIs."""
+    """Service-principal token for admin + dataset APIs (+ Graph for usage excludes)."""
 
     def __init__(self) -> None:
         self.tenant_id = cfg.TENANT_ID
@@ -63,6 +188,8 @@ class OpsAuth:
         self.client_secret = cfg.CLIENT_SECRET
         self._token: Optional[str] = None
         self._expires_at = 0.0
+        self._graph_token: Optional[str] = None
+        self._graph_expires_at = 0.0
         if not all([self.tenant_id, self.client_id, self.client_secret]):
             raise RuntimeError("TENANT_ID / CLIENT_ID / CLIENT_SECRET required for ops snapshot")
 
@@ -83,9 +210,33 @@ class OpsAuth:
         self._expires_at = time.time() + int(result.get("expires_in", 3600))
         return self._token
 
+    def graph_token(self, force: bool = False) -> str:
+        """Microsoft Graph app-only token (GroupMember.Read.All / Directory.Read.All)."""
+        if not force and self._graph_token and time.time() < self._graph_expires_at - 300:
+            return self._graph_token
+        app = msal.ConfidentialClientApplication(
+            self.client_id,
+            authority=f"https://login.microsoftonline.com/{self.tenant_id}",
+            client_credential=self.client_secret,
+        )
+        result = app.acquire_token_for_client(scopes=GRAPH_SCOPE)
+        if "access_token" not in result:
+            raise RuntimeError(
+                f"Graph auth failed: {result.get('error')} — {result.get('error_description')}"
+            )
+        self._graph_token = result["access_token"]
+        self._graph_expires_at = time.time() + int(result.get("expires_in", 3600))
+        return self._graph_token
+
     def headers(self) -> Dict[str, str]:
         return {
             "Authorization": f"Bearer {self.token()}",
+            "Content-Type": "application/json",
+        }
+
+    def graph_headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.graph_token()}",
             "Content-Type": "application/json",
         }
 
@@ -415,21 +566,21 @@ def _prune_usage_days(state: Dict[str, Any], lookback: int = USAGE_LOOKBACK_DAYS
     state["lookbackDays"] = lookback
 
 
-def _fetch_activity_day(headers: Dict[str, str], day: str) -> Dict[str, Any]:
+def _fetch_activity_day(
+    headers: Dict[str, str],
+    day: str,
+    exclude_users: Optional[Set[str]] = None,
+) -> Dict[str, Any]:
     """
     Fetch ViewReport events for one UTC day. Returns:
       {report_views: {rid: n}, last_viewed: {rid: {timestamp, user}}}
 
-    Matches the proven PowerBI-Crash-Test Activity Events pattern:
-      - $filter=Activity eq 'ViewReport' (server-side filter; much more reliable)
-      - start/end as plain ISO without trailing Z (API quirk)
-      - full-day window 00:00:00 → 23:59:59
-      - pagination via continuationUri (full URL), not token-only query
+    exclude_users: normalized UPN/email/keys (dev SG) — events from those users
+    are not counted toward stakeholder view totals.
     """
-    # Plain ISO without Z — same format as working crash-test tool
+    exclude_users = exclude_users or set()
     start = f"{day}T00:00:00"
     end = f"{day}T23:59:59"
-    # Filter reduces payload and avoids client-side Activity mismatches
     first_url = (
         "https://api.powerbi.com/v1.0/myorg/admin/activityevents"
         f"?startDateTime='{start}'&endDateTime='{end}'"
@@ -439,6 +590,7 @@ def _fetch_activity_day(headers: Dict[str, str], day: str) -> Dict[str, Any]:
     report_views: Dict[str, int] = {}
     last_viewed: Dict[str, Dict[str, str]] = {}
     pages = 0
+    excluded_events = 0
     url: Optional[str] = first_url
     retries_429 = 0
 
@@ -457,7 +609,7 @@ def _fetch_activity_day(headers: Dict[str, str], day: str) -> Dict[str, Any]:
                 break
             wait = float(resp.headers.get("Retry-After", min(30, 2 * retries_429)))
             time.sleep(wait)
-            pages -= 1  # don't count throttle retries as pages
+            pages -= 1
             continue
         retries_429 = 0
 
@@ -476,9 +628,11 @@ def _fetch_activity_day(headers: Dict[str, str], day: str) -> Dict[str, Any]:
         data = resp.json() or {}
         entities = data.get("activityEventEntities") or []
         for activity in entities:
-            # Server already filters ViewReport; keep client check as safety net
             act = (activity.get("Activity") or "").strip()
             if act and act != "ViewReport":
+                continue
+            if _activity_user_excluded(activity, exclude_users):
+                excluded_events += 1
                 continue
             rid = activity.get("ReportId") or activity.get("ArtifactId")
             if not rid:
@@ -496,13 +650,11 @@ def _fetch_activity_day(headers: Dict[str, str], day: str) -> Dict[str, Any]:
             if not prev or (ts and ts > (prev.get("timestamp") or "")):
                 last_viewed[rid] = {"timestamp": ts, "user": str(user)}
 
-        # Prefer full continuationUri (working crash-test path); fall back to token
         cont_uri = data.get("continuationUri")
         cont_tok = data.get("continuationToken")
         if cont_uri:
             url = cont_uri
         elif cont_tok:
-            # Some tenants only return the token — quote form per API docs
             tok = str(cont_tok).strip().strip("'")
             url = (
                 "https://api.powerbi.com/v1.0/myorg/admin/activityevents"
@@ -512,14 +664,15 @@ def _fetch_activity_day(headers: Dict[str, str], day: str) -> Dict[str, Any]:
             url = None
 
     logger.info(
-        "Activity day %s: pages=%s view_events=%s unique_reports=%s",
-        day, pages, sum(report_views.values()), len(report_views),
+        "Activity day %s: pages=%s view_events=%s excluded=%s unique_reports=%s",
+        day, pages, sum(report_views.values()), excluded_events, len(report_views),
     )
     return {
         "report_views": report_views,
         "last_viewed": last_viewed,
         "pages": pages,
         "eventCount": sum(report_views.values()),
+        "excludedEventCount": excluded_events,
     }
 
 
@@ -535,11 +688,32 @@ def build_usage_snapshot_incremental(
     - Loads prior day buckets from state_path
     - Fetches only missing days in the lookback window (and always re-fetches today)
     - Aggregates report_views + last_viewed over the window
+    - Excludes viewers in USAGE_EXCLUDE_GROUP_NAMES (e.g. Sg_GCC_CentralAnalytics_Unv)
+
+    Day buckets do not store per-user events, so when the exclude set changes
+    (or first time exclude is applied), a full lookback refetch is forced.
     """
     auth = auth or OpsAuth()
     headers = auth.headers()
+    exclude_users = resolve_usage_exclude_users(auth)
+    exclude_groups = list(getattr(cfg, "USAGE_EXCLUDE_GROUP_NAMES", None) or [])
+    # Stable fingerprint so membership/config changes trigger full rebuild
+    exclude_fp = "|".join(sorted(exclude_groups)) + f"#n={len(exclude_users)}"
+
     state = _empty_usage_state() if force_full else load_usage_state(state_path)
+    prev_fp = str(state.get("excludeFingerprint") or "")
+    if exclude_fp != prev_fp and not force_full:
+        logger.info(
+            "Usage exclude fingerprint changed (%r → %r) — full lookback refetch",
+            prev_fp, exclude_fp,
+        )
+        force_full = True
+        state = _empty_usage_state()
+
     state["lookbackDays"] = lookback_days
+    state["excludeFingerprint"] = exclude_fp
+    state["excludeGroupNames"] = exclude_groups
+    state["excludeUserCount"] = len(exclude_users)
     _prune_usage_days(state, lookback_days)
 
     today = _utc_now().date()
@@ -547,23 +721,27 @@ def build_usage_snapshot_incremental(
         (today - timedelta(days=i)).strftime("%Y-%m-%d")
         for i in range(lookback_days)
     ]
-    # Always refresh "today"; skip other days already present unless force_full
     to_fetch = []
     for day in needed_days:
         if force_full or day == needed_days[0] or day not in (state.get("days") or {}):
             to_fetch.append(day)
 
     logger.info(
-        "Ops usage: lookback=%s existing_days=%s fetch=%s force_full=%s",
+        "Ops usage: lookback=%s existing_days=%s fetch=%s force_full=%s exclude_users=%s groups=%s",
         lookback_days,
         len(state.get("days") or {}),
         len(to_fetch),
         force_full,
+        len(exclude_users),
+        exclude_groups,
     )
 
     if to_fetch:
         with ThreadPoolExecutor(max_workers=max(1, day_workers)) as ex:
-            futs = {ex.submit(_fetch_activity_day, headers, d): d for d in to_fetch}
+            futs = {
+                ex.submit(_fetch_activity_day, headers, d, exclude_users): d
+                for d in to_fetch
+            }
             for fut in as_completed(futs):
                 day = futs[fut]
                 try:
@@ -573,11 +751,13 @@ def build_usage_snapshot_incremental(
                         "last_viewed": payload.get("last_viewed") or {},
                         "fetchedAt": _utc_now().isoformat(),
                         "pages": payload.get("pages"),
+                        "excludedEventCount": payload.get("excludedEventCount") or 0,
                     }
                     logger.info(
-                        "  usage day %s views_reports=%s",
+                        "  usage day %s views_reports=%s excluded_events=%s",
                         day,
                         len(payload.get("report_views") or {}),
+                        payload.get("excludedEventCount") or 0,
                     )
                 except Exception as exc:
                     logger.warning("Usage day %s failed: %s", day, exc)
@@ -585,21 +765,29 @@ def build_usage_snapshot_incremental(
     _prune_usage_days(state, lookback_days)
     save_usage_state(state_path, state)
 
-    # Aggregate
     total_views: Dict[str, int] = {}
     last_viewed: Dict[str, Dict[str, str]] = {}
+    excluded_total = 0
     for day in needed_days:
         bucket = (state.get("days") or {}).get(day) or {}
+        excluded_total += int(bucket.get("excludedEventCount") or 0)
         for rid, cnt in (bucket.get("report_views") or {}).items():
             total_views[rid] = total_views.get(rid, 0) + int(cnt or 0)
         for rid, lv in (bucket.get("last_viewed") or {}).items():
             ts = (lv or {}).get("timestamp") or ""
+            user = (lv or {}).get("user") or "Unknown"
+            # Defense: never surface excluded user as last_viewed
+            if _norm_user_key(user) and (
+                _norm_user_key(user) in exclude_users
+                or (
+                    "@" in _norm_user_key(user)
+                    and _norm_user_key(user).split("@", 1)[0] in exclude_users
+                )
+            ):
+                continue
             prev = last_viewed.get(rid)
             if not prev or ts > (prev.get("timestamp") or ""):
-                last_viewed[rid] = {
-                    "timestamp": ts,
-                    "user": (lv or {}).get("user") or "Unknown",
-                }
+                last_viewed[rid] = {"timestamp": ts, "user": user}
 
     return {
         "generatedAt": _utc_now().isoformat(),
@@ -609,6 +797,9 @@ def build_usage_snapshot_incremental(
         "reportCount": len(total_views),
         "report_views": total_views,
         "last_viewed": last_viewed,
+        "excludeGroupNames": exclude_groups,
+        "excludeUserCount": len(exclude_users),
+        "excludedEventCount": excluded_total,
     }
 
 

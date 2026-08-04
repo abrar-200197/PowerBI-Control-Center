@@ -87,6 +87,19 @@ USAGE_LOOKBACK_DAYS = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))
 OPS_REFRESH_WORKERS = int(os.getenv("OPS_REFRESH_WORKERS", "8"))
 OPS_USAGE_DAY_WORKERS = int(os.getenv("OPS_USAGE_DAY_WORKERS", "6"))
 OPS_HTTP_TIMEOUT_SEC = int(os.getenv("OPS_HTTP_TIMEOUT_SEC", "30"))
+# Exclude internal / dev viewers from usage counts (comma-separated Azure AD group display names)
+# Members are resolved via Microsoft Graph (needs GroupMember.Read.All or Directory.Read.All)
+USAGE_EXCLUDE_GROUP_NAMES = [
+    g.strip()
+    for g in (os.getenv("USAGE_EXCLUDE_GROUP_NAMES") or "Sg_GCC_CentralAnalytics_Unv").split(",")
+    if g.strip()
+]
+# Optional hard-coded UPNs/emails (comma-separated) in addition to group members
+USAGE_EXCLUDE_USER_UPNS = [
+    u.strip().lower()
+    for u in (os.getenv("USAGE_EXCLUDE_USER_UPNS") or "").split(",")
+    if u.strip()
+]
 
 # Catalog load mode — SharePoint is the source of truth.
 # Values other than sharepoint/off are coerced to sharepoint when SP is configured.
