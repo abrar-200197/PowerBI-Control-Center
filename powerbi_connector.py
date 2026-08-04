@@ -619,24 +619,48 @@ def days_since_refresh(value, as_of=None):
     return max(0, (now - dt).days)
 
 
+def _is_true_refresh_history(src):
+    """True API refresh row (scheduled/ondemand/admin) vs content fallback."""
+    if not isinstance(src, dict):
+        return False
+    src_l = str(src.get('refresh_source') or '').lower().replace('-', '_').replace(' ', '')
+    if src_l in (
+        'scheduled', 'ondemand', 'on_demand', 'viaapi', 'via_api',
+        'admin', 'history', 'api',
+    ):
+        return True
+    if src.get('history_refresh_type'):
+        return True
+    return False
+
+
+def _is_weak_created_fallback(src):
+    """Dataset createdDate stamped as last_refreshed — weaker than report modified."""
+    if not isinstance(src, dict):
+        return False
+    src_l = str(src.get('refresh_source') or '').lower()
+    if src_l in ('content_created', 'created'):
+        return True
+    note = str(src.get('refresh_note') or '').lower()
+    if 'created date' in note or 'dataset created' in note:
+        return True
+    # legacy: content_modified note that only mentions created
+    if src_l == 'content_modified' and 'created' in note and 'modified' not in note:
+        return True
+    return False
+
+
 def merge_refresh_candidates(*sources, prefer_keys=None):
     """
-    Merge multiple refresh info dicts and pick the LATEST last_refreshed.
+    Merge multiple refresh info dicts and pick the best last_refreshed.
 
-    Sources may include:
-      - Scheduled / OnDemand / ViaApi history from GET .../refreshes
-      - Admin refreshables lastRefresh (capacity path)
-      - Catalog/SharePoint ops snapshot
-      - Content-modified / model-modified fallbacks (when no history API row)
+    Rules:
+      1) TRUE history (scheduled / ondemand / viaapi / admin) → latest of those only.
+         Content fallbacks never override real history.
+      2) Else content fallbacks: prefer report/dataset *modified* over dataset *created*.
+         Among same quality, pick the newest timestamp.
 
-    Rule (what the UI needs):
-      - only scheduled → show scheduled latest
-      - only alternate  → show that latest
-      - both           → show whichever timestamp is newer
-
-    Microsoft does NOT expose OneDrive-tab history via /refreshes. When scheduled
-    history is empty we still try every alternate API source we have; if still
-    empty the note explains the OneDrive API gap.
+    Microsoft does NOT expose OneDrive-tab history via /refreshes.
     """
     prefer_keys = prefer_keys or (
         'refresh_schedule', 'refresh_type', 'refresh_note',
@@ -648,16 +672,25 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
     if not cleaned:
         return _empty_refresh_info()
 
+    with_ts = []
+    for src in cleaned:
+        dt = parse_refresh_timestamp(src.get('last_refreshed'))
+        if dt is not None:
+            with_ts.append((src, dt))
+
+    true_hist = [(s, dt) for s, dt in with_ts if _is_true_refresh_history(s)]
+    if true_hist:
+        pool = true_hist
+    else:
+        # Content only: drop weak created stamps when any non-created content exists
+        strong = [(s, dt) for s, dt in with_ts if not _is_weak_created_fallback(s)]
+        pool = strong if strong else with_ts
+
     best = None
     best_dt = None
-    for src in cleaned:
-        ts = src.get('last_refreshed')
-        dt = parse_refresh_timestamp(ts)
-        if dt is None:
-            continue
-        if best_dt is None or dt > best_dt:
-            best_dt = dt
-            best = src
+    for src, dt in pool:
+        if best is None or dt > best_dt:
+            best, best_dt = src, dt
 
     # Base: first source that has any useful structure, else first
     base = dict(cleaned[0])
@@ -758,50 +791,71 @@ def refresh_info_from_content_modified(dataset_info, report_meta=None, *, datase
     """
     Last-resort timestamp when Scheduled/Admin history is empty.
 
-    Uses the newest of:
-      - dataset createdDate (weak)
-      - report modifiedDateTime from catalog/scanner (Often updates when a OneDrive
-        .pbix sync changes the bound report/model — not a true OneDrive history row,
-        but better than blank for OneDrive-only models.)
+    Preference (never use create-time when a modified stamp exists):
+      1) report modifiedDateTime (often tracks OneDrive .pbix publish/sync)
+      2) dataset modifiedDateTime / lastModified
+      3) dataset createdDate only if nothing else (weak — labeled content_created)
 
-    Never pretends this is Scheduled history.
+    Not true OneDrive history (REST does not expose that tab). Never pretends
+    this is Scheduled history.
     """
-    candidates = []
-    if isinstance(dataset_info, dict):
-        for k in (
-            'createdDate', 'createdDateTime',
-            'modifiedDateTime', 'modifiedDate', 'lastModified',
-        ):
-            if dataset_info.get(k):
-                candidates.append(dataset_info.get(k))
+    modified_candidates = []  # (raw_ts, label)
+    created_candidates = []
+
     if isinstance(report_meta, dict):
         for k in (
             'modifiedDateTime', 'modified_date_time', 'modifiedDate',
             'modified_date', 'lastModified',
         ):
             if report_meta.get(k):
-                candidates.append(report_meta.get(k))
+                modified_candidates.append((report_meta.get(k), 'report modified'))
 
-    best_ts = None
-    best_dt = None
-    for raw in candidates:
-        dt = parse_refresh_timestamp(raw)
-        if dt is None:
-            continue
-        if best_dt is None or dt > best_dt:
-            best_dt = dt
-            best_ts = raw
+    if isinstance(dataset_info, dict):
+        for k in ('modifiedDateTime', 'modifiedDate', 'lastModified'):
+            if dataset_info.get(k):
+                modified_candidates.append((dataset_info.get(k), 'dataset modified'))
+        for k in ('createdDate', 'createdDateTime'):
+            if dataset_info.get(k):
+                created_candidates.append((dataset_info.get(k), 'dataset created'))
+
+    def _newest(cands):
+        best_ts, best_dt, best_label = None, None, None
+        for raw, label in cands:
+            dt = parse_refresh_timestamp(raw)
+            if dt is None:
+                continue
+            if best_dt is None or dt > best_dt:
+                best_ts, best_dt, best_label = raw, dt, label
+        return best_ts, best_label
+
+    best_ts, label = _newest(modified_candidates)
+    used_created = False
+    if not best_ts:
+        best_ts, label = _newest(created_candidates)
+        used_created = bool(best_ts)
+
     if not best_ts:
         return None
+
+    if used_created:
+        source = 'content_created'
+        note = (
+            'No Scheduled refresh history; using dataset created date '
+            '(no report/dataset modified time; OneDrive-tab history is not available via REST API)'
+        )
+    else:
+        source = 'content_modified'
+        note = (
+            f'No Scheduled refresh history; using latest {label or "content modified"} time '
+            '(OneDrive-tab history is not available via REST API)'
+        )
+
     return _empty_refresh_info(
         last_refreshed=best_ts,
         last_refresh_status='Completed',
         refresh_type='import',
-        refresh_source='content_modified',
-        refresh_note=(
-            'No Scheduled refresh history; using latest content modified time '
-            '(OneDrive-tab history is not available via REST API)'
-        ),
+        refresh_source=source,
+        refresh_note=note,
         dataset_workspace_id=dataset_workspace_id,
         is_refreshable=(dataset_info or {}).get('isRefreshable') if isinstance(dataset_info, dict) else None,
         dataset_owner=(dataset_info or {}).get('configuredBy', 'Unknown') if isinstance(dataset_info, dict) else 'Unknown',

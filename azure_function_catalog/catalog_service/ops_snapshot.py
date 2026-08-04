@@ -301,12 +301,28 @@ def build_refresh_snapshot(
             )
 
         admin_side = admin_map.get(ds_id) or {}
+        # Always offer report-modified content fallback when we have catalog stamps.
+        # merge_refresh_candidates keeps TRUE history winners; content_modified only
+        # fills gaps and beats weak content_created (dataset createdDate) stamps.
         content_side = None
-        # Only build content-modified when scheduled still has no timestamp
-        if not scheduled.get("last_refreshed") and not (admin_side or {}).get("last_refreshed"):
+        report_meta = report_mod_by_ds.get(ds_id)
+        sched_src = str(scheduled.get("refresh_source") or "").lower()
+        admin_has = bool((admin_side or {}).get("last_refreshed"))
+        sched_is_true = sched_src in (
+            "scheduled", "ondemand", "on_demand", "viaapi", "via_api", "admin", "history", "api",
+        ) or bool(scheduled.get("history_refresh_type"))
+        need_content = (
+            report_meta
+            and not admin_has
+            and (
+                not scheduled.get("last_refreshed")
+                or not sched_is_true  # e.g. content_created from dataset createdDate
+            )
+        )
+        if need_content:
             content_side = refresh_info_from_content_modified(
                 None,
-                report_mod_by_ds.get(ds_id),
+                report_meta,
                 dataset_workspace_id=ws_id,
             )
 
