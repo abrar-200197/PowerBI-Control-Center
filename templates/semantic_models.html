@@ -159,11 +159,15 @@ document.addEventListener('keydown', (e) => {
             
             const select = document.getElementById('workspaceSelect');
             select.innerHTML = '<option value="">-- Select Workspace --</option>';
-            
-            data.workspaces.forEach(ws => {
-                const option = new Option(ws.name, ws.id);
-                select.appendChild(option);
-            });
+
+            const workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
+            // A–Z by name so large lists are easy to scan
+            workspaces
+                .slice()
+                .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }))
+                .forEach(ws => {
+                    select.appendChild(new Option(ws.name, ws.id));
+                });
         } catch (error) {
             console.error('Error loading workspaces:', error);
             showAlert('error', 'Failed to load workspaces');
