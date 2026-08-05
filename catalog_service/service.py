@@ -135,7 +135,7 @@ class CatalogService:
         return idx
 
     def _ensure_thin_home_pack(self, cat: Dict[str, Any]) -> None:
-        from catalog_service.thin_packs import build_ui_home_index
+        from catalog_service.thin_packs import build_ui_home_index, build_ui_report_directory
         home = build_ui_home_index(cat)
         _memory["ui_home_index.json"] = {
             "data": home, "loaded_at": time.time(), "source": "derived-in-process",
@@ -148,6 +148,18 @@ class CatalogService:
             )
         except Exception:
             pass
+        try:
+            directory = build_ui_report_directory(cat)
+            _memory["ui_report_directory.json"] = {
+                "data": directory, "loaded_at": time.time(), "source": "derived-in-process",
+            }
+            raw_d = json.dumps(directory, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            self._write_disk_mirror(
+                "ui_report_directory.json", raw_d,
+                sp_size=len(raw_d), sp_modified=directory.get("generatedAt") or "",
+            )
+        except Exception as exc:
+            logger.warning("thin report directory pack build skipped: %s", exc)
 
     def _ensure_thin_impact_pack(self, idx: Dict[str, Any]) -> None:
         from catalog_service.thin_packs import build_ui_impact_tables, build_ui_impact_reports
@@ -312,6 +324,85 @@ class CatalogService:
                 "opsEnrichedAt": cat.get("opsEnrichedAt"),
                 "source": "sharepoint",
             },
+        }
+
+    def get_report_directory_rows(
+        self,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+        force_refresh: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Thin report directory (report → workspace) for Catalog reverse search.
+        Prefers ui_report_directory.json; builds from catalog when missing.
+        """
+        pack = self.get_json("ui_report_directory.json", force_refresh=force_refresh)
+        if not pack or not isinstance(pack.get("rows"), list):
+            cat = self.get_workspace_catalog(force_refresh=force_refresh)
+            if cat:
+                try:
+                    self._ensure_thin_home_pack(cat)
+                except Exception as exc:
+                    logger.warning("report directory rebuild failed: %s", exc)
+                pack = (_memory.get("ui_report_directory.json") or {}).get("data") or {}
+        rows = list((pack or {}).get("rows") or [])
+        if allowed_workspace_ids is not None:
+            rows = [r for r in rows if r.get("workspaceId") in allowed_workspace_ids]
+        return rows
+
+    def search_reports(
+        self,
+        query: str = "",
+        allowed_workspace_ids: Optional[Set[str]] = None,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """
+        Reverse lookup: report name/id → matching rows (with workspace).
+        Empty query returns nothing (client should not dump full estate).
+        """
+        q = (query or "").strip().lower()
+        lim = max(1, min(int(limit or 50), 200))
+        rows = self.get_report_directory_rows(allowed_workspace_ids=allowed_workspace_ids)
+        if not q:
+            return {
+                "success": True,
+                "query": query or "",
+                "count": 0,
+                "total": len(rows),
+                "rows": [],
+            }
+
+        hits: List[Dict[str, Any]] = []
+        for r in rows:
+            blob = (r.get("searchText") or "").lower()
+            if not blob:
+                blob = " ".join([
+                    str(r.get("reportName") or ""),
+                    str(r.get("workspaceName") or ""),
+                    str(r.get("reportId") or ""),
+                    str(r.get("workspaceId") or ""),
+                ]).lower()
+            if q in blob:
+                hits.append(r)
+                if len(hits) >= lim:
+                    break
+
+        # Prefer exact name matches first
+        def _rank(row: Dict[str, Any]) -> Tuple[int, str, str]:
+            name = (row.get("reportName") or "").lower()
+            if name == q:
+                return (0, name, (row.get("workspaceName") or "").lower())
+            if name.startswith(q):
+                return (1, name, (row.get("workspaceName") or "").lower())
+            return (2, name, (row.get("workspaceName") or "").lower())
+
+        hits.sort(key=_rank)
+        return {
+            "success": True,
+            "query": query or "",
+            "count": len(hits),
+            "total": len(rows),
+            "capped": len(hits) >= lim,
+            "rows": hits,
         }
 
     def build_home_summary(

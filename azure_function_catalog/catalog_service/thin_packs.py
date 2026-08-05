@@ -404,6 +404,46 @@ def build_ui_impact_reports(impact_index: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def build_ui_report_directory(catalog: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Flat report directory for reverse search: report name → workspace(s).
+
+    One row per report (not [App] shells). Used by Report Catalog
+    "Find report…" without loading the full catalog in the browser.
+    """
+    rows: List[Dict[str, Any]] = []
+    for ws in catalog.get("workspaces") or []:
+        wid = ws.get("id")
+        if not wid:
+            continue
+        wname = ws.get("name") or ""
+        for r in ws.get("reports") or []:
+            rname = str(r.get("name") or "")
+            if not rname or rname.startswith("[App]"):
+                continue
+            rid = r.get("id")
+            if not rid:
+                continue
+            rows.append({
+                "reportId": rid,
+                "reportName": rname,
+                "workspaceId": wid,
+                "workspaceName": wname,
+                "datasetId": r.get("datasetId") or "",
+                "searchText": f"{rname} {wname} {rid} {wid}".lower(),
+            })
+    rows.sort(key=lambda r: (
+        (r.get("reportName") or "").lower(),
+        (r.get("workspaceName") or "").lower(),
+    ))
+    return {
+        "generatedAt": catalog.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
+        "opsEnrichedAt": catalog.get("opsEnrichedAt"),
+        "reportCount": len(rows),
+        "rows": rows,
+    }
+
+
 def write_thin_packs(latest_dir: Path) -> Dict[str, Path]:
     """Build ui_*.json into latest_dir from full artifacts. Returns paths written."""
     latest_dir = Path(latest_dir)
@@ -416,6 +456,16 @@ def write_thin_packs(latest_dir: Path) -> Dict[str, Path]:
         p.write_text(json.dumps(home, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         out["ui_home_index"] = p
         logger.info("Wrote %s (%.1f KB, %s workspaces)", p.name, p.stat().st_size / 1024, home["workspaceCount"])
+        directory = build_ui_report_directory(cat)
+        p = latest_dir / "ui_report_directory.json"
+        p.write_text(json.dumps(directory, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        out["ui_report_directory"] = p
+        logger.info(
+            "Wrote %s (%.1f KB, %s reports)",
+            p.name,
+            p.stat().st_size / 1024,
+            directory.get("reportCount") or 0,
+        )
     imp_path = latest_dir / "impact_index.json"
     if imp_path.is_file():
         imp = json.loads(imp_path.read_text(encoding="utf-8"))

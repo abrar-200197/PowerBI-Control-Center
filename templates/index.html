@@ -655,6 +655,10 @@
 
     <div class="controls">
         <div class="controls-left">
+            <!-- Reverse search: report name → workspace (catalog thin API) -->
+            <select id="findReportSelect" style="min-width:280px;">
+                <option value=""></option>
+            </select>
             <select id="workspaceSelect" onchange="onWorkspaceChange()">
                 <option value="">Loading workspaces...</option>
             </select>
@@ -717,6 +721,8 @@
     // Guard: Select2/native change must not re-enter filter apply (stack overflow)
     let suppressReportChange = false;
     let applyingReportFilter = false;
+    // Reverse search: Find report → set workspace without wiping pending report filter
+    let navigatingFromFindReport = false;
     // Owner columns: all rows spin together until batch metadata returns (no per-row early finish)
     let metadataBatchLoading = false;
     const VIEW_LOOKBACK_DAYS = 60;
@@ -885,6 +891,9 @@
             minimumResultsForSearch: 0  // Always show search box
         });
 
+        // Reverse search: report name → workspace (catalog thin API)
+        initFindReportSelect();
+
         const clearAll = document.getElementById('clearAllFiltersBtn');
         if (clearAll) clearAll.addEventListener('click', clearAllFilters);
         const clearToolbar = document.getElementById('clearFiltersToolbarBtn');
@@ -1021,8 +1030,9 @@
 
         console.log(`🔄 Workspace changed: ${oldWorkspaceId} → ${currentWorkspaceId}`);
 
-        // True user switch (not initial deep-link set from null → workspace)
-        const isUserSwitch = !!(oldWorkspaceId && oldWorkspaceId !== currentWorkspaceId);
+        // True user switch (not initial deep-link / Find-report navigation)
+        const isUserSwitch = !!(oldWorkspaceId && oldWorkspaceId !== currentWorkspaceId)
+            && !navigatingFromFindReport;
 
         // Always reset folder when workspace changes
         currentFolderId = null;
@@ -1048,8 +1058,14 @@
                 url.searchParams.delete('folder');
                 window.history.replaceState({}, '', url.pathname + (url.search || '') + (url.hash || ''));
             } catch (e) { /* ignore */ }
+            // Clear reverse-search control when user picks a different workspace manually
+            try {
+                if (window.jQuery && $('#findReportSelect').length) {
+                    $('#findReportSelect').val(null).trigger('change');
+                }
+            } catch (e) { /* ignore */ }
         } else {
-            // Initial deep-link: keep ?report= so populateReportSelect can apply it
+            // Deep-link / Find-report: keep ?report= so populateReportSelect can apply it
             try {
                 const url = new URL(window.location.href);
                 if (currentWorkspaceId) url.searchParams.set('workspace', currentWorkspaceId);
@@ -1065,6 +1081,136 @@
             document.getElementById('reportsTable').innerHTML = '<div class="no-data">📊 Please select a workspace</div>';
             // Hide buttons
             document.getElementById('usageBtn').style.display = 'none';
+        }
+        navigatingFromFindReport = false;
+    }
+
+    /**
+     * Reverse search control: type a report name → pick hit (name · workspace)
+     * → open that workspace filtered to the report.
+     */
+    function initFindReportSelect() {
+        if (!window.jQuery || !$('#findReportSelect').length) return;
+
+        function formatFindHit(item) {
+            if (!item || !item.id) return item?.text || '';
+            const name = item.reportName || item.text || '';
+            const ws = item.workspaceName || '';
+            if (!ws) return name;
+            return $(
+                `<span>${escapeHtml(name)}</span>` +
+                `<span class="muted" style="display:block;font-size:11px;opacity:.8">${escapeHtml(ws)}</span>`
+            );
+        }
+
+        $('#findReportSelect').select2({
+            placeholder: 'Find report by name…',
+            allowClear: true,
+            width: '300px',
+            minimumInputLength: 2,
+            ajax: {
+                delay: 280,
+                transport: function (params, success, failure) {
+                    const term = (params.data && params.data.q) || '';
+                    fetch(
+                        `/api/catalog/reports/search?q=${encodeURIComponent(term)}&limit=40`,
+                        { credentials: 'include', headers: { Accept: 'application/json' } }
+                    )
+                        .then((r) => r.json())
+                        .then((body) => {
+                            if (!body || !body.success) {
+                                success({ results: [] });
+                                return;
+                            }
+                            const results = (body.rows || []).map((row) => {
+                                const rid = row.id || row.reportId || '';
+                                const wid = row.wid || row.workspaceId || '';
+                                const rname = row.n || row.reportName || '';
+                                const wname = row.wn || row.workspaceName || '';
+                                return {
+                                    id: `${wid}::${rid}`,
+                                    text: wname ? `${rname} · ${wname}` : rname,
+                                    reportId: rid,
+                                    reportName: rname,
+                                    workspaceId: wid,
+                                    workspaceName: wname,
+                                };
+                            });
+                            success({ results });
+                        })
+                        .catch(() => failure());
+                },
+                processResults: function (data) {
+                    return data || { results: [] };
+                },
+            },
+            templateResult: formatFindHit,
+            templateSelection: function (item) {
+                if (!item || !item.id) return item?.text || 'Find report by name…';
+                const name = item.reportName || item.text || '';
+                const ws = item.workspaceName || '';
+                return ws ? `${name} · ${ws}` : name;
+            },
+            escapeMarkup: function (m) { return m; },
+        });
+
+        $('#findReportSelect').on('select2:select', function (e) {
+            const d = e.params && e.params.data;
+            if (!d || !d.reportId || !d.workspaceId) return;
+            navigateToReportInCatalog({
+                reportId: d.reportId,
+                reportName: d.reportName || '',
+                workspaceId: d.workspaceId,
+                workspaceName: d.workspaceName || '',
+            });
+        });
+    }
+
+    function navigateToReportInCatalog({ reportId, reportName, workspaceId }) {
+        if (!workspaceId || !reportId) return;
+        pendingReportIdFromUrl = reportId;
+        pendingReportNameFromUrl = reportName || null;
+        selectedReportId = reportId;
+        navigatingFromFindReport = true;
+
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.set('workspace', workspaceId);
+            url.searchParams.set('report', reportId);
+            if (reportName) url.searchParams.set('reportName', reportName);
+            url.searchParams.delete('status');
+            url.searchParams.delete('folder');
+            url.searchParams.delete('folder_id');
+            window.history.replaceState({}, '', url.pathname + url.search + (url.hash || ''));
+        } catch (e) { /* ignore */ }
+
+        // Same workspace already open — just re-apply report filter after ensure load
+        if (currentWorkspaceId === workspaceId) {
+            navigatingFromFindReport = false;
+            if (reports && reports.length) {
+                applyReportFilter(reportId, { fromUrl: true, syncSelect: true });
+            } else {
+                loadReports();
+            }
+            return;
+        }
+
+        // Set workspace dropdown → onWorkspaceChange → loadReports → populateReportSelect applies filter
+        if (window.jQuery && $('#workspaceSelect').length) {
+            const exists = allWorkspaces.some((w) => w.id === workspaceId)
+                || $('#workspaceSelect option').filter(function () { return this.value === workspaceId; }).length > 0;
+            if (!exists) {
+                showAlert('warning', 'Workspace for that report is not in your accessible list.');
+                navigatingFromFindReport = false;
+                return;
+            }
+            $('#workspaceSelect').val(workspaceId).trigger('change');
+        } else {
+            const ws = document.getElementById('workspaceSelect');
+            if (ws) {
+                ws.value = workspaceId;
+                onWorkspaceChange();
+            }
         }
     }
 

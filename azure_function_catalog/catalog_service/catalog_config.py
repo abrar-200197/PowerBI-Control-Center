@@ -81,6 +81,7 @@ SHAREPOINT_PUBLISH_FILES = [
     "ui_home_index.json",
     "ui_impact_tables.json",
     "ui_impact_reports.json",
+    "ui_report_directory.json",
 ]
 
 # Ops snapshot tuning (batch job)
@@ -146,6 +147,7 @@ BROWSER_ALLOWED_CATALOG_FILES = frozenset({
     "ui_impact_tables.json",
     # Grid list only is safe; API strips detailsByReportId before browser use
     "ui_impact_reports.json",
+    "ui_report_directory.json",
 })
 
 

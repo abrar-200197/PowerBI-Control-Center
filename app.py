@@ -845,15 +845,26 @@ def api_catalog_refresh():
         except Exception:
             pass
 
-        # Ensure Home KPI detail lists exist (older SP packs lack detailLists)
+        # Ensure Home KPI detail lists + report directory exist (older SP packs may lack them)
         home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
-        if cat and not home_has_details:
+        report_dir = None
+        try:
+            report_dir = catalog_service.get_json('ui_report_directory.json')
+        except Exception:
+            report_dir = None
+        need_home_rebuild = cat and (
+            not home_has_details
+            or not report_dir
+            or not isinstance((report_dir or {}).get('rows'), list)
+        )
+        if need_home_rebuild:
             try:
                 catalog_service._ensure_thin_home_pack(cat)
                 home = catalog_service.get_json('ui_home_index.json')
                 home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
+                report_dir = catalog_service.get_json('ui_report_directory.json')
             except Exception as exc:
-                print(f"⚠️ thin home pack rebuild after refresh: {exc}")
+                print(f"⚠️ thin home/report-directory pack rebuild after refresh: {exc}")
 
         # Drop in-process /api/reports shells so next load uses freshly pulled catalog
         cleared_reports = 0
@@ -871,6 +882,7 @@ def api_catalog_refresh():
             'success': True,
             'ui_home_index': bool(home),
             'ui_home_detailLists': home_has_details,
+            'ui_report_directory': bool(report_dir and (report_dir.get('rows') is not None)),
             'ui_impact_tables': bool(tables),
             'ui_impact_reports': bool(impact_reports),
             'workspace_catalog': bool(cat),
@@ -1014,6 +1026,54 @@ def api_catalog_impact_table_detail():
                 'workspaceCount': len({d.get('workspaceId') for d in datasets if d.get('workspaceId')}),
             }
         return jsonify({'success': True, 'table': entry})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/catalog/reports/search')
+@login_required
+def api_catalog_reports_search():
+    """
+    Reverse search: report name → workspace(s).
+    Thin catalog directory (not full workspace_catalog in browser).
+    ?q=wanek&limit=40
+    """
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
+    try:
+        q = (request.args.get('q') or request.args.get('query') or '').strip()
+        try:
+            limit = int(request.args.get('limit') or 50)
+        except Exception:
+            limit = 50
+        allowed = _user_allowed_workspace_ids()
+        result = catalog_service.search_reports(
+            query=q,
+            allowed_workspace_ids=allowed if allowed is not None else None,
+            limit=limit,
+        )
+        # Compact wire format
+        rows = []
+        for r in result.get('rows') or []:
+            rows.append({
+                'id': r.get('reportId'),
+                'n': r.get('reportName') or '',
+                'wid': r.get('workspaceId') or '',
+                'wn': r.get('workspaceName') or '',
+                'did': r.get('datasetId') or '',
+            })
+        payload = {
+            'success': True,
+            'query': result.get('query') or q,
+            'count': len(rows),
+            'total': result.get('total'),
+            'capped': bool(result.get('capped')),
+            'rows': rows,
+            'source': 'ui_report_directory',
+        }
+        resp = jsonify(payload)
+        resp.headers['Cache-Control'] = 'private, max-age=60'
+        return resp
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
