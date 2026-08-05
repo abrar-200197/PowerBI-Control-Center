@@ -90,18 +90,43 @@ OPS_REFRESH_WORKERS = int(os.getenv("OPS_REFRESH_WORKERS", "8"))
 OPS_USAGE_DAY_WORKERS = int(os.getenv("OPS_USAGE_DAY_WORKERS", "6"))
 OPS_HTTP_TIMEOUT_SEC = int(os.getenv("OPS_HTTP_TIMEOUT_SEC", "30"))
 # Exclude internal / dev viewers from usage counts (comma-separated Azure AD group display names)
-# Members are resolved via Microsoft Graph (needs GroupMember.Read.All or Directory.Read.All)
+# Members are resolved via Microsoft Graph (needs GroupMember.Read.All + User.Read.All for UPNs)
 USAGE_EXCLUDE_GROUP_NAMES = [
     g.strip()
     for g in (os.getenv("USAGE_EXCLUDE_GROUP_NAMES") or "Sg_GCC_CentralAnalytics_Unv").split(",")
     if g.strip()
 ]
-# Optional hard-coded UPNs/emails (comma-separated) in addition to group members
-USAGE_EXCLUDE_USER_UPNS = [
-    u.strip().lower()
-    for u in (os.getenv("USAGE_EXCLUDE_USER_UPNS") or "").split(",")
-    if u.strip()
-]
+# Explicit UPNs/emails always excluded (Activity usually logs UPN, not Graph object id).
+# Default = Central Analytics SG roster. Override/extend via USAGE_EXCLUDE_USER_UPNS env
+# (comma-separated). Env values are MERGED with the default list.
+_DEFAULT_USAGE_EXCLUDE_USER_UPNS = (
+    "mahmed@ashleyfurnitureindia.com,"
+    "pshivanandam@ashleyfurnitureindia.com,"
+    "aramalingam@ashleyfurnitureindia.com,"
+    "mthanapathi@ashleyfurnitureindia.com,"
+    "ksambasivam@ashleyfurnitureindia.com,"
+    "danandkumar@ashleyfurnitureindia.com,"
+    "jravikumar@ashleyfurnitureindia.com,"
+    "kviswanathan@ashleyfurnitureindia.com,"
+    "ychandran@ashleyfurnitureindia.com,"
+    "nkathiresan@ashleyfurnitureindia.com,"
+    # Same person often appears as @ashleyfurniture.com in Activity Events
+    "mahmed@ashleyfurniture.com"
+)
+USAGE_EXCLUDE_USER_UPNS = sorted(
+    {
+        u.strip().lower()
+        for u in (
+            [x for x in _DEFAULT_USAGE_EXCLUDE_USER_UPNS.split(",") if x.strip()]
+            + [
+                x.strip().lower()
+                for x in (os.getenv("USAGE_EXCLUDE_USER_UPNS") or "").split(",")
+                if x.strip()
+            ]
+        )
+        if u.strip()
+    }
+)
 
 # Catalog load mode — SharePoint is the source of truth.
 # Values other than sharepoint/off are coerced to sharepoint when SP is configured.
