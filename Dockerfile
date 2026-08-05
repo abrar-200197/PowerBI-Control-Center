@@ -1,56 +1,83 @@
-# Use Python 3.12 as specified in pyproject.toml
+﻿# Power BI Control Center — Azure App Service container
+# Base aligned with the known-good Azure "dockerfile", plus current app needs
+# (Gunicorn, Playwright Chromium for visual fallback, ODBC, longer timeouts).
 FROM python:3.12.10-bullseye
 
-# Set working directory
+# Bust layer cache when Azure Pipelines rebuilds
+ARG BUILD_DATE
+ARG BUILD_ID
+ENV BUILD_DATE=${BUILD_DATE}
+ENV BUILD_ID=${BUILD_ID}
+
 WORKDIR /app
 
-# Install system dependencies and Microsoft repository keys
-RUN apt-get update && apt-get install -y \
+# System packages: build tools, ODBC, curl/health, Chromium runtime libs
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    ca-certificates \
     gnupg2 \
     git \
     unixodbc \
-    unixodbc-dev
+    unixodbc-dev \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
+    libwayland-client0 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxext6 \
+    libx11-6 \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
 
-# Add Microsoft repository and keys
-RUN curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - \
-    && curl https://packages.microsoft.com/config/debian/11/prod.list > /etc/apt/sources.list.d/mssql-release.list \
-    && apt-get update
+# Microsoft ODBC Driver 17 (SQL tools optional path for scripts)
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add - \
+    && curl -fsSL https://packages.microsoft.com/config/debian/11/prod.list \
+        > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 mssql-tools \
+    && echo 'export PATH="$PATH:/opt/mssql-tools/bin"' >> /etc/bash.bashrc \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install ODBC Driver and tools with EULA acceptance
-RUN ACCEPT_EULA=Y apt-get install -y msodbcsql17 mssql-tools
-RUN echo 'export PATH="$PATH:/opt/mssql-tools/bin"' >> ~/.bashrc
+# Python deps first (better layer cache). requirements includes gunicorn + playwright.
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Copy only Requirements.txt first (for better caching)
-COPY requirements.txt requirements.txt
-RUN pip install -r requirements.txt
+# Chromium for Playwright visual metadata fallback (OS libs installed above).
+# Do NOT run playwright install-deps — it often fails on private Linux agents.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright \
+    && playwright install chromium \
+    && chmod -R a+rX /ms-playwright
 
-# Copy the rest of the application code
+# Application source
 COPY . .
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000
 
-# Azure Web Apps use PORT environment variable
-ENV PORT=8000
-
-# Expose the port (Azure will override this dynamically)
 EXPOSE 8000
 
-# # Command to run Streamlit with dynamic port binding
-# CMD streamlit run app.py \
-#     --server.port=$PORT \
-#     --server.address=0.0.0.0 \
-#     --server.headless=true \
-#     --server.enableCORS=false \
-#     --server.enableXsrfProtection=false
+# Prefer /health; fall back to / if older deployments lack the route
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/health || curl -fsS http://127.0.0.1:8000/ || exit 1
 
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-CMD curl -f http://localhost:8000/ || exit 1
-
-# Run application with Gunicorn
-# Increased timeout to 900 seconds (15 minutes) to handle large data operations
+# 15m timeout for large catalog / lineage work
 CMD ["gunicorn", "--bind=0.0.0.0:8000", "--timeout", "900", "--workers", "4", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
+
