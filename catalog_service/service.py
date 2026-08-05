@@ -436,12 +436,16 @@ class CatalogService:
         the full ~300MB catalog on each tab click (App Service timeout → HTML).
 
         metric:
-          workspaces | reports | inactive | orphaned | zero_views
+          workspaces | reports | inactive | orphaned | zero_views | failed_refresh
         """
         metric = (metric or "workspaces").strip().lower().replace("-", "_")
         if metric in ("zeroviews", "zero_view", "views"):
             metric = "zero_views"
-        if metric not in ("workspaces", "reports", "inactive", "orphaned", "zero_views"):
+        if metric in ("failed", "refresh_failed", "failedrefresh", "refresh_fail"):
+            metric = "failed_refresh"
+        if metric not in (
+            "workspaces", "reports", "inactive", "orphaned", "zero_views", "failed_refresh",
+        ):
             return {
                 "success": False,
                 "error": f"Unknown metric: {metric}",
@@ -466,6 +470,7 @@ class CatalogService:
                     "inactiveCount": int(w.get("inactiveCount") or 0),
                     "orphanedCount": int(w.get("orphanedCount") or 0),
                     "zeroViewsCount": int(w.get("zeroViewsCount") or 0),
+                    "failedRefreshCount": int(w.get("failedRefreshCount") or 0),
                 })
             rows.sort(key=lambda r: (r.get("workspaceName") or "").lower())
             return {
@@ -482,19 +487,25 @@ class CatalogService:
 
         # Report-level tabs: serve from thin pack detailLists (fast path)
         thin = self.get_json("ui_home_index.json")
-        if thin and isinstance(thin.get("detailLists"), dict):
+        lists = (thin or {}).get("detailLists") if isinstance(thin, dict) else None
+        if (
+            thin
+            and isinstance(lists, dict)
+            and metric in lists
+        ):
             return self._home_details_from_thin(
                 thin, metric, allowed_workspace_ids, inactive_days, limit, USAGE_LOOKBACK_DAYS
             )
 
-        # Thin pack exists but is older (no detailLists) — rebuild once in-process
-        if thin is not None:
+        # Thin pack missing/older (no detailLists or missing this metric) — rebuild once
+        if thin is not None or metric in ("failed_refresh", "zero_views"):
             try:
                 cat = self.get_workspace_catalog()
                 if cat:
                     self._ensure_thin_home_pack(cat)
                     thin2 = (_memory.get("ui_home_index.json") or {}).get("data")
-                    if thin2 and isinstance(thin2.get("detailLists"), dict):
+                    lists2 = (thin2 or {}).get("detailLists") if isinstance(thin2, dict) else None
+                    if thin2 and isinstance(lists2, dict) and metric in lists2:
                         return self._home_details_from_thin(
                             thin2, metric, allowed_workspace_ids, inactive_days, limit, USAGE_LOOKBACK_DAYS
                         )
@@ -563,6 +574,7 @@ class CatalogService:
                 _is_inactive,
                 _is_orphaned,
                 _is_zero_views,
+                _is_refresh_failed,
             )
         except Exception:
             def _is_inactive(report, ds, inactive_days, now):  # type: ignore
@@ -579,6 +591,9 @@ class CatalogService:
                     return int(vc) == 0
                 except Exception:
                     return False
+
+            def _is_refresh_failed(report, ds=None):  # type: ignore
+                return False
 
         cat = self.get_workspace_catalog()
         if not cat:
@@ -628,6 +643,14 @@ class CatalogService:
                             "viewCount": int(r.get("view_count") or 0),
                             "lastViewed": r.get("last_viewed"),
                         }
+                elif metric == "failed_refresh":
+                    include = _is_refresh_failed(r, ds)
+                    if include:
+                        extra = {
+                            "lastRefreshed": r.get("last_refreshed") or ds.get("last_refreshed"),
+                            "refreshStatus": r.get("last_refresh_status") or ds.get("last_refresh_status") or "Failed",
+                            "refreshNote": r.get("refresh_note") or ds.get("refresh_note") or "",
+                        }
                 if not include:
                     continue
                 rows.append({
@@ -666,17 +689,27 @@ class CatalogService:
     ) -> Dict[str, Any]:
         workspaces_out: List[Dict[str, Any]] = []
         total_reports = total_inactive = total_orphaned = total_active = total_zero_views = 0
+        total_failed_refresh = 0
         pack_has_zero = any(
             "zeroViewsCount" in (w or {}) for w in (thin.get("workspaces") or [])
         )
+        pack_has_failed = any(
+            "failedRefreshCount" in (w or {}) for w in (thin.get("workspaces") or [])
+        )
         # Older packs lack zero-views; fill from full catalog when available (still server-side)
         zero_by_ws: Dict[str, int] = {}
+        failed_by_ws: Dict[str, int] = {}
         usage_days = thin.get("usageLookbackDays")
         if not pack_has_zero:
             try:
                 zero_by_ws, usage_days = self._zero_views_by_workspace(allowed_workspace_ids)
             except Exception as exc:
                 logger.warning("home zero-views enrich skipped: %s", exc)
+        if not pack_has_failed:
+            try:
+                failed_by_ws = self._failed_refresh_by_workspace(allowed_workspace_ids)
+            except Exception as exc:
+                logger.warning("home failed-refresh enrich skipped: %s", exc)
 
         for ws in thin.get("workspaces") or []:
             wid = ws.get("id")
@@ -692,11 +725,16 @@ class CatalogService:
                 zc = int(ws.get("zeroViewsCount") or 0)
             else:
                 zc = int(zero_by_ws.get(wid) or 0)
+            if pack_has_failed:
+                fc = int(ws.get("failedRefreshCount") or 0)
+            else:
+                fc = int(failed_by_ws.get(wid) or 0)
             total_reports += rc
             total_inactive += ic
             total_orphaned += oc
             total_active += ac
             total_zero_views += zc
+            total_failed_refresh += fc
             workspaces_out.append({
                 "id": wid,
                 "name": ws.get("name") or "",
@@ -705,6 +743,7 @@ class CatalogService:
                 "activeCount": ac,
                 "orphanedCount": oc,
                 "zeroViewsCount": zc,
+                "failedRefreshCount": fc,
                 "from_catalog": True,
             })
         workspaces_out.sort(key=lambda w: (w.get("name") or "").lower())
@@ -725,10 +764,39 @@ class CatalogService:
             "inactiveReports": total_inactive,
             "orphanedReports": total_orphaned,
             "zeroViewsReports": total_zero_views,
+            "failedRefreshReports": total_failed_refresh,
             "inactiveDaysThreshold": inactive_days,
             "usageLookbackDays": int(usage_days or 60),
             "workspaces": workspaces_out,
         }
+
+    def _failed_refresh_by_workspace(
+        self,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+    ) -> Dict[str, int]:
+        """Return {workspaceId: failedRefreshCount} from catalog last_refresh_status."""
+        from catalog_service.thin_packs import _is_refresh_failed
+
+        cat = self.get_workspace_catalog()
+        out: Dict[str, int] = {}
+        if not cat:
+            return out
+        datasets_map = cat.get("datasets") or {}
+        for ws in cat.get("workspaces") or []:
+            wid = ws.get("id")
+            if not wid:
+                continue
+            if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
+                continue
+            n = 0
+            for r in ws.get("reports") or []:
+                if str(r.get("name") or "").startswith("[App]"):
+                    continue
+                ds = datasets_map.get(r.get("datasetId") or "") or {}
+                if _is_refresh_failed(r, ds):
+                    n += 1
+            out[wid] = n
+        return out
 
     def _zero_views_by_workspace(
         self,
@@ -834,8 +902,20 @@ class CatalogService:
             except Exception:
                 return False
 
+        def _is_refresh_failed(report: Dict[str, Any], ds: Dict[str, Any]) -> bool:
+            status = str(
+                report.get("last_refresh_status")
+                or ds.get("last_refresh_status")
+                or report.get("refreshStatus")
+                or ""
+            ).strip().lower()
+            if not status:
+                return False
+            return status in ("failed", "failure") or status.startswith("fail")
+
         workspaces_out: List[Dict[str, Any]] = []
         total_reports = total_inactive = total_orphaned = total_active = total_zero_views = 0
+        total_failed_refresh = 0
 
         for ws in cat.get("workspaces") or []:
             wid = ws.get("id")
@@ -844,7 +924,7 @@ class CatalogService:
             if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
                 continue
 
-            ws_reports = ws_inactive = ws_orphaned = ws_zero = 0
+            ws_reports = ws_inactive = ws_orphaned = ws_zero = ws_failed = 0
             for r in ws.get("reports") or []:
                 if str(r.get("name") or "").startswith("[App]"):
                     continue
@@ -856,6 +936,8 @@ class CatalogService:
                     ws_orphaned += 1
                 if _is_zero_views(r):
                     ws_zero += 1
+                if _is_refresh_failed(r, ds):
+                    ws_failed += 1
 
             ws_active = max(0, ws_reports - ws_inactive)
             total_reports += ws_reports
@@ -863,6 +945,7 @@ class CatalogService:
             total_orphaned += ws_orphaned
             total_active += ws_active
             total_zero_views += ws_zero
+            total_failed_refresh += ws_failed
             workspaces_out.append({
                 "id": wid,
                 "name": ws.get("name") or "",
@@ -871,6 +954,7 @@ class CatalogService:
                 "activeCount": ws_active,
                 "orphanedCount": ws_orphaned,
                 "zeroViewsCount": ws_zero,
+                "failedRefreshCount": ws_failed,
                 "from_catalog": True,
             })
 
@@ -891,6 +975,7 @@ class CatalogService:
             "inactiveReports": total_inactive,
             "orphanedReports": total_orphaned,
             "zeroViewsReports": total_zero_views,
+            "failedRefreshReports": total_failed_refresh,
             "inactiveDaysThreshold": inactive_days,
             "usageLookbackDays": int(_uld),
             "workspaces": workspaces_out,

@@ -258,7 +258,7 @@
     /* KPI strip */
     .kpi-strip {
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-columns: repeat(6, minmax(0, 1fr));
         gap: 10px;
     }
 
@@ -363,6 +363,14 @@
         /* eye-off */
         -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24'/%3E%3Cpath d='M1 1l22 22'/%3E%3C/svg%3E");
         mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24'/%3E%3Cpath d='M1 1l22 22'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.fail {
+        background: #FFF5F5; color: #C53030;
+    }
+    .kpi-icon.fail::before {
+        /* x-circle */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M15 9l-6 6M9 9l6 6'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M15 9l-6 6M9 9l6 6'/%3E%3C/svg%3E");
     }
 
     .kpi-body { min-width: 0; }
@@ -597,6 +605,11 @@
         border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border));
     }
     .pill-inactive:hover { filter: brightness(1.05); }
+    .pill-failed {
+        background: color-mix(in srgb, #C53030 14%, var(--bg-surface));
+        color: #C53030;
+        border: 1px solid color-mix(in srgb, #C53030 30%, var(--border));
+    }
     .pill-inactive.zero {
         background: var(--bg-surface-2);
         color: var(--text-muted);
@@ -756,6 +769,11 @@
         border-color: #5C4030;
     }
     html[data-theme="dark"] .pill-inactive:hover { background: #4A3824; }
+    html[data-theme="dark"] .pill-failed {
+        background: #3B1F1F;
+        color: #FC8181;
+        border-color: #5C3030;
+    }
     html[data-theme="dark"] .pill-inactive.zero {
         background: #1F2A3A;
         color: var(--text-muted);
@@ -859,6 +877,14 @@
                 <div class="kpi-hint" id="zero-views-hint">0 views in last 60d</div>
             </div>
         </button>
+        <button type="button" class="kpi" role="tab" data-metric="failed_refresh" aria-selected="false" id="kpi-failed-refresh">
+            <div class="kpi-icon fail"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Refresh failed</div>
+                <div class="kpi-value" id="failed-refresh-reports"><span class="spinner"></span></div>
+                <div class="kpi-hint">Last refresh status Failed</div>
+            </div>
+        </button>
     </div>
 
     <div class="home-filter-reset" id="homeFilterReset">
@@ -932,6 +958,7 @@
     let totalInactiveReports = 0;
     let totalOrphanedReports = 0;
     let totalZeroViewsReports = 0;
+    let totalFailedRefreshReports = 0;
     let usageLookbackDays = 60;
     let inactiveDaysThreshold = 30;
     let catalogMeta = { source: null, opsEnrichedAt: null, generatedAt: null };
@@ -982,6 +1009,15 @@
             title: 'Zero-view reports',
             searchPh: 'Filter zero-view reports…',
             empty: 'No zero-view reports match your filter',
+            sorts: [
+                { v: 'workspace', t: 'Sort: Workspace' },
+                { v: 'name', t: 'Sort: Report name' },
+            ],
+        },
+        failed_refresh: {
+            title: 'Refresh failed reports',
+            searchPh: 'Filter failed-refresh reports…',
+            empty: 'No failed-refresh reports match your filter',
             sorts: [
                 { v: 'workspace', t: 'Sort: Workspace' },
                 { v: 'name', t: 'Sort: Report name' },
@@ -1123,20 +1159,24 @@
                 if (ws.inactiveCount == null) ws.inactiveCount = 0;
                 if (ws.orphanedCount == null) ws.orphanedCount = 0;
                 if (ws.zeroViewsCount == null) ws.zeroViewsCount = 0;
+                if (ws.failedRefreshCount == null) ws.failedRefreshCount = 0;
                 if (ws.activeCount == null) ws.activeCount = 0;
             });
             totalReports = workspaces.reduce((s, w) => s + (w.reportCount || 0), 0);
             totalInactiveReports = 0;
             totalOrphanedReports = 0;
             totalZeroViewsReports = 0;
+            totalFailedRefreshReports = 0;
             const elR = document.getElementById('total-reports');
             const elI = document.getElementById('inactive-reports');
             const elO = document.getElementById('orphaned-reports');
             const elZ = document.getElementById('zero-views-reports');
+            const elF = document.getElementById('failed-refresh-reports');
             if (elR) elR.textContent = totalReports || '—';
             if (elI) elI.textContent = '—';
             if (elO) elO.textContent = '—';
             if (elZ) elZ.textContent = '—';
+            if (elF) elF.textContent = '—';
             const note = document.getElementById('home-footer-note');
             if (note) {
                 note.textContent = 'Catalog offline or app needs restart. Home uses thin server APIs (SharePoint source of truth, server disk cache) — never downloads the large catalog into the browser.';
@@ -1192,6 +1232,7 @@
                     ws.inactiveCount = ws.inactiveCount ?? 0;
                     ws.orphanedCount = ws.orphanedCount ?? 0;
                     ws.zeroViewsCount = ws.zeroViewsCount ?? 0;
+                    ws.failedRefreshCount = ws.failedRefreshCount ?? 0;
                     ws.activeCount = ws.activeCount ?? 0;
                     return;
                 }
@@ -1200,6 +1241,7 @@
                 ws.inactiveCount = row.inactiveCount || 0;
                 ws.orphanedCount = row.orphanedCount || 0;
                 ws.zeroViewsCount = row.zeroViewsCount || 0;
+                ws.failedRefreshCount = row.failedRefreshCount || 0;
                 ws.activeCount = row.activeCount != null ? row.activeCount : Math.max(0, (ws.reportCount || 0) - (ws.inactiveCount || 0));
             });
 
@@ -1209,6 +1251,9 @@
             totalZeroViewsReports = data.zeroViewsReports != null
                 ? data.zeroViewsReports
                 : workspaces.reduce((s, w) => s + (w.zeroViewsCount || 0), 0);
+            totalFailedRefreshReports = data.failedRefreshReports != null
+                ? data.failedRefreshReports
+                : workspaces.reduce((s, w) => s + (w.failedRefreshCount || 0), 0);
             if (data.usageLookbackDays) setZeroViewsHint(data.usageLookbackDays);
 
             document.getElementById('total-reports').textContent = totalReports;
@@ -1216,6 +1261,8 @@
             document.getElementById('orphaned-reports').textContent = totalOrphanedReports;
             const elZ = document.getElementById('zero-views-reports');
             if (elZ) elZ.textContent = totalZeroViewsReports;
+            const elF = document.getElementById('failed-refresh-reports');
+            if (elF) elF.textContent = totalFailedRefreshReports;
 
             catalogMeta = {
                 source: data.source || 'catalog',
@@ -1261,6 +1308,7 @@
             inactiveCount: w.inactiveCount,
             orphanedCount: w.orphanedCount,
             zeroViewsCount: w.zeroViewsCount,
+            failedRefreshCount: w.failedRefreshCount,
             activeCount: w.activeCount,
         }));
 
@@ -1378,6 +1426,15 @@
                 <th>Report</th>
                 <th>Workspace</th>
                 <th class="col-num">Days</th>
+                <th class="col-action"></th>
+            </tr>`;
+            return;
+        }
+        if (metric === 'failed_refresh') {
+            head.innerHTML = `<tr>
+                <th>Report</th>
+                <th>Workspace</th>
+                <th>Status</th>
                 <th class="col-action"></th>
             </tr>`;
             return;
@@ -1743,7 +1800,7 @@
         const tbody = document.getElementById('workspace-list');
         if (!tbody) return;
         const emptyMsg = METRIC_META[metric]?.empty || 'No rows match your filter';
-        const colSpan = metric === 'inactive' ? 4 : 3;
+        const colSpan = (metric === 'inactive' || metric === 'failed_refresh') ? 4 : 3;
         if (!list || list.length === 0) {
             tbody.innerHTML = `<tr><td colspan="${colSpan}" class="empty-state">
                 <div class="empty-state-icon"></div>
@@ -1779,6 +1836,22 @@
                     </td>
                     <td><div class="ws-name" style="font-weight:500">${escapeHtml(wname)}</div></td>
                     <td class="col-num"><span class="pill pill-inactive">${escapeHtml(daysLabel)}</span></td>
+                    <td class="col-action"><a class="open-link" href="${escapeHtml(href)}">Open</a></td>
+                </tr>`;
+            }
+            if (metric === 'failed_refresh') {
+                const status = row.refreshStatus || 'Failed';
+                const lr = row.lastRefreshed
+                    ? (() => { try { return new Date(row.lastRefreshed).toLocaleString(); } catch (e) { return String(row.lastRefreshed); } })()
+                    : '';
+                const note = (row.refreshNote || '').trim();
+                const sub = [lr ? `Last attempt: ${lr}` : '', note].filter(Boolean).join(' · ');
+                return `<tr data-href="${escapeHtml(href)}" title="${escapeHtml(rname)}">
+                    <td><div class="ws-name">${escapeHtml(rname)}</div>
+                        ${sub ? `<div class="ws-id">${escapeHtml(sub)}</div>` : ''}
+                    </td>
+                    <td><div class="ws-name" style="font-weight:500">${escapeHtml(wname)}</div></td>
+                    <td><span class="pill pill-failed">${escapeHtml(String(status))}</span></td>
                     <td class="col-action"><a class="open-link" href="${escapeHtml(href)}">Open</a></td>
                 </tr>`;
             }

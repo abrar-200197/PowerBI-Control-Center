@@ -92,6 +92,23 @@ def _is_zero_views(report: Dict[str, Any]) -> bool:
         return False
 
 
+def _is_refresh_failed(report: Dict[str, Any], ds: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    True when last refresh status is Failed (report or dataset ops).
+    Matches Report Catalog badge normalization (failed / failure).
+    """
+    ds = ds or {}
+    status = str(
+        report.get("last_refresh_status")
+        or ds.get("last_refresh_status")
+        or report.get("refreshStatus")
+        or ""
+    ).strip().lower()
+    if not status:
+        return False
+    return status in ("failed", "failure") or status.startswith("fail")
+
+
 def _detail_row(
     r: Dict[str, Any],
     wid: str,
@@ -124,13 +141,14 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
     inactive_rows: List[Dict[str, Any]] = []
     orphaned_rows: List[Dict[str, Any]] = []
     zero_views_rows: List[Dict[str, Any]] = []
-    total_r = total_i = total_o = total_a = total_zv = 0
+    failed_refresh_rows: List[Dict[str, Any]] = []
+    total_r = total_i = total_o = total_a = total_zv = total_fr = 0
     for ws in catalog.get("workspaces") or []:
         wid = ws.get("id")
         if not wid:
             continue
         wname = ws.get("name") or ""
-        rc = ic = oc = zc = 0
+        rc = ic = oc = zc = fc = 0
         for r in ws.get("reports") or []:
             if str(r.get("name") or "").startswith("[App]"):
                 continue
@@ -158,12 +176,20 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
                     "viewCount": int(r.get("view_count") or r.get("views") or 0),
                     "lastViewed": r.get("last_viewed"),
                 }))
+            if _is_refresh_failed(r, ds):
+                fc += 1
+                failed_refresh_rows.append(_detail_row(r, wid, wname, {
+                    "lastRefreshed": r.get("last_refreshed") or ds.get("last_refreshed"),
+                    "refreshStatus": r.get("last_refresh_status") or ds.get("last_refresh_status") or "Failed",
+                    "refreshNote": r.get("refresh_note") or ds.get("refresh_note") or "",
+                }))
         ac = max(0, rc - ic)
         total_r += rc
         total_i += ic
         total_o += oc
         total_a += ac
         total_zv += zc
+        total_fr += fc
         workspaces.append({
             "id": wid,
             "name": wname,
@@ -172,6 +198,7 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
             "activeCount": ac,
             "orphanedCount": oc,
             "zeroViewsCount": zc,
+            "failedRefreshCount": fc,
         })
     workspaces.sort(key=lambda w: (w.get("name") or "").lower())
 
@@ -203,6 +230,7 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
         "inactiveReports": total_i,
         "orphanedReports": total_o,
         "zeroViewsReports": total_zv,
+        "failedRefreshReports": total_fr,
         "workspaces": workspaces,
         # KPI tab detail lists (ACL-filter on the server)
         "detailLists": {
@@ -210,6 +238,7 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
             "inactive": _sort_inactive(inactive_rows),
             "orphaned": _sort_ws_name(orphaned_rows),
             "zero_views": _sort_ws_name(zero_views_rows),
+            "failed_refresh": _sort_ws_name(failed_refresh_rows),
         },
     }
 
