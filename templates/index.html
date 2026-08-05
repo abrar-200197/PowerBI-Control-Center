@@ -66,8 +66,9 @@
         color: var(--text);
     }
 
+    /* Default Select2 width — toolbar overrides below keep one row */
     .select2-container {
-        min-width: 200px !important;
+        min-width: 160px !important;
     }
 
     .controls {
@@ -75,27 +76,48 @@
         justify-content: space-between;
         align-items: center;
         margin-bottom: 12px;
-        gap: 12px;
-        flex-wrap: wrap;
+        gap: 10px;
+        flex-wrap: nowrap;
         background: var(--bg-surface);
         padding: 10px 14px;
         border-radius: 8px;
         border: 1px solid var(--border);
         box-shadow: var(--shadow-sm);
         color: var(--text);
+        overflow-x: auto;
     }
 
     .controls-left {
         display: flex;
-        gap: 12px;
+        gap: 8px;
         align-items: center;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+        flex: 1 1 auto;
+        min-width: 0;
     }
 
     .controls-right {
         display: flex;
         gap: 8px;
         align-items: center;
+        flex-wrap: nowrap;
+        flex: 0 0 auto;
+    }
+
+    /* Keep Select2 widgets compact so toolbar stays one row */
+    .controls-left .select2-container {
+        max-width: 220px;
+    }
+    .controls-left #findReportSelect + .select2-container {
+        min-width: 200px !important;
+        max-width: 260px;
+        width: 220px !important;
+    }
+    .controls-left #workspaceSelect + .select2-container,
+    .controls-left #folderSelect + .select2-container,
+    .controls-left #reportSelect + .select2-container {
+        min-width: 160px !important;
+        width: 180px !important;
     }
 
     select {
@@ -103,7 +125,7 @@
         border: 1px solid var(--border);
         border-radius: 6px;
         font-size: 12px;
-        min-width: 180px;
+        min-width: 140px;
         background: var(--input-bg);
         color: var(--text);
         font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -655,10 +677,6 @@
 
     <div class="controls">
         <div class="controls-left">
-            <!-- Reverse search: report name → workspace (catalog thin API) -->
-            <select id="findReportSelect" style="min-width:280px;">
-                <option value=""></option>
-            </select>
             <select id="workspaceSelect" onchange="onWorkspaceChange()">
                 <option value="">Loading workspaces...</option>
             </select>
@@ -667,6 +685,10 @@
             </select>
             <select id="reportSelect" onchange="onReportChange()">
                 <option value="">Select a report...</option>
+            </select>
+            <!-- Reverse search last: report name → workspace (catalog thin API) -->
+            <select id="findReportSelect">
+                <option value=""></option>
             </select>
             <span id="statusFilterBadge" style="display: none;"></span>
             <button type="button" class="btn btn-secondary" id="clearFiltersToolbarBtn" title="Clear folder / status / report filters" style="display:none; height:34px; padding:0 12px; font-size:12px;">
@@ -871,7 +893,7 @@
         $('#workspaceSelect').select2({
             placeholder: 'Select a workspace...',
             allowClear: false,
-            width: '250px',
+            width: '180px',
             minimumResultsForSearch: 0  // Always show search box
         });
 
@@ -879,7 +901,7 @@
         $('#folderSelect').select2({
             placeholder: 'All Folders',
             allowClear: false,
-            width: '250px',
+            width: '160px',
             minimumResultsForSearch: 0  // Always show search box
         });
 
@@ -887,7 +909,7 @@
         $('#reportSelect').select2({
             placeholder: 'Select a report...',
             allowClear: false,
-            width: '250px',
+            width: '180px',
             minimumResultsForSearch: 0  // Always show search box
         });
 
@@ -1106,7 +1128,7 @@
         $('#findReportSelect').select2({
             placeholder: 'Find report by name…',
             allowClear: true,
-            width: '300px',
+            width: '220px',
             minimumInputLength: 2,
             ajax: {
                 delay: 280,
