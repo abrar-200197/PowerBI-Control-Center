@@ -1,0 +1,1975 @@
+﻿{% extends "base.html" %}
+
+{% block title %}Home - Power BI Control Center{% endblock %}
+{% block page_heading %}Home{% endblock %}
+{% block page_subtitle %}Workspace health at a glance{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* ===== Mercury-style post-login: fixed viewport, wheel = zoom into app ===== */
+    .mercury-landing {
+        position: fixed;
+        inset: 0;
+        z-index: 99990;
+        overflow: hidden; /* no page scroll — wheel drives zoom */
+        /* Solid mist base — covers Home underneath without hiding it in DOM */
+        background: #2a3540;
+        color: #fff;
+        opacity: 1;
+        transition: none;
+        touch-action: none;
+        user-select: none;
+    }
+    /* Fast handoff — do not linger with Home bleeding under a laptop crop */
+    .mercury-landing.is-finishing {
+        transition: opacity 0.22s ease;
+        opacity: 0 !important;
+        pointer-events: none;
+    }
+    .mercury-landing.is-done {
+        opacity: 0 !important;
+        pointer-events: none;
+        display: none !important;
+    }
+    /* Full-bleed forest hero — single HQ still + canvas crop dive (smooth) */
+    .mercury-scene {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        overflow: hidden;
+        background-color: #2a3540;
+        background-image: url("/static/img/mercury-hero.jpg?v=4");
+        background-repeat: no-repeat;
+        background-position: 50% 52%;
+        background-size: cover;
+        transition: none;
+    }
+    /* Canvas redraws HQ crops each frame — sharp deep zoom, one image loaded */
+    .mercury-scene-canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+        z-index: 2;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateZ(0);
+    }
+    .mercury-scene.has-canvas .mercury-scene-canvas {
+        opacity: 1;
+    }
+    /* Img is poster + CSS-scale fallback if canvas can't init */
+    .mercury-scene-photo {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: 50% 52%;
+        display: block;
+        opacity: 1;
+        pointer-events: none;
+        z-index: 1;
+        image-rendering: high-quality;
+        transform: translateZ(0);
+        transform-origin: 50% 57%;
+    }
+    .mercury-scene.has-canvas .mercury-scene-photo {
+        opacity: 0;
+    }
+    .mercury-landing.is-finishing .mercury-scene-photo {
+        transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    /* Light vignette for headline readability */
+    .mercury-scene::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+            radial-gradient(ellipse 70% 45% at 50% 28%,
+                rgba(20, 28, 36, 0.28) 0%,
+                rgba(20, 28, 36, 0.0) 70%),
+            linear-gradient(180deg,
+                rgba(18, 24, 32, 0.18) 0%,
+                rgba(18, 24, 32, 0.0) 30%,
+                rgba(18, 24, 32, 0.0) 70%,
+                rgba(10, 14, 20, 0.32) 100%);
+        transition: opacity 0.4s ease;
+    }
+    .mercury-landing.is-deep .mercury-scene::after {
+        opacity: 0;
+    }
+    .mercury-chrome {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        pointer-events: none;
+    }
+    .mercury-nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 28px;
+        pointer-events: auto;
+    }
+    .mercury-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        font-size: 12px;
+        text-transform: uppercase;
+        color: #fff;
+        text-shadow: 0 1px 10px rgba(0,0,0,0.4);
+    }
+    .mercury-brand .mark {
+        width: 28px; height: 28px;
+        border-radius: 50%;
+        background:
+            radial-gradient(circle at 35% 35%, #e2e8f0, #94a3b8 45%, #475569 100%);
+        box-shadow: 0 0 0 2px rgba(255,255,255,0.35), 0 4px 14px rgba(0,0,0,0.3);
+    }
+    .mercury-skip {
+        border: 1px solid rgba(255,255,255,0.4);
+        background: rgba(15, 23, 42, 0.28);
+        color: #fff;
+        border-radius: 999px;
+        padding: 8px 16px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        backdrop-filter: blur(10px);
+        pointer-events: auto;
+    }
+    .mercury-skip:hover { background: rgba(15, 23, 42, 0.5); }
+    .mercury-hero-copy {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        /* Sit in misty sky band above the desk — like mercury.com */
+        padding: clamp(72px, 14vh, 140px) 24px 0;
+        text-align: center;
+        transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    .mercury-title {
+        margin: 0 0 14px;
+        font-size: clamp(36px, 5.4vw, 58px);
+        font-weight: 560;
+        letter-spacing: -0.03em;
+        line-height: 1.06;
+        color: #fff;
+        text-shadow: 0 2px 32px rgba(0,0,0,0.35);
+        max-width: 18ch;
+    }
+    .mercury-sub {
+        margin: 0;
+        max-width: 38ch;
+        font-size: clamp(15px, 1.7vw, 18px);
+        line-height: 1.45;
+        font-weight: 450;
+        color: rgba(255,255,255,0.92);
+        text-shadow: 0 1px 16px rgba(0,0,0,0.3);
+    }
+    .mercury-scroll-hint {
+        position: absolute;
+        bottom: 28px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 3;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.88);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        text-shadow: 0 1px 10px rgba(0,0,0,0.45);
+        transition: opacity 0.2s ease;
+        pointer-events: none;
+    }
+    .mercury-scroll-hint .chev {
+        width: 16px; height: 16px;
+        border-right: 2px solid rgba(255,255,255,0.9);
+        border-bottom: 2px solid rgba(255,255,255,0.9);
+        transform: rotate(45deg);
+        animation: mercuryBob 1.5s ease-in-out infinite;
+    }
+    @keyframes mercuryBob {
+        0%, 100% { transform: rotate(45deg) translate(0, 0); opacity: 0.65; }
+        50% { transform: rotate(45deg) translate(3px, 3px); opacity: 1; }
+    }
+    /* Landing is fixed+opaque over the app — do NOT hide Home in the DOM.
+       Hiding caused a blank slate if the hero image failed to paint. */
+    body.mercury-landing-open {
+        overflow: hidden !important;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .mercury-landing { transition: none !important; }
+        .mercury-landing.is-finishing { transition: none !important; }
+        .mercury-scroll-hint .chev { animation: none !important; }
+        .mercury-scene { transform: none !important; transition: none !important; }
+        .mercury-scene-photo { transform: none !important; }
+        .mercury-scene-canvas { display: none !important; }
+        .mercury-scene.has-canvas .mercury-scene-photo { opacity: 1 !important; }
+    }
+    @media (max-width: 720px) {
+        .mercury-title { font-size: 30px; max-width: 14ch; }
+    }
+
+    /* Multi-filter clear chip */
+    .home-filter-reset {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 4px;
+    }
+    .home-filter-reset.is-on { display: flex; }
+    .home-filter-reset button {
+        border: 1px solid #90CDF4;
+        background: #EBF8FF;
+        color: #2B6CB0;
+        border-radius: 999px;
+        padding: 5px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .home-filter-reset button:hover { background: #BEE3F8; }
+    .home-filter-reset .hint { font-size: 12px; color: var(--text-muted); }
+
+    /* ===== Home: dense enterprise dashboard (no wasted scroll) ===== */
+    .home-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        /* Fill viewport under header so table scrolls internally */
+        min-height: calc(100vh - 140px);
+    }
+
+    /* KPI strip */
+    .kpi-strip {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 10px;
+    }
+
+    .kpi {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 64px;
+        box-shadow: var(--shadow-sm);
+        color: var(--text);
+        cursor: pointer;
+        transition: border-color .15s ease, box-shadow .15s ease, transform .12s ease, background .15s ease;
+        user-select: none;
+        text-align: left;
+        width: 100%;
+        font: inherit;
+    }
+    .kpi:hover {
+        border-color: color-mix(in srgb, var(--info) 45%, var(--border));
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+    }
+    .kpi:focus-visible {
+        outline: 2px solid var(--info);
+        outline-offset: 2px;
+    }
+    .kpi.is-active {
+        border-color: var(--info);
+        background: color-mix(in srgb, var(--info) 8%, var(--bg-surface));
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--info) 35%, transparent), var(--shadow-sm);
+        transform: translateY(-1px);
+    }
+    .panel.is-emphasized {
+        border-color: color-mix(in srgb, var(--info) 28%, var(--border));
+        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.06);
+    }
+    .panel.is-emphasized .panel-title h2 {
+        font-size: 16px;
+    }
+
+    .kpi-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        position: relative;
+    }
+    .kpi-icon::before {
+        content: '';
+        width: 18px;
+        height: 18px;
+        background-color: currentColor;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+    }
+    .kpi-icon.ws {
+        background: #EBF8FF; color: #2B6CB0;
+        /* folder */
+    }
+    .kpi-icon.ws::before {
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.rp {
+        background: #F0FFF4; color: #276749;
+    }
+    .kpi-icon.rp::before {
+        /* chart bars */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V9M10 19V5M16 19v-7M22 19H2'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V9M10 19V5M16 19v-7M22 19H2'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.in {
+        background: #FFFAF0; color: #C05621;
+    }
+    .kpi-icon.in::before {
+        /* alert triangle */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9L1.8 18a2 2 0 001.7 3h16.9a2 2 0 001.7-3L12.7 3.9a2 2 0 00-3.4 0z'/%3E%3Cpath d='M12 9v4M12 17h.01'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9L1.8 18a2 2 0 001.7 3h16.9a2 2 0 001.7-3L12.7 3.9a2 2 0 00-3.4 0z'/%3E%3Cpath d='M12 9v4M12 17h.01'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.or {
+        background: #FAF5FF; color: #6B46C1;
+    }
+    .kpi-icon.or::before {
+        /* user-x */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M17 8l5 5M22 8l-5 5'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M17 8l5 5M22 8l-5 5'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.zv {
+        background: #E6FFFA; color: #285E61;
+    }
+    .kpi-icon.zv::before {
+        /* eye-off */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24'/%3E%3Cpath d='M1 1l22 22'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24'/%3E%3Cpath d='M1 1l22 22'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.fail {
+        background: #FFF5F5; color: #C53030;
+    }
+    .kpi-icon.fail::before {
+        /* x-circle */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M15 9l-6 6M9 9l6 6'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M15 9l-6 6M9 9l6 6'/%3E%3C/svg%3E");
+    }
+
+    .kpi-body { min-width: 0; }
+    .kpi-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        line-height: 1.2;
+    }
+    .kpi-value {
+        font-size: 22px;
+        font-weight: 700;
+        color: var(--text-strong);
+        line-height: 1.25;
+        font-variant-numeric: tabular-nums;
+    }
+    .kpi-value .spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--border);
+        border-top-color: var(--info);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        vertical-align: middle;
+    }
+    .kpi-hint {
+        font-size: 11px;
+        color: var(--text-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* Panel */
+    .panel {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: var(--shadow-sm);
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        color: var(--text);
+    }
+
+    .panel-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border-soft);
+        background: var(--bg-surface-2);
+        flex-wrap: wrap;
+    }
+
+    .panel-title {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+    }
+    .panel-title h2 {
+        font-size: 13px;
+        font-weight: 650;
+        color: var(--text-strong);
+        margin: 0;
+    }
+    .panel-meta {
+        font-size: 11px;
+        color: var(--text-muted);
+    }
+
+    .panel-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .search-box {
+        position: relative;
+    }
+    .search-box input {
+        width: 220px;
+        max-width: 42vw;
+        height: 32px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0 10px 0 30px;
+        font-size: 12px;
+        color: var(--text);
+        background-color: var(--input-bg);
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='none' stroke='%2394A3B8' stroke-width='2' viewBox='0 0 24 24'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3-3'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: 10px center;
+        outline: none;
+    }
+    .search-box input:focus {
+        border-color: var(--info);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--info) 20%, transparent);
+    }
+
+    .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--bg-surface);
+        font-size: 11px;
+        color: var(--text);
+        font-weight: 500;
+    }
+    .chip .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--success);
+    }
+    .chip.muted .dot { background: var(--text-muted); }
+
+    .sort-select {
+        height: 32px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0 8px;
+        font-size: 12px;
+        color: var(--text);
+        background: var(--input-bg);
+    }
+
+    /* Table — scrolls inside panel so page stays above the fold */
+    .table-scroll {
+        overflow: auto;
+        flex: 1;
+        min-height: 240px;
+        max-height: calc(100vh - 250px);
+    }
+
+    .ws-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 13px;
+    }
+
+    .ws-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: var(--bg-surface-2);
+        border-bottom: 1px solid var(--border);
+        padding: 8px 14px;
+        text-align: left;
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        white-space: nowrap;
+    }
+
+    .ws-table tbody td {
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: middle;
+        color: var(--text);
+    }
+
+    .ws-table tbody tr {
+        transition: background 0.12s ease;
+        cursor: pointer;
+        background: var(--bg-surface);
+    }
+    .ws-table tbody tr:hover {
+        background: var(--table-hover);
+    }
+    .ws-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .ws-name {
+        font-weight: 600;
+        color: var(--text-strong);
+        font-size: 13px;
+        line-height: 1.3;
+    }
+    .ws-id {
+        display: none; /* hide GUIDs by default — less noise */
+        font-size: 10px;
+        color: var(--text-muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin-top: 2px;
+    }
+    tr:hover .ws-id { display: block; } /* reveal on hover */
+
+    .num {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        color: var(--text-strong);
+    }
+
+    .pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 36px;
+        height: 24px;
+        padding: 0 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 650;
+        text-decoration: none;
+        font-variant-numeric: tabular-nums;
+    }
+    .pill-active {
+        background: var(--chip-bg);
+        color: var(--text-strong);
+    }
+    .pill-active:hover { background: var(--table-hover); }
+    .pill-inactive {
+        background: color-mix(in srgb, var(--warning) 16%, var(--bg-surface));
+        color: var(--text-strong);
+        border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border));
+    }
+    .pill-inactive:hover { filter: brightness(1.05); }
+    .pill-failed {
+        background: color-mix(in srgb, #C53030 14%, var(--bg-surface));
+        color: #C53030;
+        border: 1px solid color-mix(in srgb, #C53030 30%, var(--border));
+    }
+    .pill-inactive.zero {
+        background: var(--bg-surface-2);
+        color: var(--text-muted);
+        border-color: var(--border-soft);
+    }
+
+    html[data-theme="dark"] .kpi-icon.ws { background: #0c2a43; color: #63b3ed; }
+    html[data-theme="dark"] .kpi-icon.rp { background: #0f2e22; color: #68d391; }
+    html[data-theme="dark"] .kpi-icon.in { background: #3d2e12; color: #f6ad55; }
+    html[data-theme="dark"] .kpi-icon.or { background: #2a1f4a; color: #b794f4; }
+    html[data-theme="dark"] .kpi-icon.zv { background: #1a3a3a; color: #4fd1c5; }
+    html[data-theme="dark"] .home-filter-reset button {
+        background: #0c2a43; color: #90cdf4; border-color: #2b6cb0;
+    }
+    html[data-theme="dark"] .home-filter-reset button:hover { background: #1a365d; }
+
+    .open-link {
+        font-size: 12px;
+        font-weight: 600;
+        color: #3182CE;
+        text-decoration: none;
+        padding: 4px 8px;
+        border-radius: 4px;
+    }
+    .open-link:hover {
+        background: #EBF8FF;
+        text-decoration: underline;
+    }
+
+    .col-num { width: 110px; text-align: center !important; }
+    .col-num .pill { margin: 0 auto; }
+    .col-action { width: 72px; text-align: right !important; }
+
+    .loading-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid #E2E8F0;
+        border-top-color: #3182CE;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .empty-state {
+        text-align: center;
+        padding: 48px 16px;
+        color: #718096;
+        font-size: 13px;
+    }
+    .empty-state-icon { font-size: 28px; margin-bottom: 8px; opacity: 0.7; }
+
+    .footer-note {
+        font-size: 11px;
+        color: #A0AEC0;
+        padding: 0 2px;
+    }
+
+    /* Home-only: compress page chrome so KPIs + table fit above the fold */
+    .main-wrapper .header { padding: 14px 28px; }
+    .main-wrapper .header-left h1 { font-size: 18px; margin-bottom: 2px; }
+    .main-wrapper .header-subtitle { font-size: 12px; margin-top: 0; }
+    .main-wrapper .content { padding: 16px 28px 18px; }
+    .main-wrapper .user-name { padding: 6px 12px; }
+    .main-wrapper .logout-btn { padding: 6px 14px; }
+
+    /* ===== Dark theme — high contrast text/surfaces ===== */
+    html[data-theme="dark"] .kpi {
+        background: var(--bg-surface);
+        border-color: var(--border);
+        box-shadow: var(--shadow-sm);
+    }
+    html[data-theme="dark"] .kpi:hover {
+        border-color: #2B6CB0;
+        background: #1A2332;
+    }
+    html[data-theme="dark"] .kpi.is-active {
+        border-color: #63B3ED;
+        background: #0c2a43;
+        box-shadow: 0 0 0 1px rgba(99, 179, 237, 0.35);
+    }
+    html[data-theme="dark"] .panel.is-emphasized {
+        border-color: #2B6CB0;
+    }
+    html[data-theme="dark"] .kpi-label { color: var(--text-muted); }
+    html[data-theme="dark"] .kpi-value { color: var(--text-strong); }
+    html[data-theme="dark"] .kpi-hint { color: var(--text-muted); }
+    html[data-theme="dark"] .kpi-icon.ws { background: #1E3A5F; color: #90CDF4; }
+    html[data-theme="dark"] .kpi-icon.rp { background: #1C3D2E; color: #9AE6B4; }
+    html[data-theme="dark"] .kpi-icon.in { background: #3D2E1C; color: #F6AD55; }
+    html[data-theme="dark"] .kpi-icon.or { background: #2D1F45; color: #D6BCFA; }
+    html[data-theme="dark"] .kpi-icon.zv { background: #234E52; color: #81E6D9; }
+    html[data-theme="dark"] .kpi-value .spinner,
+    html[data-theme="dark"] .loading-spinner {
+        border-color: var(--border);
+        border-top-color: #63B3ED;
+    }
+
+    html[data-theme="dark"] .panel {
+        background: var(--bg-surface);
+        border-color: var(--border);
+    }
+    html[data-theme="dark"] .panel-toolbar {
+        background: var(--bg-surface-2);
+        border-bottom-color: var(--border);
+    }
+    html[data-theme="dark"] .panel-title h2 { color: var(--text-strong); }
+    html[data-theme="dark"] .panel-meta { color: var(--text-muted); }
+
+    html[data-theme="dark"] .search-box input {
+        background-color: var(--input-bg);
+        color: var(--text-strong);
+        border-color: var(--border);
+    }
+    html[data-theme="dark"] .search-box input::placeholder { color: var(--text-muted); }
+    html[data-theme="dark"] .search-box input:focus {
+        border-color: #63B3ED;
+        box-shadow: 0 0 0 3px rgba(99, 179, 237, 0.2);
+    }
+    html[data-theme="dark"] .sort-select {
+        background: var(--input-bg);
+        color: var(--text-strong);
+        border-color: var(--border);
+    }
+    html[data-theme="dark"] .chip {
+        background: var(--bg-surface-2);
+        border-color: var(--border);
+        color: var(--text);
+    }
+    html[data-theme="dark"] .chip.muted .dot { background: var(--text-muted); }
+
+    html[data-theme="dark"] .ws-table thead th {
+        background: var(--bg-surface-2);
+        border-bottom-color: var(--border);
+        color: var(--text-muted);
+    }
+    html[data-theme="dark"] .ws-table tbody td {
+        border-bottom-color: var(--border-soft);
+        color: var(--text);
+    }
+    html[data-theme="dark"] .ws-table tbody tr:hover {
+        background: var(--table-hover);
+    }
+    html[data-theme="dark"] .ws-name { color: var(--text-strong); }
+    html[data-theme="dark"] .ws-id { color: var(--text-muted); }
+    html[data-theme="dark"] .num { color: var(--text-strong); }
+
+    html[data-theme="dark"] .pill-active {
+        background: #2D3A4D;
+        color: #E2E8F0;
+    }
+    html[data-theme="dark"] .pill-active:hover { background: #3D4F66; }
+    html[data-theme="dark"] .pill-inactive {
+        background: #3D2E1C;
+        color: #F6AD55;
+        border-color: #5C4030;
+    }
+    html[data-theme="dark"] .pill-inactive:hover { background: #4A3824; }
+    html[data-theme="dark"] .pill-failed {
+        background: #3B1F1F;
+        color: #FC8181;
+        border-color: #5C3030;
+    }
+    html[data-theme="dark"] .pill-inactive.zero {
+        background: #1F2A3A;
+        color: var(--text-muted);
+        border-color: var(--border);
+    }
+    html[data-theme="dark"] .open-link { color: #63B3ED; }
+    html[data-theme="dark"] .open-link:hover {
+        background: #1E3A5F;
+        color: #BEE3F8;
+    }
+    html[data-theme="dark"] .empty-state,
+    html[data-theme="dark"] .footer-note {
+        color: var(--text-muted);
+    }
+
+    @media (max-width: 1100px) {
+        .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+        .kpi-strip { grid-template-columns: 1fr; }
+        .search-box input { width: 160px; }
+        .table-scroll { max-height: 55vh; }
+        .main-wrapper .content { padding: 12px 16px 16px; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+{% if show_login_landing %}
+<div id="mercuryLanding" class="mercury-landing" role="dialog" aria-label="Welcome — scroll to enter">
+    <!-- Wheel progress 0→1 drives canvas crop dive into laptop (one HQ still).
+         Smooth path — no multi-frame pack / buffer thrash. -->
+    <div class="mercury-scene" id="mercuryScene" aria-hidden="true">
+        <img
+            class="mercury-scene-photo"
+            id="mercuryPhoto"
+            src="/static/img/mercury-hero.jpg?v=4"
+            alt=""
+            decoding="async"
+            fetchpriority="high"
+        />
+        <canvas class="mercury-scene-canvas" id="mercuryCanvas" aria-hidden="true"></canvas>
+    </div>
+    <div class="mercury-chrome">
+        <div class="mercury-nav">
+            <div class="mercury-brand"><span class="mark" aria-hidden="true"></span> Power BI Control Center</div>
+            <button type="button" class="mercury-skip" id="mercurySkip">Skip</button>
+        </div>
+        <div class="mercury-hero-copy" id="mercuryCopy">
+            <h1 class="mercury-title">Workspace health &amp; ownership, all in one place.</h1>
+            <p class="mercury-sub">Scroll to zoom into Control Center</p>
+        </div>
+    </div>
+    <div class="mercury-scroll-hint" id="mercuryHint" aria-hidden="true">
+        <span>Scroll</span>
+        <span class="chev"></span>
+    </div>
+</div>
+{% endif %}
+
+<div class="home-wrap">
+    <!-- KPI cards act as tabs for the detail panel below -->
+    <div class="kpi-strip" role="tablist" aria-label="Home metrics">
+        <button type="button" class="kpi is-active" role="tab" data-metric="workspaces" aria-selected="true" id="kpi-workspaces">
+            <div class="kpi-icon ws"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Workspaces</div>
+                <div class="kpi-value" id="total-workspaces"><span class="spinner"></span></div>
+                <div class="kpi-hint">Accessible to you</div>
+            </div>
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="reports" aria-selected="false" id="kpi-reports">
+            <div class="kpi-icon rp"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Reports</div>
+                <div class="kpi-value" id="total-reports"><span class="spinner"></span></div>
+                <div class="kpi-hint">Across your workspaces</div>
+            </div>
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="inactive" aria-selected="false" id="kpi-inactive">
+            <div class="kpi-icon in"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Inactive</div>
+                <div class="kpi-value" id="inactive-reports"><span class="spinner"></span></div>
+                <div class="kpi-hint">No refresh in 30+ days</div>
+            </div>
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="orphaned" aria-selected="false" id="kpi-orphaned">
+            <div class="kpi-icon or"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Orphaned</div>
+                <div class="kpi-value" id="orphaned-reports"><span class="spinner"></span></div>
+                <div class="kpi-hint">No active owner signal</div>
+            </div>
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="zero_views" aria-selected="false" id="kpi-zero-views">
+            <div class="kpi-icon zv"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Zero views</div>
+                <div class="kpi-value" id="zero-views-reports"><span class="spinner"></span></div>
+                <div class="kpi-hint" id="zero-views-hint">0 views in last 60d</div>
+            </div>
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="failed_refresh" aria-selected="false" id="kpi-failed-refresh">
+            <div class="kpi-icon fail"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Refresh failed</div>
+                <div class="kpi-value" id="failed-refresh-reports"><span class="spinner"></span></div>
+                <div class="kpi-hint">Last refresh status Failed</div>
+            </div>
+        </button>
+    </div>
+
+    <div class="home-filter-reset" id="homeFilterReset">
+        <span class="hint" id="homeFilterHint">Multiple filters active</span>
+        <button type="button" id="homeClearAllFilters">Clear all filters</button>
+    </div>
+
+    <!-- Detail panel — content switches with active KPI tab -->
+    <section class="panel is-emphasized" id="homeDetailPanel" aria-label="Home detail list">
+        <div class="panel-toolbar">
+            <div class="panel-title">
+                <h2 id="detailPanelTitle">Your workspaces</h2>
+                <span class="panel-meta" id="workspace-count-label">—</span>
+            </div>
+            <div class="panel-actions">
+                <span class="chip muted" id="catalog-freshness" title="Data freshness">
+                    <span class="dot"></span>
+                    <span id="catalog-freshness-text">Loading…</span>
+                </span>
+                <select class="sort-select" id="sortSelect" aria-label="Sort list">
+                    <option value="name">Sort: Name</option>
+                    <option value="reports-desc">Sort: Reports high → low</option>
+                    <option value="inactive-desc">Sort: Inactive high → low</option>
+                    <option value="workspace">Sort: Workspace</option>
+                    <option value="days-desc">Sort: Days high → low</option>
+                </select>
+                <div class="search-box">
+                    <input type="search" id="workspaceSearch" placeholder="Filter…" autocomplete="off" />
+                </div>
+            </div>
+        </div>
+
+        <div class="table-scroll">
+            <table class="ws-table" id="homeDetailTable">
+                <thead id="homeDetailHead">
+                    <tr>
+                        <th>Workspace</th>
+                        <th class="col-num">Reports</th>
+                        <th class="col-num">Inactive</th>
+                        <th class="col-action"></th>
+                    </tr>
+                </thead>
+                <tbody id="workspace-list">
+                    <tr>
+                        <td colspan="4" class="empty-state">
+                            <div class="loading-spinner"></div>
+                            <div style="margin-top: 10px;">Loading…</div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <div class="footer-note" id="home-footer-note">
+        Click a KPI card to switch the list below. Open jumps to Report Catalog for that workspace.
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function escapeHtml(text) {
+        if (text == null) return '';
+        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+        return String(text).replace(/[&<>"']/g, m => map[m]);
+    }
+
+    let workspaces = [];
+    let totalReports = 0;
+    let totalInactiveReports = 0;
+    let totalOrphanedReports = 0;
+    let totalZeroViewsReports = 0;
+    let totalFailedRefreshReports = 0;
+    let usageLookbackDays = 60;
+    let inactiveDaysThreshold = 30;
+    let catalogMeta = { source: null, opsEnrichedAt: null, generatedAt: null };
+    let activeMetric = 'workspaces';
+    const detailCache = {}; // metric -> { rows, count, capped, loaded }
+    let detailLoadToken = 0;
+
+    const METRIC_META = {
+        workspaces: {
+            title: 'Your workspaces',
+            searchPh: 'Filter workspaces…',
+            empty: 'No workspaces match your filter',
+            sorts: [
+                { v: 'name', t: 'Sort: Name' },
+                { v: 'reports-desc', t: 'Sort: Reports high → low' },
+                { v: 'inactive-desc', t: 'Sort: Inactive high → low' },
+            ],
+        },
+        reports: {
+            title: 'All reports',
+            searchPh: 'Filter reports or workspaces…',
+            empty: 'No reports match your filter',
+            sorts: [
+                { v: 'name', t: 'Sort: Report name' },
+                { v: 'workspace', t: 'Sort: Workspace' },
+            ],
+        },
+        inactive: {
+            title: 'Inactive reports',
+            searchPh: 'Filter inactive reports…',
+            empty: 'No inactive reports match your filter',
+            sorts: [
+                { v: 'days-desc', t: 'Sort: Days high → low' },
+                { v: 'name', t: 'Sort: Report name' },
+                { v: 'workspace', t: 'Sort: Workspace' },
+            ],
+        },
+        orphaned: {
+            title: 'Orphaned reports',
+            searchPh: 'Filter orphaned reports…',
+            empty: 'No orphaned reports match your filter',
+            sorts: [
+                { v: 'workspace', t: 'Sort: Workspace' },
+                { v: 'name', t: 'Sort: Report name' },
+            ],
+        },
+        zero_views: {
+            title: 'Zero-view reports',
+            searchPh: 'Filter zero-view reports…',
+            empty: 'No zero-view reports match your filter',
+            sorts: [
+                { v: 'workspace', t: 'Sort: Workspace' },
+                { v: 'name', t: 'Sort: Report name' },
+            ],
+        },
+        failed_refresh: {
+            title: 'Refresh failed reports',
+            searchPh: 'Filter failed-refresh reports…',
+            empty: 'No failed-refresh reports match your filter',
+            sorts: [
+                { v: 'workspace', t: 'Sort: Workspace' },
+                { v: 'name', t: 'Sort: Report name' },
+            ],
+        },
+    };
+
+    function setZeroViewsHint(days) {
+        const el = document.getElementById('zero-views-hint');
+        if (!el) return;
+        const d = Number(days) > 0 ? Number(days) : 60;
+        usageLookbackDays = d;
+        el.textContent = `0 views in last ${d}d`;
+        if (METRIC_META.zero_views) {
+            METRIC_META.zero_views.title = `Zero-view reports (${d}d)`;
+        }
+    }
+
+    function catalogOpenHref(workspaceId, reportId, reportName) {
+        if (!workspaceId) return '/documentation';
+        let u = `/documentation?workspace=${encodeURIComponent(workspaceId)}`;
+        if (reportId) u += `&report=${encodeURIComponent(reportId)}`;
+        if (reportName) u += `&reportName=${encodeURIComponent(reportName)}`;
+        return u;
+    }
+
+    function setActiveMetric(metric, { resetFilters } = { resetFilters: true }) {
+        if (!METRIC_META[metric]) metric = 'workspaces';
+        activeMetric = metric;
+        document.querySelectorAll('.kpi-strip .kpi[data-metric]').forEach((btn) => {
+            const on = btn.getAttribute('data-metric') === metric;
+            btn.classList.toggle('is-active', on);
+            btn.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        const panel = document.getElementById('homeDetailPanel');
+        if (panel) panel.classList.add('is-emphasized');
+        const title = document.getElementById('detailPanelTitle');
+        if (title) title.textContent = METRIC_META[metric].title;
+        const search = document.getElementById('workspaceSearch');
+        if (search) {
+            search.placeholder = METRIC_META[metric].searchPh;
+            if (resetFilters) search.value = '';
+        }
+        const sort = document.getElementById('sortSelect');
+        if (sort) {
+            const opts = METRIC_META[metric].sorts || [];
+            sort.innerHTML = opts.map((o) => `<option value="${o.v}">${o.t}</option>`).join('');
+            if (resetFilters && opts[0]) sort.value = opts[0].v;
+        }
+        applyFilterAndSort();
+    }
+
+    async function ensureDetailRows(metric) {
+        if (metric === 'workspaces') return null;
+        if (detailCache[metric] && detailCache[metric].loaded) return detailCache[metric];
+        const token = ++detailLoadToken;
+        const tbody = document.getElementById('workspace-list');
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="4" class="empty-state">
+                <div class="loading-spinner"></div>
+                <div style="margin-top:10px">Loading ${escapeHtml(METRIC_META[metric]?.title || metric)}…</div>
+                <div style="font-size:12px;margin-top:6px;color:#A0AEC0">First open may take a moment while the server reads the catalog.</div>
+            </td></tr>`;
+        }
+        try {
+            const res = await fetch(
+                `/api/home-summary/details?metric=${encodeURIComponent(metric)}&limit=5000`,
+                { credentials: 'include', headers: { 'Accept': 'application/json' } }
+            );
+            const raw = await res.text();
+            if (token !== detailLoadToken) return null;
+            let data = null;
+            try {
+                data = raw ? JSON.parse(raw) : null;
+            } catch (parseErr) {
+                const snippet = (raw || '').replace(/\s+/g, ' ').slice(0, 120);
+                if (res.status === 404 || /DOCTYPE|html/i.test(raw || '')) {
+                    throw new Error(
+                        `Details API not available on this server (HTTP ${res.status}). ` +
+                        'App Service may still be deploying the latest build — wait 1–2 min and hard-refresh (Ctrl+F5).'
+                    );
+                }
+                throw new Error(`Server returned non-JSON (HTTP ${res.status}): ${snippet}`);
+            }
+            if (!res.ok || !data || !data.success) {
+                throw new Error((data && data.error) || `HTTP ${res.status}`);
+            }
+            detailCache[metric] = {
+                loaded: true,
+                rows: data.rows || [],
+                count: data.count != null ? data.count : (data.rows || []).length,
+                capped: !!data.capped,
+                usageLookbackDays: data.usageLookbackDays,
+                inactiveDaysThreshold: data.inactiveDaysThreshold,
+            };
+            if (data.usageLookbackDays) setZeroViewsHint(data.usageLookbackDays);
+            if (data.inactiveDaysThreshold) inactiveDaysThreshold = data.inactiveDaysThreshold;
+            return detailCache[metric];
+        } catch (e) {
+            if (token !== detailLoadToken) return null;
+            // Don't permanently cache failures — allow retry on next click
+            const msg = e.message || String(e);
+            if (tbody) {
+                tbody.innerHTML = `<tr><td colspan="4" class="empty-state">
+                    <div class="empty-state-icon">!</div>
+                    <div>Failed to load list</div>
+                    <div style="font-size:12px;margin-top:6px;color:#A0AEC0;max-width:420px;margin-left:auto;margin-right:auto">${escapeHtml(msg)}</div>
+                    <div style="margin-top:12px"><button type="button" class="open-link" id="homeDetailRetry">Retry</button></div>
+                </td></tr>`;
+                tbody.querySelector('#homeDetailRetry')?.addEventListener('click', () => {
+                    delete detailCache[metric];
+                    applyFilterAndSort();
+                });
+            }
+            return { loaded: false, error: msg, rows: [] };
+        }
+    }
+
+    async function loadDashboard() {
+        try {
+            // 1) ACL: which workspaces this user can open (live /groups — one call)
+            await loadWorkspaces();
+            if (!workspaces.length) return;
+
+            // 2) Catalog ∩ ACL: one server call for report/inactive/orphaned counts
+            //    Never fan-out live APIs per workspace on Home (that was the 3–4 min storm).
+            const usedCatalog = await tryLoadFromCatalogSummary();
+            if (usedCatalog) {
+                console.log('Home dashboard filled from catalog summary');
+                applyFilterAndSort();
+                return;
+            }
+
+            console.warn('Catalog home-summary unavailable — showing workspace list only (no live storm)');
+            setFreshnessChip(null, null, 'offline');
+            // Keep rows usable: unknown counts show as 0, not spinners forever
+            workspaces.forEach(ws => {
+                if (ws.reportCount == null) ws.reportCount = 0;
+                if (ws.inactiveCount == null) ws.inactiveCount = 0;
+                if (ws.orphanedCount == null) ws.orphanedCount = 0;
+                if (ws.zeroViewsCount == null) ws.zeroViewsCount = 0;
+                if (ws.failedRefreshCount == null) ws.failedRefreshCount = 0;
+                if (ws.activeCount == null) ws.activeCount = 0;
+            });
+            totalReports = workspaces.reduce((s, w) => s + (w.reportCount || 0), 0);
+            totalInactiveReports = 0;
+            totalOrphanedReports = 0;
+            totalZeroViewsReports = 0;
+            totalFailedRefreshReports = 0;
+            const elR = document.getElementById('total-reports');
+            const elI = document.getElementById('inactive-reports');
+            const elO = document.getElementById('orphaned-reports');
+            const elZ = document.getElementById('zero-views-reports');
+            const elF = document.getElementById('failed-refresh-reports');
+            if (elR) elR.textContent = totalReports || '—';
+            if (elI) elI.textContent = '—';
+            if (elO) elO.textContent = '—';
+            if (elZ) elZ.textContent = '—';
+            if (elF) elF.textContent = '—';
+            const note = document.getElementById('home-footer-note');
+            if (note) {
+                note.textContent = 'Catalog offline or app needs restart. Home uses thin server APIs (SharePoint source of truth, server disk cache) — never downloads the large catalog into the browser.';
+            }
+            applyFilterAndSort();
+        } catch (error) {
+            console.error('Error loading dashboard:', error);
+            document.getElementById('workspace-list').innerHTML = `
+                <tr><td colspan="4" class="empty-state">
+                    <div class="empty-state-icon">!</div>
+                    <div>Error loading workspaces</div>
+                    <div style="font-size:12px;margin-top:6px;color:#A0AEC0;">${escapeHtml(error.message)}</div>
+                </td></tr>`;
+        }
+    }
+
+    function setFreshnessChip(opsEnrichedAt, generatedAt, source) {
+        const chip = document.getElementById('catalog-freshness');
+        const text = document.getElementById('catalog-freshness-text');
+        if (!chip || !text) return;
+        const ts = opsEnrichedAt || generatedAt;
+        if (ts) {
+            chip.classList.remove('muted');
+            let label = 'Catalog';
+            try {
+                label = 'As of ' + new Date(ts).toLocaleString();
+            } catch (e) {
+                label = 'Catalog ready';
+            }
+            text.textContent = label;
+            chip.title = source ? `Source: ${source}` : 'Precomputed catalog';
+        } else {
+            chip.classList.add('muted');
+            text.textContent = source === 'live' ? 'Live APIs' : 'Catalog offline';
+        }
+    }
+
+    async function tryLoadFromCatalogSummary() {
+        try {
+            const response = await fetch('/api/home-summary');
+            const data = await response.json();
+            if (!data.success || data.fallback || data.source === 'none') return false;
+            if (!Array.isArray(data.workspaces)) return false;
+
+            const byId = {};
+            data.workspaces.forEach(w => { if (w && w.id) byId[w.id] = w; });
+
+            let matched = 0;
+            workspaces.forEach(ws => {
+                const row = byId[ws.id];
+                if (!row) {
+                    ws.reportCount = ws.reportCount ?? 0;
+                    ws.inactiveCount = ws.inactiveCount ?? 0;
+                    ws.orphanedCount = ws.orphanedCount ?? 0;
+                    ws.zeroViewsCount = ws.zeroViewsCount ?? 0;
+                    ws.failedRefreshCount = ws.failedRefreshCount ?? 0;
+                    ws.activeCount = ws.activeCount ?? 0;
+                    return;
+                }
+                matched += 1;
+                ws.reportCount = row.reportCount || 0;
+                ws.inactiveCount = row.inactiveCount || 0;
+                ws.orphanedCount = row.orphanedCount || 0;
+                ws.zeroViewsCount = row.zeroViewsCount || 0;
+                ws.failedRefreshCount = row.failedRefreshCount || 0;
+                ws.activeCount = row.activeCount != null ? row.activeCount : Math.max(0, (ws.reportCount || 0) - (ws.inactiveCount || 0));
+            });
+
+            totalReports = data.totalReports != null ? data.totalReports : workspaces.reduce((s, w) => s + (w.reportCount || 0), 0);
+            totalInactiveReports = data.inactiveReports != null ? data.inactiveReports : workspaces.reduce((s, w) => s + (w.inactiveCount || 0), 0);
+            totalOrphanedReports = data.orphanedReports != null ? data.orphanedReports : workspaces.reduce((s, w) => s + (w.orphanedCount || 0), 0);
+            totalZeroViewsReports = data.zeroViewsReports != null
+                ? data.zeroViewsReports
+                : workspaces.reduce((s, w) => s + (w.zeroViewsCount || 0), 0);
+            totalFailedRefreshReports = data.failedRefreshReports != null
+                ? data.failedRefreshReports
+                : workspaces.reduce((s, w) => s + (w.failedRefreshCount || 0), 0);
+            if (data.usageLookbackDays) setZeroViewsHint(data.usageLookbackDays);
+
+            document.getElementById('total-reports').textContent = totalReports;
+            document.getElementById('inactive-reports').textContent = totalInactiveReports;
+            document.getElementById('orphaned-reports').textContent = totalOrphanedReports;
+            const elZ = document.getElementById('zero-views-reports');
+            if (elZ) elZ.textContent = totalZeroViewsReports;
+            const elF = document.getElementById('failed-refresh-reports');
+            if (elF) elF.textContent = totalFailedRefreshReports;
+
+            catalogMeta = {
+                source: data.source || 'catalog',
+                opsEnrichedAt: data.opsEnrichedAt || null,
+                generatedAt: data.generatedAt || null,
+            };
+            setFreshnessChip(catalogMeta.opsEnrichedAt, catalogMeta.generatedAt, catalogMeta.source);
+
+            // Re-render with counts (single paint)
+            applyFilterAndSort();
+
+            if (matched === 0 && workspaces.length > 0) return false;
+            return true;
+        } catch (e) {
+            console.warn('home-summary failed', e);
+            return false;
+        }
+    }
+
+    async function loadWorkspaces() {
+        const response = await fetch('/api/workspaces');
+        const data = await response.json();
+
+        if (!data.success || !data.workspaces || data.workspaces.length === 0) {
+            document.getElementById('workspace-list').innerHTML = `
+                <tr><td colspan="4" class="empty-state">
+                    <div class="empty-state-icon"></div>
+                    <div>No workspaces found</div>
+                </td></tr>`;
+            document.getElementById('total-workspaces').textContent = '0';
+            document.getElementById('total-reports').textContent = '0';
+            document.getElementById('inactive-reports').textContent = '0';
+            document.getElementById('orphaned-reports').textContent = '0';
+            const elZ0 = document.getElementById('zero-views-reports');
+            if (elZ0) elZ0.textContent = '0';
+            document.getElementById('workspace-count-label').textContent = '0 workspaces';
+            return;
+        }
+
+        workspaces = data.workspaces.map(w => ({
+            ...w,
+            reportCount: w.reportCount,
+            inactiveCount: w.inactiveCount,
+            orphanedCount: w.orphanedCount,
+            zeroViewsCount: w.zeroViewsCount,
+            failedRefreshCount: w.failedRefreshCount,
+            activeCount: w.activeCount,
+        }));
+
+        document.getElementById('total-workspaces').textContent = workspaces.length;
+        document.getElementById('workspace-count-label').textContent = `${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'}`;
+        renderWorkspaceTable(workspaces);
+    }
+
+    function defaultSortForMetric(metric) {
+        const sorts = METRIC_META[metric]?.sorts || [];
+        return sorts[0]?.v || 'name';
+    }
+
+    function getFilteredSortedWorkspaces() {
+        const q = (document.getElementById('workspaceSearch')?.value || '').trim().toLowerCase();
+        const sort = document.getElementById('sortSelect')?.value || 'name';
+        let list = workspaces.slice();
+        if (q) {
+            list = list.filter(w =>
+                (w.name || '').toLowerCase().includes(q) ||
+                (w.id || '').toLowerCase().includes(q)
+            );
+        }
+        list.sort((a, b) => {
+            if (sort === 'reports-desc') return (b.reportCount || 0) - (a.reportCount || 0) || (a.name || '').localeCompare(b.name || '');
+            if (sort === 'inactive-desc') return (b.inactiveCount || 0) - (a.inactiveCount || 0) || (a.name || '').localeCompare(b.name || '');
+            return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+        });
+        return list;
+    }
+
+    function getFilteredSortedDetailRows(metric) {
+        const pack = detailCache[metric];
+        if (!pack || !pack.rows) return [];
+        const q = (document.getElementById('workspaceSearch')?.value || '').trim().toLowerCase();
+        const sort = document.getElementById('sortSelect')?.value || defaultSortForMetric(metric);
+        let list = pack.rows.slice();
+        if (q) {
+            list = list.filter((r) =>
+                (r.reportName || '').toLowerCase().includes(q) ||
+                (r.workspaceName || '').toLowerCase().includes(q) ||
+                (r.workspaceId || '').toLowerCase().includes(q) ||
+                (r.reportId || '').toLowerCase().includes(q)
+            );
+        }
+        list.sort((a, b) => {
+            if (sort === 'workspace') {
+                return (a.workspaceName || '').localeCompare(b.workspaceName || '', undefined, { sensitivity: 'base' })
+                    || (a.reportName || '').localeCompare(b.reportName || '', undefined, { sensitivity: 'base' });
+            }
+            if (sort === 'days-desc') {
+                const da = Number(a.daysSinceRefresh);
+                const db = Number(b.daysSinceRefresh);
+                const na = Number.isFinite(da) ? da : -1;
+                const nb = Number.isFinite(db) ? db : -1;
+                return nb - na || (a.reportName || '').localeCompare(b.reportName || '');
+            }
+            return (a.reportName || '').localeCompare(b.reportName || '', undefined, { sensitivity: 'base' })
+                || (a.workspaceName || '').localeCompare(b.workspaceName || '');
+        });
+        return list;
+    }
+
+    function countHomeFilters() {
+        let n = 0;
+        const q = (document.getElementById('workspaceSearch')?.value || '').trim();
+        const sort = document.getElementById('sortSelect')?.value || defaultSortForMetric(activeMetric);
+        if (q) n += 1;
+        if (sort && sort !== defaultSortForMetric(activeMetric)) n += 1;
+        return n;
+    }
+
+    function updateHomeFilterReset() {
+        const bar = document.getElementById('homeFilterReset');
+        const hint = document.getElementById('homeFilterHint');
+        if (!bar) return;
+        const n = countHomeFilters();
+        if (n >= 2) {
+            bar.classList.add('is-on');
+            if (hint) {
+                const q = (document.getElementById('workspaceSearch')?.value || '').trim();
+                const sort = document.getElementById('sortSelect')?.value || defaultSortForMetric(activeMetric);
+                const bits = [];
+                if (q) bits.push('search');
+                if (sort !== defaultSortForMetric(activeMetric)) bits.push('sort');
+                hint.textContent = `${n} filters active (${bits.join(' + ')})`;
+            }
+        } else {
+            bar.classList.remove('is-on');
+        }
+    }
+
+    function clearAllHomeFilters() {
+        const search = document.getElementById('workspaceSearch');
+        const sort = document.getElementById('sortSelect');
+        if (search) search.value = '';
+        if (sort) sort.value = defaultSortForMetric(activeMetric);
+        applyFilterAndSort();
+    }
+
+    function setDetailHead(metric) {
+        const head = document.getElementById('homeDetailHead');
+        if (!head) return;
+        if (metric === 'workspaces') {
+            head.innerHTML = `<tr>
+                <th>Workspace</th>
+                <th class="col-num">Reports</th>
+                <th class="col-num">Inactive</th>
+                <th class="col-action"></th>
+            </tr>`;
+            return;
+        }
+        if (metric === 'inactive') {
+            head.innerHTML = `<tr>
+                <th>Report</th>
+                <th>Workspace</th>
+                <th class="col-num">Days</th>
+                <th class="col-action"></th>
+            </tr>`;
+            return;
+        }
+        if (metric === 'failed_refresh') {
+            head.innerHTML = `<tr>
+                <th>Report</th>
+                <th>Workspace</th>
+                <th>Status</th>
+                <th class="col-action"></th>
+            </tr>`;
+            return;
+        }
+        head.innerHTML = `<tr>
+            <th>Report</th>
+            <th>Workspace</th>
+            <th class="col-action"></th>
+        </tr>`;
+    }
+
+    async function applyFilterAndSort() {
+        const metric = activeMetric || 'workspaces';
+        const titleEl = document.getElementById('detailPanelTitle');
+        const meta = METRIC_META[metric] || METRIC_META.workspaces;
+        if (titleEl) titleEl.textContent = meta.title;
+        setDetailHead(metric);
+
+        if (metric === 'workspaces') {
+            const list = getFilteredSortedWorkspaces();
+            renderWorkspaceTable(list);
+            const total = workspaces.length;
+            const shown = list.length;
+            document.getElementById('workspace-count-label').textContent =
+                shown === total ? `${total} workspace${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
+            updateHomeFilterReset();
+            return;
+        }
+
+        const pack = await ensureDetailRows(metric);
+        if (activeMetric !== metric) return;
+        if (!pack || pack.error) {
+            updateHomeFilterReset();
+            return;
+        }
+        const list = getFilteredSortedDetailRows(metric);
+        renderReportDetailTable(metric, list, pack);
+        const total = pack.count != null ? pack.count : (pack.rows || []).length;
+        const shown = list.length;
+        let label = shown === total ? `${total} report${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
+        if (pack.capped) label += ' (capped)';
+        document.getElementById('workspace-count-label').textContent = label;
+        updateHomeFilterReset();
+    }
+
+    function runMercuryLanding() {
+        // Smooth path: one HQ still + canvas crop dive into laptop.
+        // No multi-frame pack (that caused lag/buffer/overlap).
+        const landing = document.getElementById('mercuryLanding');
+        if (!landing) return;
+        const scene = document.getElementById('mercuryScene');
+        const photo = document.getElementById('mercuryPhoto') || landing.querySelector('.mercury-scene-photo');
+        const canvas = document.getElementById('mercuryCanvas');
+        const copy = document.getElementById('mercuryCopy');
+        const hint = document.getElementById('mercuryHint');
+        const brand = landing.querySelector('.mercury-brand');
+        const skipBtn = document.getElementById('mercurySkip');
+        const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        // Zoom forest → laptop only. No Control Center UI during dive.
+        // Finish hands off straight to the real Home page.
+        const MAX_ZOOM = 2.6;
+        const FALLBACK_MAX_SCALE = 1.55;
+        const COPY_FADE_BY = 0.32;
+        const HINT_FADE_BY = 0.16;
+        const DEEP_AT = 0.5;
+        const FINISH_AT = 0.97; // leave while still crisp — don't sit on soft laptop UI
+        const FOCUS_X = 0.50;
+        const FOCUS_Y = 0.57;
+
+        let progress = 0;
+        let target = 0;
+        let done = false;
+        let touchY = null;
+        let raf = 0;
+        let useCanvas = false;
+        let ctx = null;
+        let imgReady = false;
+        let dpr = Math.min(window.devicePixelRatio || 1, 2);
+        let cssW = 0;
+        let cssH = 0;
+        let onResize = null;
+
+        const clamp01 = (v) => Math.max(0, Math.min(1, v));
+        const ease = (t) => 1 - Math.pow(1 - t, 3);
+
+        const detach = () => {
+            window.removeEventListener('wheel', onWheel);
+            window.removeEventListener('keydown', onKey);
+            landing.removeEventListener('touchstart', onTouchStart);
+            landing.removeEventListener('touchmove', onTouchMove);
+            if (onResize) window.removeEventListener('resize', onResize);
+            if (raf) cancelAnimationFrame(raf);
+        };
+
+        const unlockBody = () => {
+            document.body.classList.remove('mercury-landing-open');
+        };
+
+        const sizeCanvas = () => {
+            if (!canvas || !ctx) return;
+            cssW = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+            cssH = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+            dpr = Math.min(window.devicePixelRatio || 1, 2);
+            const bw = Math.round(cssW * dpr);
+            const bh = Math.round(cssH * dpr);
+            if (canvas.width !== bw || canvas.height !== bh) {
+                canvas.width = bw;
+                canvas.height = bh;
+            }
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+        };
+
+        const sourceRect = (zoom) => {
+            const iw = photo.naturalWidth;
+            const ih = photo.naturalHeight;
+            const viewAspect = cssW / cssH;
+            let baseW, baseH;
+            if ((iw / ih) > viewAspect) {
+                baseH = ih;
+                baseW = ih * viewAspect;
+            } else {
+                baseW = iw;
+                baseH = iw / viewAspect;
+            }
+            const sw = baseW / zoom;
+            const sh = baseH / zoom;
+            let sx = FOCUS_X * iw - sw / 2;
+            let sy = FOCUS_Y * ih - sh / 2;
+            sx = Math.max(0, Math.min(iw - sw, sx));
+            sy = Math.max(0, Math.min(ih - sh, sy));
+            return { sx, sy, sw, sh };
+        };
+
+        const drawCanvas = (t) => {
+            if (!useCanvas || !ctx || !imgReady) return;
+            const zoom = 1 + t * (MAX_ZOOM - 1);
+            const { sx, sy, sw, sh } = sourceRect(zoom);
+            ctx.clearRect(0, 0, cssW, cssH);
+            try {
+                ctx.drawImage(photo, sx, sy, sw, sh, 0, 0, cssW, cssH);
+            } catch (e) {
+                useCanvas = false;
+                if (scene) scene.classList.remove('has-canvas');
+            }
+        };
+
+        const finish = () => {
+            if (done) return;
+            done = true;
+            // Snap exit to real Home — no extra deep zoom into laptop UI
+            progress = Math.min(progress, FINISH_AT);
+            target = progress;
+            try {
+                // Clear inline opacity so CSS .is-finishing fade can run
+                landing.style.removeProperty('opacity');
+                landing.classList.add('is-deep', 'is-finishing');
+            } catch (e) {}
+            detach();
+            const cleanup = () => {
+                try {
+                    landing.classList.add('is-done');
+                    unlockBody();
+                    landing.remove();
+                } catch (e) {
+                    unlockBody();
+                }
+            };
+            // Quick fade then remove so Home appears directly
+            setTimeout(cleanup, 240);
+            setTimeout(unlockBody, 400);
+        };
+
+        const paintChrome = (t) => {
+            if (copy) {
+                const fade = clamp01(1 - progress / COPY_FADE_BY);
+                copy.style.opacity = String(fade);
+                copy.style.transform = `translateY(${-t * 28}px) scale(${1 - t * 0.06})`;
+            }
+            if (hint) {
+                hint.style.opacity = progress < 0.03
+                    ? '1'
+                    : String(clamp01(1 - progress / HINT_FADE_BY));
+            }
+            const chromeFade = progress < 0.4 ? 1 : clamp01(1 - (progress - 0.4) / 0.45);
+            if (brand) brand.style.opacity = String(chromeFade);
+            if (skipBtn) skipBtn.style.opacity = '1';
+            if (progress >= DEEP_AT) landing.classList.add('is-deep');
+            else landing.classList.remove('is-deep');
+        };
+
+        const paint = () => {
+            if (done) return;
+            const t = ease(progress);
+            // Stay fully opaque entire dive — never reveal Home under the laptop
+            landing.style.opacity = '1';
+            if (useCanvas) drawCanvas(t);
+            else if (photo) photo.style.transform = `scale(${1 + t * FALLBACK_MAX_SCALE}) translateZ(0)`;
+            paintChrome(t);
+        };
+
+        const tick = () => {
+            raf = 0;
+            if (done) return;
+            const diff = target - progress;
+            if (Math.abs(diff) < 0.0008) {
+                progress = target;
+                paint();
+                if (progress >= FINISH_AT) finish();
+                return;
+            }
+            progress += diff * 0.22;
+            paint();
+            if (progress >= FINISH_AT) { finish(); return; }
+            raf = requestAnimationFrame(tick);
+        };
+
+        const bump = (delta) => {
+            if (done) return;
+            target = clamp01(target + delta);
+            if (!raf) raf = requestAnimationFrame(tick);
+        };
+
+        const onWheel = (e) => {
+            if (done) return;
+            e.preventDefault();
+            const step = Math.max(-0.04, Math.min(0.04, e.deltaY / 1600));
+            bump(step);
+        };
+
+        const onTouchStart = (e) => {
+            if (!e.touches || !e.touches[0]) return;
+            touchY = e.touches[0].clientY;
+        };
+        const onTouchMove = (e) => {
+            if (touchY == null || !e.touches || !e.touches[0]) return;
+            e.preventDefault();
+            const y = e.touches[0].clientY;
+            const dy = touchY - y;
+            touchY = y;
+            bump(dy / 1400);
+        };
+
+        const onKey = (e) => {
+            if (e.key === 'Escape') { finish(); return; }
+            if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
+                e.preventDefault();
+                bump(0.06);
+            } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+                e.preventDefault();
+                bump(-0.06);
+            } else if (e.key === 'Enter') {
+                finish();
+            }
+        };
+
+        const enableCanvas = () => {
+            if (!canvas || !photo || !photo.naturalWidth) return false;
+            try {
+                ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+                if (!ctx) return false;
+                imgReady = true;
+                useCanvas = true;
+                sizeCanvas();
+                if (scene) scene.classList.add('has-canvas');
+                onResize = () => {
+                    if (done) return;
+                    sizeCanvas();
+                    paint();
+                };
+                window.addEventListener('resize', onResize);
+                return true;
+            } catch (e) {
+                useCanvas = false;
+                return false;
+            }
+        };
+
+        if (photo) {
+            photo.addEventListener('error', () => {
+                console.warn('Mercury hero image failed to load:', photo.src);
+            }, { once: true });
+            const tryInit = () => {
+                if (photo.naturalWidth > 0) enableCanvas();
+                paint();
+            };
+            if (photo.complete && photo.naturalWidth > 0) tryInit();
+            else photo.addEventListener('load', tryInit, { once: true });
+        }
+
+        document.body.classList.add('mercury-landing-open');
+        paint();
+
+        if (skipBtn) skipBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            finish();
+        });
+        window.addEventListener('keydown', onKey);
+
+        if (reduce) return;
+
+        window.addEventListener('wheel', onWheel, { passive: false });
+        landing.addEventListener('touchstart', onTouchStart, { passive: true });
+        landing.addEventListener('touchmove', onTouchMove, { passive: false });
+        landing.addEventListener('click', (e) => {
+            if (e.target.closest('#mercurySkip')) return;
+            if (progress < 0.92) bump(0.07);
+        });
+    }
+
+    function renderWorkspaceTable(list) {
+        const tbody = document.getElementById('workspace-list');
+        if (!list || list.length === 0) {
+            tbody.innerHTML = `
+                <tr><td colspan="4" class="empty-state">
+                    <div class="empty-state-icon"></div>
+                    <div>No workspaces match your filter</div>
+                </td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = list.map(workspace => {
+            const id = workspace.id || '';
+            const name = workspace.name || '';
+            const reports = workspace.reportCount;
+            const inactive = workspace.inactiveCount;
+            const reportsHtml = reports === undefined || reports === null
+                ? `<span class="loading-spinner" id="reports-${escapeHtml(id)}"></span>`
+                : `<a class="pill pill-active" id="reports-${escapeHtml(id)}" href="/documentation?workspace=${encodeURIComponent(id)}" title="View all reports">${reports}</a>`;
+            const inactiveVal = inactive === undefined || inactive === null ? null : Number(inactive);
+            const inactiveHtml = inactiveVal === null
+                ? `<span class="loading-spinner" id="inactive-${escapeHtml(id)}"></span>`
+                : `<a class="pill pill-inactive${inactiveVal === 0 ? ' zero' : ''}" id="inactive-${escapeHtml(id)}" href="/documentation?workspace=${encodeURIComponent(id)}&status=inactive" title="${inactiveVal} inactive (30+ days)">${inactiveVal}</a>`;
+
+            return `
+            <tr data-workspace-id="${escapeHtml(id)}" data-href="/documentation?workspace=${encodeURIComponent(id)}" title="Open ${escapeHtml(name)}">
+                <td>
+                    <div class="ws-name">${escapeHtml(name)}</div>
+                    <div class="ws-id">${escapeHtml(id)}</div>
+                </td>
+                <td class="col-num">${reportsHtml}</td>
+                <td class="col-num">${inactiveHtml}</td>
+                <td class="col-action">
+                    <a class="open-link" href="/documentation?workspace=${encodeURIComponent(id)}">Open</a>
+                </td>
+            </tr>`;
+        }).join('');
+
+        // Whole-row open (pills/links keep their own targets)
+        tbody.querySelectorAll('tr[data-href]').forEach(tr => {
+            tr.addEventListener('click', (e) => {
+                if (e.target.closest('a, button, input, select, textarea')) return;
+                const href = tr.getAttribute('data-href');
+                if (href) window.location.href = href;
+            });
+        });
+    }
+
+    function renderReportDetailTable(metric, list, pack) {
+        const tbody = document.getElementById('workspace-list');
+        if (!tbody) return;
+        const emptyMsg = METRIC_META[metric]?.empty || 'No rows match your filter';
+        const colSpan = (metric === 'inactive' || metric === 'failed_refresh') ? 4 : 3;
+        if (!list || list.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${colSpan}" class="empty-state">
+                <div class="empty-state-icon"></div>
+                <div>${escapeHtml(emptyMsg)}</div>
+            </td></tr>`;
+            return;
+        }
+
+        // Cap DOM for very large filtered sets (still searchable)
+        const MAX_DOM = 800;
+        const slice = list.length > MAX_DOM ? list.slice(0, MAX_DOM) : list;
+        const more = list.length > MAX_DOM
+            ? `<tr><td colspan="${colSpan}" class="empty-state" style="padding:12px">
+                Showing first ${MAX_DOM} of ${list.length} — refine search to narrow.
+               </td></tr>`
+            : '';
+
+        tbody.innerHTML = slice.map((row) => {
+            const rid = row.reportId || '';
+            const rname = row.reportName || '—';
+            const wid = row.workspaceId || '';
+            const wname = row.workspaceName || '—';
+            const href = catalogOpenHref(wid, rid, row.reportName || '');
+            if (metric === 'inactive') {
+                const days = row.daysSinceRefresh;
+                const daysLabel = days != null && days !== '' ? String(days) : '—';
+                const lr = row.lastRefreshed
+                    ? (() => { try { return new Date(row.lastRefreshed).toLocaleString(); } catch (e) { return String(row.lastRefreshed); } })()
+                    : '';
+                return `<tr data-href="${escapeHtml(href)}" title="${escapeHtml(rname)}">
+                    <td><div class="ws-name">${escapeHtml(rname)}</div>
+                        ${lr ? `<div class="ws-id">Last refresh: ${escapeHtml(lr)}</div>` : ''}
+                    </td>
+                    <td><div class="ws-name" style="font-weight:500">${escapeHtml(wname)}</div></td>
+                    <td class="col-num"><span class="pill pill-inactive">${escapeHtml(daysLabel)}</span></td>
+                    <td class="col-action"><a class="open-link" href="${escapeHtml(href)}">Open</a></td>
+                </tr>`;
+            }
+            if (metric === 'failed_refresh') {
+                const status = row.refreshStatus || 'Failed';
+                const lr = row.lastRefreshed
+                    ? (() => { try { return new Date(row.lastRefreshed).toLocaleString(); } catch (e) { return String(row.lastRefreshed); } })()
+                    : '';
+                const note = (row.refreshNote || '').trim();
+                const sub = [lr ? `Last attempt: ${lr}` : '', note].filter(Boolean).join(' · ');
+                return `<tr data-href="${escapeHtml(href)}" title="${escapeHtml(rname)}">
+                    <td><div class="ws-name">${escapeHtml(rname)}</div>
+                        ${sub ? `<div class="ws-id">${escapeHtml(sub)}</div>` : ''}
+                    </td>
+                    <td><div class="ws-name" style="font-weight:500">${escapeHtml(wname)}</div></td>
+                    <td><span class="pill pill-failed">${escapeHtml(String(status))}</span></td>
+                    <td class="col-action"><a class="open-link" href="${escapeHtml(href)}">Open</a></td>
+                </tr>`;
+            }
+            return `<tr data-href="${escapeHtml(href)}" title="${escapeHtml(rname)}">
+                <td><div class="ws-name">${escapeHtml(rname)}</div></td>
+                <td><div class="ws-name" style="font-weight:500">${escapeHtml(wname)}</div></td>
+                <td class="col-action"><a class="open-link" href="${escapeHtml(href)}">Open</a></td>
+            </tr>`;
+        }).join('') + more;
+
+        tbody.querySelectorAll('tr[data-href]').forEach((tr) => {
+            tr.addEventListener('click', (e) => {
+                if (e.target.closest('a, button, input, select, textarea')) return;
+                const href = tr.getAttribute('data-href');
+                if (href) window.location.href = href;
+            });
+        });
+    }
+
+    // Fallback live loaders (unchanged behavior)
+    async function loadReportCounts() {
+        const promises = workspaces.map(async workspace => {
+            try {
+                const response = await fetch(`/api/reports?workspace_id=${encodeURIComponent(workspace.id)}`);
+                const data = await response.json();
+                if (data.success && data.reports) {
+                    workspace.reportCount = data.reports.length;
+                    workspace.activeCount = data.reports.length;
+                    return data.reports.length;
+                }
+                workspace.reportCount = 0;
+                return 0;
+            } catch (error) {
+                console.error(`Error loading reports for ${workspace.name}:`, error);
+                workspace.reportCount = 0;
+                return 0;
+            }
+        });
+        const counts = await Promise.all(promises);
+        totalReports = counts.reduce((sum, c) => sum + c, 0);
+        document.getElementById('total-reports').textContent = totalReports;
+        applyFilterAndSort();
+    }
+
+    async function loadInactiveCounts() {
+        const promises = workspaces.map(async (workspace) => {
+            try {
+                const response = await fetch(`/api/workspace-summary/${encodeURIComponent(workspace.id)}`);
+                const data = await response.json();
+                if (data.success) {
+                    workspace.inactiveCount = data.inactive_reports || 0;
+                    return workspace.inactiveCount;
+                }
+                workspace.inactiveCount = 0;
+                return 0;
+            } catch (error) {
+                console.error(`Error loading inactive count for ${workspace.name}:`, error);
+                workspace.inactiveCount = 0;
+                return 0;
+            }
+        });
+        try {
+            const results = await Promise.all(promises);
+            totalInactiveReports = results.reduce((sum, c) => sum + c, 0);
+            document.getElementById('inactive-reports').textContent = totalInactiveReports;
+            applyFilterAndSort();
+        } catch (error) {
+            console.error('Error loading inactive counts:', error);
+            document.getElementById('inactive-reports').textContent = totalInactiveReports;
+        }
+    }
+
+    async function loadOrphanedCounts() {
+        const promises = workspaces.map(async (workspace) => {
+            try {
+                const response = await fetch(`/api/orphaned-reports/${workspace.id}`);
+                const data = await response.json();
+                if (data.success) {
+                    workspace.orphanedCount = data.orphaned_count;
+                    return data.orphaned_count;
+                }
+                return 0;
+            } catch (error) {
+                console.error(`Error loading orphaned count for ${workspace.name}:`, error);
+                return 0;
+            }
+        });
+        try {
+            const results = await Promise.all(promises);
+            totalOrphanedReports = results.reduce((sum, c) => sum + c, 0);
+            document.getElementById('orphaned-reports').textContent = totalOrphanedReports;
+        } catch (error) {
+            console.error('Error loading orphaned counts:', error);
+            document.getElementById('orphaned-reports').textContent = 'N/A';
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        runMercuryLanding(); // manual enter only — never auto-zoom
+        // KPI cards = tabs for detail panel
+        document.querySelectorAll('.kpi-strip .kpi[data-metric]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const m = btn.getAttribute('data-metric') || 'workspaces';
+                if (m === activeMetric) {
+                    applyFilterAndSort();
+                    return;
+                }
+                setActiveMetric(m, { resetFilters: true });
+            });
+        });
+        setActiveMetric('workspaces', { resetFilters: true });
+        loadDashboard();
+        const search = document.getElementById('workspaceSearch');
+        const sort = document.getElementById('sortSelect');
+        if (search) search.addEventListener('input', () => applyFilterAndSort());
+        if (sort) sort.addEventListener('change', () => applyFilterAndSort());
+        const clearBtn = document.getElementById('homeClearAllFilters');
+        if (clearBtn) clearBtn.addEventListener('click', clearAllHomeFilters);
+    });
+</script>
+{% endblock %}

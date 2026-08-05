@@ -1,0 +1,24 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "TENANT_ID": "<tenant-guid>",
+    "CLIENT_ID": "<app-client-id>",
+    "CLIENT_SECRET": "<app-client-secret>",
+    "SHAREPOINT_TENANT_ID": "",
+    "SHAREPOINT_CLIENT_ID": "",
+    "SHAREPOINT_CLIENT_SECRET": "",
+    "SHAREPOINT_SITE_HOSTNAME": "masterashley.sharepoint.com",
+    "SHAREPOINT_SITE_PATH": "/sites/BARetailAnalytics",
+    "SHAREPOINT_DRIVE_NAME": "Documents",
+    "SHAREPOINT_FOLDER_PATH": "BA - Retail Offshore GCC Team/Backup - Reports & Archives/PowerBI Reports MetaData",
+    "SHAREPOINT_UPLOAD_ENABLED": "true",
+    "CATALOG_DATA_SOURCE": "sharepoint",
+    "CATALOG_FAST_PATH_ENABLED": "true",
+    "USAGE_LOOKBACK_DAYS": "30",
+    "OPS_REFRESH_WORKERS": "8",
+    "OPS_USAGE_DAY_WORKERS": "6",
+    "CATALOG_EXTRACT_VERBOSE": "true"
+  }
+}

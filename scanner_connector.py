@@ -65,8 +65,12 @@ class PowerBIScanner:
             "Content-Type": "application/json"
         }
 
-    def run_scan(self):
-        """Run Admin workspace scan and return full JSON result with detailed error logging."""
+    def run_scan(self, workspace_id=None):
+        """Run Admin workspace scan and return full JSON result with detailed error logging.
+
+        Args:
+            workspace_id: Optional workspace ID to scan. If not provided, uses self.workspace_id from .env
+        """
         try:
             headers = self._get_headers()
         except Exception:
@@ -78,14 +82,26 @@ class PowerBIScanner:
             "?lineage=True&datasourceDetails=True&datasetSchema=True&datasetExpressions=True"
         )
 
-        # Power BI Admin Scanner API expects list of workspace IDs
-        workspace_list = [self.workspace_id] if self.workspace_id else []
+        # Use provided workspace_id or fall back to self.workspace_id
+        target_workspace = workspace_id or self.workspace_id
+        workspace_list = [target_workspace] if target_workspace else []
         if not workspace_list:
             print("❌ No workspace ID configured in environment")
             return None
-            
-        body = {"workspaces": workspace_list}
-        print(f"   Scan parameters: {workspace_list}")
+
+        # Include all available metadata in scan request (INCLUDING VISUAL METADATA!)
+        body = {
+            "workspaces": workspace_list,
+            "datasetExpressions": True,
+            "datasetSchema": True,
+            "datasourceDetails": True,
+            "getArtifactUsers": False,
+            "lineage": False,
+            "reportExpressions": True,  # Get DAX expressions in reports
+            "reportVisuals": True  # ⭐ GET VISUAL METADATA (titles, types, fields)
+        }
+        print(f"   Scan parameters: {workspace_list} (with schema, expressions, AND VISUALS)")
+        print(f"   🔍 Requesting: datasetSchema={body['datasetSchema']}, datasetExpressions={body['datasetExpressions']}, reportVisuals={body['reportVisuals']}")
         print("\n1️⃣  Initiating Admin Scan Request...")
 
         try:
@@ -113,24 +129,66 @@ class PowerBIScanner:
             
             status_url = f"{self.base_url}/admin/workspaces/scanStatus/{scan_id}"
             print("\n2️⃣  Waiting for scan to complete...")
+
+            # ⚡ PERFORMANCE OPTIMIZATION: Adaptive polling with exponential backoff
+            # Start with short intervals for fast scans, increase for longer ones
+            poll_interval = 1  # Start with 1 second
+            max_poll_interval = 5  # Cap at 5 seconds
+            poll_count = 0
+
             while True:
                 s_res = requests.get(status_url, headers=headers)
                 s_res.raise_for_status()
                 s = s_res.json()
                 state = s.get('status')
-                print(f"   Status: {state}")
+                poll_count += 1
+
                 if state == "Succeeded":
+                    print(f"   Status: {state} (after {poll_count} polls)")
                     break
                 if state == "Failed":
                     print("❌ Scan failed on server side.")
                     return None
-                time.sleep(2)
+
+                print(f"   Status: {state} (poll #{poll_count}, waiting {poll_interval:.1f}s)")
+                time.sleep(poll_interval)
+
+                # Gradually increase poll interval to reduce API calls
+                # Polls: 1s, 1.3s, 1.7s, 2.2s, 2.9s, 3.8s, then cap at 5s
+                poll_interval = min(poll_interval * 1.3, max_poll_interval)
 
             print("\n3️⃣  Retrieving scan result...")
             result_url = f"{self.base_url}/admin/workspaces/scanResult/{scan_id}"
             result_res = requests.get(result_url, headers=headers)
             result_res.raise_for_status()
             data = result_res.json()
+
+            # DEBUG: Check if visual metadata is included
+            workspaces = data.get("workspaces", [])
+            if workspaces and len(workspaces) > 0:
+                ws = workspaces[0]
+                reports = ws.get("reports", [])
+                if reports:
+                    first_report = reports[0]
+                    print(f"\n🔍 DEBUG - First report '{first_report.get('name', 'Unknown')}' structure:")
+                    print(f"   Report has keys: {list(first_report.keys())}")
+                    if "pages" in first_report:
+                        print(f"   ✅ Report HAS 'pages' key!")
+                        pages = first_report.get("pages", [])
+                        if pages:
+                            print(f"      First page has keys: {list(pages[0].keys())}")
+                            if "visuals" in pages[0]:
+                                print(f"      ✅ Page HAS 'visuals' key with {len(pages[0]['visuals'])} visuals")
+                                if pages[0].get("visuals"):
+                                    print(f"         First visual has keys: {list(pages[0]['visuals'][0].keys())}")
+                                else:
+                                    print(f"         ❌ 'visuals' array is EMPTY")
+                            else:
+                                print(f"      ❌ Page does NOT have 'visuals' key")
+                        else:
+                            print(f"      ❌ 'pages' array is EMPTY")
+                    else:
+                        print(f"   ❌ Report does NOT have 'pages' key")
 
             return data
 
@@ -147,8 +205,14 @@ class PowerBIScanner:
             print(f"❌ An unexpected error occurred during scan: {e}")
             return None
 
-    def get_dataset_model(self, dataset_id, admin_client=None):
-        """Extract dataset model info - simplified version using admin_client if provided"""
+    def get_dataset_model(self, dataset_id, admin_client=None, workspace_id=None):
+        """Extract dataset model info - simplified version using admin_client if provided
+
+        Args:
+            dataset_id: The dataset ID to extract model for
+            admin_client: Optional admin client (not currently used)
+            workspace_id: Optional workspace ID to scan. If not provided, uses self.workspace_id from .env
+        """
         model = {
             "tables": [],
             "columns": {},
@@ -156,16 +220,16 @@ class PowerBIScanner:
             "measures": [],
             "relationships": []
         }
-        
+
         # If admin_client is provided, we can fetch directly from cache
         if admin_client:
             # This would require adding scan cache to admin_client
             # For now, return empty model and let document creator handle gracefully
             print(f"   ✅ Scanner model extraction initialized (awaiting data)")
             return model
-        
+
         # Otherwise try to run scan (for standalone use)
-        data = self.run_scan()
+        data = self.run_scan(workspace_id=workspace_id)
         
         if not data or "workspaces" not in data:
             return model
@@ -173,19 +237,33 @@ class PowerBIScanner:
         for ws in data["workspaces"]:
             for ds in ws.get("datasets", []):
                 if ds.get("id") == dataset_id:
+                    print(f"   🔍 Found dataset in scan results")
+                    print(f"      Dataset has {len(ds.get('tables', []))} tables")
+
+                    # DEBUG: Print what keys are available in the dataset object
+                    print(f"      🔑 Dataset object keys: {list(ds.keys())}")
+
+                    # DEBUG: Check if 'relationships' key exists
+                    if 'relationships' in ds:
+                        print(f"      ✅ 'relationships' key EXISTS in dataset")
+                    else:
+                        print(f"      ❌ 'relationships' key MISSING from dataset - Scanner API may not be returning relationship data")
+
                     # Extract tables, columns, and M expressions
                     for table in ds.get("tables", []):
                         tname = table.get("name")
                         if not tname: continue
 
                         model["tables"].append(tname)
+                        print(f"      📋 Processing table: {tname}")
 
                         cols = []
                         for col in table.get("columns", []):
                             col_info = {
                                 "name": col.get("name"),
                                 "dataType": col.get("dataType"),
-                                "columnType": col.get("columnType")
+                                "columnType": col.get("columnType"),
+                                "isReferenced": col.get("isReferenced", None)  # Track if column is used in the report
                             }
                             # Include DAX expression for calculated columns
                             if col.get("expression"):
@@ -193,14 +271,40 @@ class PowerBIScanner:
                             cols.append(col_info)
                         model["columns"][tname] = cols
 
-                        for src in table.get("source", []):
+                        # Check for M expressions in table source
+                        table_sources = table.get("source", [])
+                        print(f"         Source array length: {len(table_sources)}")
+
+                        for src in table_sources:
                             expr = src.get("expression")
                             if expr:
+                                print(f"         ✅ Found M expression ({len(expr)} chars)")
                                 model["expressions"].append({
                                     "table": tname,
                                     "expression": expr
                                 })
-                        
+                            else:
+                                print(f"         ⚠️ Source has no expression field")
+
+                        if not table_sources:
+                            print(f"         ℹ️ No source array (likely calculated table)")
+
+                            # For calculated tables, check partitions for DAX expressions
+                            partitions = table.get("partitions", [])
+                            for partition in partitions:
+                                if isinstance(partition, dict):
+                                    part_source = partition.get("source", {})
+                                    if isinstance(part_source, dict):
+                                        dax_expr = part_source.get("expression", "")
+                                        if dax_expr:
+                                            print(f"         ✅ Found DAX table expression ({len(dax_expr)} chars)")
+                                            # Store DAX table expressions separately
+                                            model["expressions"].append({
+                                                "table": tname,
+                                                "expression": dax_expr,
+                                                "expressionType": "DAX"  # Flag it as DAX, not M
+                                            })
+
                         # Extract DAX measures
                         for measure in table.get("measures", []):
                             model["measures"].append({
@@ -211,8 +315,11 @@ class PowerBIScanner:
                             })
                     
                     # Extract relationships
-                    for rel in ds.get("relationships", []):
-                        model["relationships"].append({
+                    dataset_relationships = ds.get("relationships", [])
+                    print(f"      🔗 Dataset has {len(dataset_relationships)} relationships")
+
+                    for rel in dataset_relationships:
+                        relationship = {
                             "name": rel.get("name"),
                             "fromTable": rel.get("fromTable"),
                             "fromColumn": rel.get("fromColumn"),
@@ -221,7 +328,28 @@ class PowerBIScanner:
                             "type": rel.get("type"),
                             "joinType": rel.get("joinType"),
                             "isActive": rel.get("isActive")
-                        })
+                        }
+                        model["relationships"].append(relationship)
+                        print(f"         ✅ Relationship: {rel.get('fromTable')}[{rel.get('fromColumn')}] → {rel.get('toTable')}[{rel.get('toColumn')}]")
+
+                    # ADDITIONAL: Check for dataset-level expressions array
+                    # Some Scanner API responses include expressions at the dataset level
+                    dataset_expressions = ds.get("expressions", [])
+                    if dataset_expressions:
+                        print(f"   🔍 Found {len(dataset_expressions)} dataset-level expressions")
+                        for expr_obj in dataset_expressions:
+                            # Dataset-level expressions might have different structure
+                            expr_name = expr_obj.get("name") or expr_obj.get("table")
+                            expr_text = expr_obj.get("expression")
+                            if expr_name and expr_text:
+                                print(f"      ✅ Dataset expression: {expr_name} ({len(expr_text)} chars)")
+                                # Check if we already have this expression from table sources
+                                existing = any(e.get("table") == expr_name for e in model["expressions"])
+                                if not existing:
+                                    model["expressions"].append({
+                                        "table": expr_name,
+                                        "expression": expr_text
+                                    })
 
         print(f"   ✅ Scanner model found: {len(model['tables'])} table(s), "
               f"{sum(len(v) for v in model['columns'].values())} columns, "

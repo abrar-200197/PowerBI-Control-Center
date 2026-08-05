@@ -1,0 +1,1585 @@
+{% extends "base.html" %}
+
+{% block title %}Similarity Analysis - Power BI Control Center{% endblock %}
+{% block page_heading %}Similarity Analysis{% endblock %}
+{% block page_subtitle %}Find similar reports, visuals, measures, and patterns{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Enterprise Professional Color System */
+    :root {
+        --slate-900: #0F172A;
+        --slate-800: #1E293B;
+        --slate-700: #334155;
+        --slate-600: #475569;
+        --slate-500: #64748B;
+        --slate-400: #94A3B8;
+        --slate-300: #CBD5E0;
+        --slate-200: #E2E8F0;
+        --slate-100: #F1F5F9;
+        --slate-50: #F8FAFC;
+
+        /* Muted status colors - professional palette */
+        --success-50: #F0FDF4;
+        --success-100: #DCFCE7;
+        --success-600: #16A34A;
+        --success-700: #15803D;
+
+        --warning-50: #FFFBEB;
+        --warning-100: #FEF3C7;
+        --warning-600: #D97706;
+        --warning-700: #B45309;
+
+        --info-50: #EFF6FF;
+        --info-100: #DBEAFE;
+        --info-600: #2563EB;
+        --info-700: #1D4ED8;
+    }
+
+    /* ===== Shared dense Control Center chrome ===== */
+    .page-shell { display:flex; flex-direction:column; gap:12px; max-width:100%; min-width:0; }
+
+    .analysis-types {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 0;
+    }
+    @media (max-width: 1100px) { .analysis-types { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 640px) { .analysis-types { grid-template-columns: 1fr; } }
+
+    .analysis-card {
+        background: var(--bg-surface);
+        border-radius: 8px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        cursor: pointer;
+        transition: all 0.15s ease;
+        position: relative;
+        overflow: hidden;
+        box-shadow: var(--shadow-sm);
+        min-height: 88px;
+        color: var(--text);
+    }
+    .analysis-card:hover {
+        border-color: var(--text-muted);
+        background: var(--table-hover);
+    }
+    .analysis-card.active {
+        border-color: var(--info);
+        background: color-mix(in srgb, var(--info) 12%, var(--bg-surface));
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--info) 18%, transparent);
+    }
+    .analysis-card-icon { font-size: 16px; margin-bottom: 6px; opacity: 0.9; }
+    .analysis-card-title {
+        font-size: 13px;
+        font-weight: 650;
+        color: var(--text-strong);
+        margin-bottom: 4px;
+    }
+    .analysis-card-desc {
+        font-size: 12px;
+        color: var(--text-muted);
+        line-height: 1.35;
+    }
+
+    .controls-section, .toolbar {
+        background: var(--bg-surface);
+        padding: 10px 14px;
+        border-radius: 8px;
+        margin-bottom: 0;
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow-sm);
+        color: var(--text);
+    }
+    .controls-row {
+        display: flex;
+        gap: 10px;
+        align-items: flex-end;
+        flex-wrap: wrap;
+    }
+    .control-group {
+        flex: 1;
+        min-width: 180px;
+    }
+    .control-label {
+        display: block;
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--text-muted);
+        margin-bottom: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .control-input, select.control-input {
+        width: 100%;
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 12px;
+        transition: border-color .15s ease, box-shadow .15s ease;
+        background: var(--input-bg);
+        color: var(--text);
+    }
+    .control-input:focus {
+        outline: none;
+        border-color: var(--info);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--info) 18%, transparent);
+    }
+
+    .results-section, .panel {
+        background: var(--bg-surface);
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        overflow: hidden;
+        box-shadow: var(--shadow-sm);
+        color: var(--text);
+    }
+    .results-header, .panel-head {
+        background: var(--bg-surface-2);
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border-soft);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+    }
+    .results-title {
+        font-size: 13px;
+        font-weight: 650;
+        color: var(--text-strong);
+    }
+    .results-count, .badge-count {
+        font-size: 11px;
+        color: var(--text-strong);
+        font-weight: 650;
+        display: inline-flex;
+        align-items: center;
+        height: 22px;
+        padding: 0 10px;
+        border-radius: 999px;
+        background: var(--chip-bg);
+    }
+
+    .export-buttons {
+        display: flex;
+        gap: 8px;
+    }
+
+    /* Table Styling - dense professional */
+    .similarity-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 13px;
+        background: var(--bg-surface);
+        color: var(--text);
+    }
+    .similarity-table thead th {
+        background: var(--bg-surface-2);
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        padding: 8px 12px;
+        text-align: left;
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+    }
+    .similarity-table tbody tr {
+        transition: background-color 0.12s;
+        background: var(--bg-surface);
+    }
+    .similarity-table tbody tr:hover { background: var(--table-hover); }
+    .similarity-table td {
+        padding: 8px 12px;
+        font-size: 13px;
+        color: var(--text);
+        vertical-align: middle;
+        border-bottom: 1px solid var(--border-soft);
+    }
+
+    /* Similarity Score - Muted Professional Traffic Light System */
+    .similarity-score {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 11px;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 13px;
+        border: 1px solid;
+    }
+
+    .score-high {
+        background: var(--success-50);
+        color: var(--success-700);
+        border-color: var(--success-100);
+    }
+
+    .score-medium {
+        background: var(--warning-50);
+        color: var(--warning-700);
+        border-color: var(--warning-100);
+    }
+
+    .score-low {
+        background: #FEF2F2;
+        color: #B91C1C;
+        border-color: #FEE2E2;
+    }
+
+    /* Badge Styles - Muted Tones */
+    .badge {
+        display: inline-block;
+        padding: 4px 9px;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 500;
+        border: 1px solid;
+    }
+
+    .badge-primary {
+        background: var(--info-50);
+        color: var(--info-700);
+        border-color: var(--info-100);
+    }
+
+    .badge-success {
+        background: var(--success-50);
+        color: var(--success-700);
+        border-color: var(--success-100);
+    }
+
+    .badge-warning {
+        background: #FEF3C7;
+        color: #92400E;
+    }
+
+    /* Empty State */
+    .empty-state {
+        text-align: center;
+        padding: 60px 20px;
+        color: var(--text-muted);
+    }
+
+    .empty-state-icon {
+        font-size: 48px;
+        margin-bottom: 16px;
+    }
+
+    .empty-state-text {
+        font-size: 16px;
+        color: var(--text-strong);
+        margin-bottom: 8px;
+    }
+
+    .empty-state-subtext {
+        font-size: 14px;
+        color: var(--text-muted);
+    }
+
+    /* Loading State */
+    .loading-spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    /* Detail Modal Styles - Professional Dark Theme */
+    .detail-modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(15, 23, 42, 0.75);
+        backdrop-filter: blur(4px);
+        z-index: 9999;
+        overflow-y: auto;
+        padding: 20px;
+    }
+
+    .detail-modal-content {
+        background: var(--bg-surface);
+        color: var(--text);
+        max-width: 1100px;
+        margin: 0 auto;
+        border-radius: 8px;
+        box-shadow: 0 20px 60px rgba(15, 23, 42, 0.3);
+        animation: slideDown 0.25s ease-out;
+        border: 1px solid var(--border);
+    }
+
+    @keyframes slideDown {
+        from {
+            opacity: 0;
+            transform: translateY(-30px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .detail-modal-header {
+        padding: 18px 24px;
+        border-bottom: 1px solid var(--slate-200);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: var(--slate-900);
+        color: #FFFFFF;
+        border-radius: 8px 8px 0 0;
+    }
+
+    .detail-modal-header h2 {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+    }
+
+    .detail-modal-close {
+        background: rgba(255, 255, 255, 0.15);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: white;
+        font-size: 22px;
+        cursor: pointer;
+        width: 32px;
+        height: 32px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.15s;
+    }
+
+    .detail-modal-close:hover {
+        background: rgba(255, 255, 255, 0.25);
+        border-color: rgba(255, 255, 255, 0.3);
+    }
+
+    .detail-modal-body {
+        padding: 24px;
+        max-height: calc(100vh - 200px);
+        overflow-y: auto;
+        background: var(--bg-surface-2);
+        color: var(--text);
+    }
+
+    .score-breakdown {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 14px;
+        margin-bottom: 20px;
+    }
+
+    .score-card {
+        background: var(--bg-surface);
+        padding: 14px 16px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--text-muted);
+        box-shadow: var(--shadow-sm);
+        color: var(--text);
+    }
+
+    .score-card-label {
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 600;
+    }
+
+    .score-card-value {
+        font-size: 26px;
+        font-weight: 700;
+        color: var(--text-strong);
+    }
+
+    .detail-section {
+        margin-bottom: 20px;
+        background: var(--bg-surface);
+        border-radius: 6px;
+        padding: 16px;
+        border: 1px solid var(--border);
+        color: var(--text);
+    }
+
+    .detail-section-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-strong);
+        margin-bottom: 14px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--border);
+        letter-spacing: -0.01em;
+    }
+
+    /* Item Tags - Muted Professional Colors */
+    .item-tag {
+        display: inline-block;
+        padding: 5px 10px;
+        margin: 3px;
+        border-radius: 3px;
+        font-size: 12px;
+        font-weight: 500;
+        border: 1px solid;
+        transition: all 0.15s;
+    }
+
+    .item-tag.identical {
+        background: var(--success-50);
+        color: var(--success-700);
+        border-color: var(--success-100);
+    }
+
+    .item-tag.unique-a {
+        background: var(--warning-50);
+        color: var(--warning-700);
+        border-color: var(--warning-100);
+    }
+
+    .item-tag.unique-b {
+        background: var(--info-50);
+        color: var(--info-700);
+        border-color: var(--info-100);
+    }
+
+    .empty-list {
+        color: var(--slate-400);
+        font-style: italic;
+        font-size: 12px;
+        padding: 16px;
+        text-align: center;
+        background: var(--slate-50);
+        border-radius: 4px;
+    }
+
+    .empty-cell {
+        color: var(--slate-400);
+        font-size: 12px;
+        font-style: italic;
+    }
+
+    /* Comparison Table Styles - Clean Professional Layout */
+    .comparison-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        margin-bottom: 0;
+        font-size: 13px;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+        border-radius: 6px;
+        overflow: hidden;
+        border: 1px solid var(--slate-200);
+        overflow: hidden;
+    }
+
+    .comparison-table thead {
+        background: var(--slate-800);
+        color: #FFFFFF;
+    }
+
+    .comparison-table th {
+        padding: 12px 14px;
+        text-align: left;
+        font-weight: 600;
+        font-size: 12px;
+        border-bottom: none;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .comparison-table td {
+        padding: 14px;
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: top;
+        background: var(--bg-surface);
+        color: var(--text);
+    }
+
+    .comparison-table tbody tr:hover td {
+        background: var(--table-hover);
+    }
+
+    .comparison-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .feature-cell {
+        font-weight: 600;
+        color: var(--slate-900);
+        background: var(--slate-100) !important;
+        width: 20%;
+        border-right: 1px solid var(--slate-200);
+    }
+
+    .report-cell {
+        width: 40%;
+        line-height: 1.6;
+    }
+
+    .item-tag.unique-a {
+        background: #FEEBC8;
+        color: #7C2D12;
+        border-left: 3px solid #ED8936;
+    }
+
+    .item-tag.unique-b {
+        background: #BEE3F8;
+        color: #1A365D;
+        border-left: 3px solid #4299E1;
+    }
+
+    .empty-cell {
+        color: #A0AEC0;
+        font-style: italic;
+        text-align: center;
+        padding: 20px;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+        .analysis-types {
+            grid-template-columns: 1fr;
+        }
+
+        .controls-row {
+            flex-direction: column;
+        }
+
+        .similarity-table {
+            font-size: 12px;
+        }
+
+        .similarity-table th,
+        .similarity-table td {
+            padding: 10px 12px;
+        }
+
+        .comparison-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .score-breakdown {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-shell">
+
+    <!-- Analysis Type Selection -->
+    <div class="analysis-types" role="tablist" aria-label="Analysis type">
+        <div class="analysis-card active" onclick="selectAnalysisType('reports')" id="card-reports" role="tab" aria-selected="true">
+            <div class="analysis-card-icon">▣</div>
+            <div class="analysis-card-title">Report similarity</div>
+            <div class="analysis-card-desc">Similar datasets, tables, or measures</div>
+        </div>
+
+        <div class="analysis-card" onclick="selectAnalysisType('visuals')" id="card-visuals" role="tab">
+            <div class="analysis-card-icon">▤</div>
+            <div class="analysis-card-title">Visual similarity</div>
+            <div class="analysis-card-desc">Shared fields or visual patterns</div>
+        </div>
+
+        <div class="analysis-card" onclick="selectAnalysisType('measures')" id="card-measures" role="tab">
+            <div class="analysis-card-icon">ƒ</div>
+            <div class="analysis-card-title">Measure similarity</div>
+            <div class="analysis-card-desc">Similar DAX formulas</div>
+        </div>
+
+        <div class="analysis-card" onclick="selectAnalysisType('tables')" id="card-tables" role="tab">
+            <div class="analysis-card-icon">▥</div>
+            <div class="analysis-card-title">Table similarity</div>
+            <div class="analysis-card-desc">Similar structures or sources</div>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls-section">
+        <div class="controls-row">
+            <div class="control-group">
+                <label class="control-label" for="workspaceSelect">Workspace</label>
+                <select id="workspaceSelect" class="control-input" onchange="onWorkspaceChange()">
+                    <option value="">Select workspace…</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label class="control-label" for="thresholdSelect">Similarity threshold</label>
+                <select id="thresholdSelect" class="control-input">
+                    <option value="0.9">Very high (90%+)</option>
+                    <option value="0.7">High (70%+)</option>
+                    <option value="0.5">Medium (50%+)</option>
+                    <option value="0.3" selected>Low (30%+)</option>
+                </select>
+            </div>
+
+            <div class="control-group" style="flex: 0 0 auto;">
+                <button onclick="runAnalysis()" class="btn btn-primary" type="button" style="height:34px;">
+                    <span id="analyzeBtn">Analyze</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Section -->
+    <div class="results-section" id="resultsSection" style="display: none;">
+        <div class="results-header">
+            <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                <div class="results-title" id="resultsTitle">Analysis results</div>
+                <div class="results-count" id="resultsCount">0 matches</div>
+            </div>
+            <div class="export-buttons" style="display:flex;gap:8px;">
+                <button onclick="exportToExcel()" class="btn btn-secondary" type="button">Export Excel</button>
+                <button onclick="exportToCSV()" class="btn btn-secondary" type="button">Export CSV</button>
+            </div>
+        </div>
+
+        <div id="resultsContent" style="max-height: calc(100vh - 320px); overflow: auto;">
+            <!-- Results will be populated here -->
+        </div>
+    </div>
+
+    <!-- Empty State -->
+    <div class="empty-state panel" id="emptyState" style="text-align:center;padding:40px 16px;color:#718096;font-size:13px;">
+        <div class="empty-state-text" style="font-weight:650;color:#2D3748;margin-bottom:4px;">Select a workspace and analysis type</div>
+        <div class="empty-state-subtext">Click Analyze to discover similarities across your environment</div>
+    </div>
+
+    <!-- Detail Modal -->
+    <div id="detailModal" class="detail-modal">
+        <div class="detail-modal-content">
+            <div class="detail-modal-header">
+                <h2 id="modalTitle">Similarity Details</h2>
+                <button class="detail-modal-close" onclick="closeDetailModal()">&times;</button>
+            </div>
+            <div class="detail-modal-body" id="modalBody">
+                <!-- Content will be populated by JavaScript -->
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+let currentAnalysisType = 'reports';
+let currentResults = [];
+let allWorkspaces = [];
+
+// Load workspaces on page load
+document.addEventListener('DOMContentLoaded', function() {
+    loadWorkspaces();
+});
+
+async function loadWorkspaces() {
+    try {
+        const response = await fetch('/api/workspaces');
+        const result = await response.json();
+
+        if (result.success) {
+            allWorkspaces = result.workspaces;
+            const select = document.getElementById('workspaceSelect');
+            select.innerHTML = '<option value="">Select workspace...</option>';
+
+            // Add "All Workspaces" option for global analysis
+            const allOption = document.createElement('option');
+            allOption.value = 'ALL';
+            allOption.textContent = '🌍 All Workspaces (Cross-Workspace Analysis)';
+            allOption.style.fontWeight = 'bold';
+            allOption.style.backgroundColor = '#EFF6FF';
+            select.appendChild(allOption);
+
+            // Add separator
+            const separator = document.createElement('option');
+            separator.disabled = true;
+            separator.textContent = '────────────────────────';
+            select.appendChild(separator);
+
+            result.workspaces.sort((a, b) => a.name.localeCompare(b.name)).forEach(ws => {
+                const option = document.createElement('option');
+                option.value = ws.id;
+                option.textContent = ws.name;
+                select.appendChild(option);
+            });
+        }
+    } catch (error) {
+        console.error('Error loading workspaces:', error);
+    }
+}
+
+function selectAnalysisType(type) {
+    // Update UI
+    document.querySelectorAll('.analysis-card').forEach(card => {
+        card.classList.remove('active');
+    });
+    document.getElementById(`card-${type}`).classList.add('active');
+
+    currentAnalysisType = type;
+    console.log('Selected analysis type:', type);
+}
+
+function onWorkspaceChange() {
+    // Reset results when workspace changes
+    document.getElementById('resultsSection').style.display = 'none';
+    document.getElementById('emptyState').style.display = 'block';
+}
+
+async function runAnalysis() {
+    const workspaceId = document.getElementById('workspaceSelect').value;
+    const threshold = parseFloat(document.getElementById('thresholdSelect').value);
+
+    if (!workspaceId) {
+        alert('Please select a workspace');
+        return;
+    }
+
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const typeLabel = ({
+        reports: 'reports',
+        visuals: 'visuals',
+        measures: 'measures',
+        tables: 'tables',
+    })[currentAnalysisType] || currentAnalysisType;
+
+    analyzeBtn.innerHTML = `<span class="loading-spinner"></span> Analyzing ${typeLabel}…`;
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('resultsSection').style.display = 'none';
+
+    try {
+        // Multi-type endpoint — each card maps to type=
+        // (Deep report endpoint /api/reports/similarity-analysis/* remains available separately)
+        let url;
+        let useDeepReportEndpoint = false;
+
+        if (currentAnalysisType === 'reports') {
+            // Prefer deep pairwise report endpoint (richer UI: DAX/pages/visual breakdown)
+            // Fall back to multi-type if it fails.
+            useDeepReportEndpoint = true;
+            url = `/api/reports/similarity-analysis/${encodeURIComponent(workspaceId)}?threshold=${encodeURIComponent(threshold)}`;
+        } else {
+            url = `/api/similarity-analysis?workspace_id=${encodeURIComponent(workspaceId)}&type=${encodeURIComponent(currentAnalysisType)}&threshold=${encodeURIComponent(threshold)}`;
+        }
+
+        let response = await fetch(url, { credentials: 'same-origin' });
+        let result = await response.json();
+
+        // Fallback: deep report API unavailable → multi-type reports
+        if (useDeepReportEndpoint && (!result.success || (!(result.comparisons || []).length && result.error))) {
+            console.warn('Deep report similarity failed/empty, falling back to multi-type', result.error || result);
+            response = await fetch(
+                `/api/similarity-analysis?workspace_id=${encodeURIComponent(workspaceId)}&type=reports&threshold=${encodeURIComponent(threshold)}`,
+                { credentials: 'same-origin' }
+            );
+            result = await response.json();
+            useDeepReportEndpoint = false;
+        }
+
+        if (!result.success) {
+            throw new Error(result.error || 'Analysis failed');
+        }
+
+        if (useDeepReportEndpoint) {
+            currentResults = result.comparisons || [];
+            currentResults._format = 'deep_reports';
+        } else {
+            currentResults = result.matches || [];
+            currentResults._format = currentAnalysisType;
+        }
+        currentResults._notes = result.notes || [];
+        currentResults._meta = {
+            analysis_type: result.analysis_type || currentAnalysisType,
+            threshold: result.threshold,
+            data_source: result.data_source,
+            total_matches: result.total_matches,
+        };
+
+        displayResults(currentResults, currentResults._format, currentResults._notes);
+    } catch (error) {
+        console.error('Analysis error:', error);
+        alert('Failed to run analysis: ' + (error.message || error));
+        document.getElementById('emptyState').style.display = 'block';
+    } finally {
+        analyzeBtn.innerHTML = 'Analyze';
+    }
+}
+
+function displayResults(matches, format, notes) {
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('resultsSection').style.display = 'block';
+    const count = Array.isArray(matches) ? matches.length : 0;
+    document.getElementById('resultsCount').textContent = `${count} match${count !== 1 ? 'es' : ''} found`;
+
+    const content = document.getElementById('resultsContent');
+    const noteHtml = (notes && notes.length)
+        ? `<div style="margin:0 0 10px;padding:8px 12px;background:#FFFAF0;border:1px solid #FEEBC8;border-radius:6px;font-size:12px;color:#9C4221;">${notes.map(escapeHtml).join('<br>')}</div>`
+        : '';
+
+    if (!count) {
+        content.innerHTML = noteHtml + `
+            <div class="empty-state">
+                <div class="empty-state-icon">📭</div>
+                <div class="empty-state-text">No similarities found</div>
+                <div class="empty-state-subtext">Try a lower threshold, another workspace, or another analysis type</div>
+            </div>
+        `;
+        return;
+    }
+
+    const mode = format || currentAnalysisType || 'reports';
+    if (mode === 'deep_reports' || (mode === 'reports' && matches[0] && matches[0].report_a)) {
+        renderReportSimilarity(matches, noteHtml);
+    } else if (mode === 'reports') {
+        renderSimpleReportSimilarity(matches, noteHtml);
+    } else if (mode === 'visuals') {
+        renderVisualSimilarity(matches, noteHtml);
+    } else if (mode === 'measures') {
+        renderMeasureSimilarity(matches, noteHtml);
+    } else if (mode === 'tables') {
+        renderTableSimilarity(matches, noteHtml);
+    } else {
+        renderSimpleReportSimilarity(matches, noteHtml);
+    }
+}
+
+// Render functions for each analysis type
+// Global array to store match details for onclick handlers
+let matchDetailsCache = [];
+
+function pctScore(score) {
+    // Accept 0-1 or 0-100
+    if (score == null || isNaN(score)) return 0;
+    const n = Number(score);
+    return n <= 1 ? Math.round(n * 100) : Math.round(n);
+}
+
+function scoreClassFromPct(p) {
+    return p >= 80 ? 'score-high' : p >= 50 ? 'score-medium' : 'score-low';
+}
+
+function renderReportSimilarity(matches, noteHtml = '') {
+    // Deep report format: report_a / report_b / similarity_score
+    const rows = matches.slice().sort((a, b) => {
+        const nameA = (a.report_a?.name || '').toLowerCase();
+        const nameB = (b.report_a?.name || '').toLowerCase();
+        if (nameA !== nameB) return nameA.localeCompare(nameB);
+        return (b.similarity_score || 0) - (a.similarity_score || 0);
+    });
+
+    matchDetailsCache = [];
+
+    let html = (noteHtml || '') + `
+        <table class="similarity-table">
+            <thead>
+                <tr>
+                    <th>Report Pair</th>
+                    <th>Similarity Score</th>
+                    <th>Common Tables</th>
+                    <th>Common Measures</th>
+                    <th>Breakdown</th>
+                    <th>Match Details</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    rows.forEach((match, index) => {
+        matchDetailsCache[index] = match;
+
+        const score = pctScore(match.similarity_score);
+        const scoreClass = scoreClassFromPct(score);
+        const commonTables = match.identical_tables || [];
+        const identicalMeasures = match.identical_measures || [];
+        const logicMatchedMeasures = match.logic_matched_measures || [];
+        const daxScore = match.dax_similarity || 0;
+        const tableScore = match.table_similarity || 0;
+        const visualScore = match.visual_similarity || 0;
+        const reportAName = match.report_a?.name || 'Unknown';
+        const reportBName = match.report_b?.name || 'Unknown';
+        const workspaceAName = match.report_a?.workspace_name || '';
+        const workspaceBName = match.report_b?.workspace_name || '';
+        const isCrossWorkspace = match.is_cross_workspace || false;
+
+        html += `
+            <tr>
+                <td>
+                    <div style="font-weight: 600; color: #2D3748; margin-bottom: 4px;">
+                        ${escapeHtml(reportAName)}
+                        ${isCrossWorkspace ? '<span style="background: #DBEAFE; color: #1D4ED8; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-left: 4px;">Cross-WS</span>' : ''}
+                    </div>
+                    ${workspaceAName ? `<div style="font-size: 11px; color: #94A3B8;">${escapeHtml(workspaceAName)}</div>` : ''}
+                    <div style="font-size: 12px; color: #718096; margin: 4px 0;">⇄</div>
+                    <div style="font-weight: 600; color: #2D3748; margin-top: 4px;">${escapeHtml(reportBName)}</div>
+                    ${workspaceBName ? `<div style="font-size: 11px; color: #94A3B8;">${escapeHtml(workspaceBName)}</div>` : ''}
+                </td>
+                <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
+                <td>
+                    <span class="badge badge-primary">${commonTables.length} tables</span>
+                    ${commonTables.length ? `<div style="font-size: 11px; color: #718096; margin-top: 4px;">${escapeHtml(commonTables.slice(0,2).join(', '))}${commonTables.length > 2 ? '…' : ''}</div>` : ''}
+                </td>
+                <td>
+                    <span class="badge badge-success">${identicalMeasures.length + logicMatchedMeasures.length} measures</span>
+                    ${logicMatchedMeasures.length ? `<div style="font-size: 10px; color: #9F7AEA; margin-top: 2px;">+${logicMatchedMeasures.length} logic-matched</div>` : ''}
+                </td>
+                <td style="font-size: 12px; color: #718096;">
+                    <div>DAX: ${daxScore}%</div>
+                    <div>Tables: ${tableScore}%</div>
+                    <div>Visuals: ${visualScore}%</div>
+                </td>
+                <td>
+                    <button type="button" onclick="showMatchDetailsFromCache(${index})" class="btn btn-sm btn-primary">View Details</button>
+                </td>
+            </tr>
+        `;
+    });
+
+    html += `</tbody></table>`;
+    document.getElementById('resultsContent').innerHTML = html;
+    document.getElementById('resultsTitle').textContent = 'Report similarity';
+}
+
+function renderSimpleReportSimilarity(matches, noteHtml = '') {
+    // Multi-type endpoint shape: report1_name / score 0-1 / common_tables
+    matchDetailsCache = [];
+    let html = (noteHtml || '') + `
+        <table class="similarity-table">
+            <thead>
+                <tr>
+                    <th>Report Pair</th>
+                    <th>Score</th>
+                    <th>Common Tables</th>
+                    <th>Common Measures</th>
+                    <th>Datasets</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    matches.forEach((match, index) => {
+        matchDetailsCache[index] = match;
+        const score = pctScore(match.score);
+        const scoreClass = scoreClassFromPct(score);
+        const tables = match.common_tables || [];
+        const measures = match.common_measures || [];
+        html += `
+            <tr>
+                <td>
+                    <div style="font-weight:600;">${escapeHtml(match.report1_name || '—')}</div>
+                    <div style="font-size:12px;color:#718096;">⇄</div>
+                    <div style="font-weight:600;">${escapeHtml(match.report2_name || '—')}</div>
+                    ${match.same_dataset ? '<div style="font-size:10px;color:#2B6CB0;margin-top:4px;">Same dataset</div>' : ''}
+                </td>
+                <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
+                <td>
+                    <span class="badge badge-primary">${match.common_tables_count || tables.length}</span>
+                    ${tables.length ? `<div style="font-size:11px;color:#718096;margin-top:4px;">${escapeHtml(tables.slice(0,3).join(', '))}${tables.length > 3 ? '…' : ''}</div>` : ''}
+                </td>
+                <td>
+                    <span class="badge badge-success">${match.common_measures_count || measures.length}</span>
+                    ${measures.length ? `<div style="font-size:11px;color:#718096;margin-top:4px;">${escapeHtml(measures.slice(0,3).join(', '))}${measures.length > 3 ? '…' : ''}</div>` : ''}
+                </td>
+                <td style="font-size:12px;color:#718096;">
+                    ${escapeHtml(match.dataset1_name || match.dataset_name || '—')}<br>
+                    ${escapeHtml(match.dataset2_name || '')}
+                </td>
+                <td><button type="button" class="btn btn-sm btn-primary" onclick="showMatchDetailsFromCache(${index})">Details</button></td>
+            </tr>
+        `;
+    });
+    html += `</tbody></table>`;
+    document.getElementById('resultsContent').innerHTML = html;
+    document.getElementById('resultsTitle').textContent = 'Report similarity';
+}
+
+function showMatchDetailsFromCache(index) {
+    if (matchDetailsCache[index]) {
+        showMatchDetails(matchDetailsCache[index]);
+    } else {
+        console.error('Match details not found in cache for index:', index);
+    }
+}
+
+function renderVisualSimilarity(matches, noteHtml = '') {
+    matchDetailsCache = [];
+    let html = (noteHtml || '') + `
+        <table class="similarity-table">
+            <thead>
+                <tr>
+                    <th>Visual Pair</th>
+                    <th>Score</th>
+                    <th>Type</th>
+                    <th>Common Fields</th>
+                    <th>Reports / Pages</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    matches.forEach((match, index) => {
+        matchDetailsCache[index] = match;
+        const score = pctScore(match.score);
+        const scoreClass = scoreClassFromPct(score);
+        const fields = match.common_fields || [];
+        html += `
+            <tr>
+                <td>
+                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.visual1_title || 'Untitled')}</div>
+                    <div style="font-size: 12px; color: #718096;">⇄</div>
+                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.visual2_title || 'Untitled')}</div>
+                </td>
+                <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
+                <td><span class="badge badge-primary">${escapeHtml(match.visual_type || '—')}</span></td>
+                <td>
+                    <span class="badge badge-success">${match.common_fields_count || fields.length} fields</span>
+                    ${fields.length ? `<div style="font-size: 11px; color: #718096; margin-top: 4px;">${escapeHtml(fields.slice(0,3).join(', '))}${fields.length > 3 ? '…' : ''}</div>` : ''}
+                </td>
+                <td style="font-size: 12px; color: #718096;">
+                    ${escapeHtml(match.report1_name || '—')} · ${escapeHtml(match.page1 || '—')}<br>
+                    ${escapeHtml(match.report2_name || '—')} · ${escapeHtml(match.page2 || '—')}
+                </td>
+                <td>
+                    <button type="button" onclick="showMatchDetailsFromCache(${index})" class="btn btn-sm btn-primary">Details</button>
+                </td>
+            </tr>
+        `;
+    });
+
+    html += `</tbody></table>`;
+    document.getElementById('resultsContent').innerHTML = html;
+    document.getElementById('resultsTitle').textContent = 'Visual similarity';
+}
+
+function renderMeasureSimilarity(matches, noteHtml = '') {
+    matchDetailsCache = [];
+    let html = (noteHtml || '') + `
+        <table class="similarity-table">
+            <thead>
+                <tr>
+                    <th>Measure Pair</th>
+                    <th>Score</th>
+                    <th>Tables</th>
+                    <th>DAX Pattern</th>
+                    <th>Datasets</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    matches.forEach((match, index) => {
+        matchDetailsCache[index] = match;
+        const score = pctScore(match.score);
+        const scoreClass = scoreClassFromPct(score);
+        html += `
+            <tr>
+                <td>
+                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.measure1_name || '—')}</div>
+                    <div style="font-size: 12px; color: #718096;">⇄</div>
+                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.measure2_name || '—')}</div>
+                </td>
+                <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
+                <td style="font-size: 12px; color: #718096;">
+                    ${escapeHtml(match.table1_name || '—')}<br>
+                    ${escapeHtml(match.table2_name || '—')}
+                </td>
+                <td><span class="badge badge-warning">${escapeHtml(match.dax_pattern || 'Similar')}</span></td>
+                <td style="font-size:12px;color:#718096;">
+                    ${escapeHtml(match.dataset1 || '—')}<br>
+                    ${escapeHtml(match.dataset2 || '—')}
+                </td>
+                <td>
+                    <button type="button" onclick="showMatchDetailsFromCache(${index})" class="btn btn-sm btn-primary">View DAX</button>
+                </td>
+            </tr>
+        `;
+    });
+
+    html += `</tbody></table>`;
+    document.getElementById('resultsContent').innerHTML = html;
+    document.getElementById('resultsTitle').textContent = 'Measure similarity';
+}
+
+function renderTableSimilarity(matches, noteHtml = '') {
+    matchDetailsCache = [];
+    let html = (noteHtml || '') + `
+        <table class="similarity-table">
+            <thead>
+                <tr>
+                    <th>Table Pair</th>
+                    <th>Score</th>
+                    <th>Common Columns</th>
+                    <th>Source Type</th>
+                    <th>Datasets</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    matches.forEach((match, index) => {
+        matchDetailsCache[index] = match;
+        const score = pctScore(match.score);
+        const scoreClass = scoreClassFromPct(score);
+        const cols = match.common_columns || [];
+        html += `
+            <tr>
+                <td>
+                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.table1_name || '—')}</div>
+                    <div style="font-size: 12px; color: #718096;">⇄</div>
+                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.table2_name || '—')}</div>
+                </td>
+                <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
+                <td>
+                    <span class="badge badge-success">${match.common_columns_count || cols.length} columns</span>
+                    ${cols.length ? `<div style="font-size: 11px; color: #718096; margin-top: 4px;">${escapeHtml(cols.slice(0,3).join(', '))}${cols.length > 3 ? '…' : ''}</div>` : ''}
+                </td>
+                <td><span class="badge badge-primary">${escapeHtml(match.source_type || '—')}</span></td>
+                <td style="font-size:12px;color:#718096;">
+                    ${escapeHtml(match.dataset1 || '—')}<br>
+                    ${escapeHtml(match.dataset2 || '—')}
+                </td>
+                <td>
+                    <button type="button" onclick="showMatchDetailsFromCache(${index})" class="btn btn-sm btn-primary">Details</button>
+                </td>
+            </tr>
+        `;
+    });
+
+    html += `</tbody></table>`;
+    document.getElementById('resultsContent').innerHTML = html;
+    document.getElementById('resultsTitle').textContent = 'Table similarity';
+}
+
+function escapeHtml(text) {
+    if (text == null) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+}
+
+function showMatchDetails(match) {
+    // Route modal content by match shape
+    if (match.report_a || match.report_b) {
+        return showDeepReportMatchDetails(match);
+    }
+    if (match.measure1_name || match.dax1) {
+        return showGenericMatchDetails(match, 'Measure similarity', [
+            ['Measure A', match.measure1_name],
+            ['Measure B', match.measure2_name],
+            ['Table A', match.table1_name],
+            ['Table B', match.table2_name],
+            ['Dataset A', match.dataset1],
+            ['Dataset B', match.dataset2],
+            ['Score', pctScore(match.score) + '%'],
+            ['DAX pattern', match.dax_pattern],
+            ['DAX A', match.dax1],
+            ['DAX B', match.dax2],
+        ]);
+    }
+    if (match.visual1_title || match.visual_type) {
+        return showGenericMatchDetails(match, 'Visual similarity', [
+            ['Visual A', match.visual1_title],
+            ['Visual B', match.visual2_title],
+            ['Type', match.visual_type],
+            ['Report A', match.report1_name],
+            ['Page A', match.page1],
+            ['Report B', match.report2_name],
+            ['Page B', match.page2],
+            ['Score', pctScore(match.score) + '%'],
+            ['Common fields', (match.common_fields || []).join(', ')],
+        ]);
+    }
+    if (match.table1_name && match.common_columns) {
+        return showGenericMatchDetails(match, 'Table similarity', [
+            ['Table A', match.table1_name],
+            ['Table B', match.table2_name],
+            ['Dataset A', match.dataset1],
+            ['Dataset B', match.dataset2],
+            ['Score', pctScore(match.score) + '%'],
+            ['Source type', match.source_type],
+            ['Common columns', (match.common_columns || []).join(', ')],
+        ]);
+    }
+    if (match.report1_name || match.report2_name) {
+        return showGenericMatchDetails(match, 'Report similarity', [
+            ['Report A', match.report1_name],
+            ['Report B', match.report2_name],
+            ['Dataset A', match.dataset1_name || match.dataset_name],
+            ['Dataset B', match.dataset2_name],
+            ['Score', pctScore(match.score) + '%'],
+            ['Common tables', (match.common_tables || []).join(', ')],
+            ['Common measures', (match.common_measures || []).join(', ')],
+        ]);
+    }
+    return showGenericMatchDetails(match, 'Match details', Object.keys(match).map(k => [k, match[k]]));
+}
+
+function showGenericMatchDetails(match, title, rows) {
+    document.getElementById('modalTitle').textContent = title;
+    let html = `<div style="display:grid;gap:8px;">`;
+    html += `<div style="font-size:22px;font-weight:700;color:#2B6CB0;margin-bottom:8px;">${pctScore(match.score ?? match.similarity_score)}%</div>`;
+    rows.forEach(([label, value]) => {
+        const v = value == null || value === '' ? '—' : value;
+        const isLong = typeof v === 'string' && v.length > 120;
+        html += `
+            <div style="border:1px solid #E2E8F0;border-radius:6px;padding:8px 10px;background:#fff;">
+                <div style="font-size:11px;font-weight:700;color:#718096;text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px;">${escapeHtml(label)}</div>
+                <div style="font-size:13px;color:#1A202C;${isLong ? 'white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;background:#F7FAFC;padding:8px;border-radius:4px;max-height:180px;overflow:auto;' : ''}">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : v)}</div>
+            </div>`;
+    });
+    html += `</div>`;
+    document.getElementById('modalBody').innerHTML = html;
+    document.getElementById('detailModal').style.display = 'flex';
+}
+
+function showDeepReportMatchDetails(match) {
+    const reportA = match.report_a?.name || 'Unknown';
+    const reportB = match.report_b?.name || 'Unknown';
+
+    document.getElementById('modalTitle').innerHTML = `
+        Similarity: ${escapeHtml(reportA)} ⇄ ${escapeHtml(reportB)}
+    `;
+
+    let html = `
+        <div class="score-breakdown">
+            <div class="score-card">
+                <div class="score-card-label">Overall Similarity</div>
+                <div class="score-card-value" style="color: #667eea;">${match.similarity_score || 0}%</div>
+            </div>
+            <div class="score-card">
+                <div class="score-card-label">DAX Logic</div>
+                <div class="score-card-value" style="color: #48BB78;">${match.dax_similarity || 0}%</div>
+            </div>
+            <div class="score-card">
+                <div class="score-card-label">Data Model</div>
+                <div class="score-card-value" style="color: #4299E1;">${match.table_similarity || 0}%</div>
+            </div>
+            <div class="score-card">
+                <div class="score-card-label">Pages</div>
+                <div class="score-card-value" style="color: #ED8936;">${match.page_similarity || 0}%</div>
+            </div>
+            <div class="score-card">
+                <div class="score-card-label">Visuals</div>
+                <div class="score-card-value" style="color: #9F7AEA;">${match.visual_similarity || 0}%</div>
+            </div>
+        </div>
+
+        <!-- Color Legend -->
+        <div style="background: #F7FAFC; padding: 16px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 24px; flex-wrap: wrap; align-items: center;">
+            <div style="font-weight: 600; color: #2D3748;">Legend:</div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="item-tag identical">✓ Item</span>
+                <span style="font-size: 12px; color: #4A5568;">Common (Both Reports)</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="item-tag unique-a">⊕ Item</span>
+                <span style="font-size: 12px; color: #4A5568;">Only in ${escapeHtml(reportA)}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="item-tag unique-b">⊕ Item</span>
+                <span style="font-size: 12px; color: #4A5568;">Only in ${escapeHtml(reportB)}</span>
+            </div>
+        </div>
+
+        <!-- Comparison Table -->
+        <div class="detail-section">
+            <div class="detail-section-title">📋 Detailed Comparison</div>
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th>${escapeHtml(reportA)}</th>
+                        <th>${escapeHtml(reportB)}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${renderComparisonRow('Tables', match.identical_tables, match.unique_tables_a, match.unique_tables_b)}
+                    ${renderComparisonRow('Measures (Identical Names)', match.identical_measures, match.unique_measures_a, match.unique_measures_b)}
+                    ${(match.logic_matched_measures || []).length > 0 ? renderLogicMatchedRow(match.logic_matched_measures) : ''}
+                    ${renderComparisonRow('Pages', match.identical_pages, match.unique_pages_a, match.unique_pages_b)}
+                    ${(match.identical_visuals || []).length > 0 || (match.similar_visuals || []).length > 0 ? renderVisualSimilarityRow(match.identical_visuals, match.similar_visuals) : ''}
+                </tbody>
+            </table>
+        </div>
+    `;
+
+    document.getElementById('modalBody').innerHTML = html;
+    document.getElementById('detailModal').style.display = 'block';
+}
+
+function renderLogicMatchedRow(logicMatched) {
+    if (!logicMatched || logicMatched.length === 0) return '';
+
+    const matchedList = logicMatched.map(lm =>
+        `<div style="margin: 4px 0; padding: 8px; background: #F3E8FF; border-left: 3px solid #9F7AEA; border-radius: 4px;">
+            <div style="font-weight: 600; color: #6B21A8;">🔗 Logic Match</div>
+            <div style="font-size: 12px; color: #4A5568; margin-top: 4px;">
+                <span style="color: #2563EB;">${escapeHtml(lm.measure_a)}</span>
+                <span style="color: #94A3B8;">⟷</span>
+                <span style="color: #2563EB;">${escapeHtml(lm.measure_b)}</span>
+            </div>
+            <div style="font-size: 11px; color: #6B7280; margin-top: 4px; font-family: monospace; background: white; padding: 4px; border-radius: 3px;">
+                ${escapeHtml((lm.expression || '').substring(0, 100))}${lm.expression && lm.expression.length > 100 ? '...' : ''}
+            </div>
+        </div>`
+    ).join('');
+
+    return `
+        <tr style="background: #FDFAFF;">
+            <td class="feature-cell">Measures (Same Logic, Different Names)</td>
+            <td colspan="2">
+                <div style="color: #9F7AEA; font-weight: 600; margin-bottom: 8px;">
+                    ${logicMatched.length} measure pair(s) with identical DAX logic but different names
+                </div>
+                ${matchedList}
+            </td>
+        </tr>
+    `;
+}
+
+function renderVisualSimilarityRow(identicalVisuals, similarVisuals) {
+    const identical = identicalVisuals || [];
+    const similar = similarVisuals || [];
+
+    if (identical.length === 0 && similar.length === 0) return '';
+
+    let content = '';
+
+    if (identical.length > 0) {
+        content += `
+            <div style="margin-bottom: 12px;">
+                <div style="font-weight: 600; color: #48BB78; margin-bottom: 8px;">
+                    ✓ ${identical.length} Identical Visual(s)
+                </div>
+                ${identical.slice(0, 3).map(v => `
+                    <div style="margin: 4px 0; padding: 6px; background: #F0FDF4; border-left: 3px solid #48BB78; border-radius: 4px; font-size: 12px;">
+                        <strong>${escapeHtml(v.type)}</strong>: ${escapeHtml(v.title)}
+                        ${v.fields && v.fields.length > 0 ? `<div style="color: #6B7280; font-size: 11px; margin-top: 2px;">${v.fields.length} field(s)</div>` : ''}
+                    </div>
+                `).join('')}
+                ${identical.length > 3 ? `<div style="font-size: 11px; color: #94A3B8; margin-top: 4px;">+${identical.length - 3} more</div>` : ''}
+            </div>
+        `;
+    }
+
+    if (similar.length > 0) {
+        content += `
+            <div>
+                <div style="font-weight: 600; color: #ECC94B; margin-bottom: 8px;">
+                    ≈ ${similar.length} Similar Visual(s) (70%+ field overlap)
+                </div>
+                ${similar.slice(0, 3).map(v => `
+                    <div style="margin: 4px 0; padding: 6px; background: #FFFBEB; border-left: 3px solid #ECC94B; border-radius: 4px; font-size: 12px;">
+                        <strong>${escapeHtml(v.type)}</strong>
+                        <div style="color: #6B7280; font-size: 11px; margin-top: 2px;">
+                            ${v.common_fields && v.common_fields.length > 0 ? `${v.common_fields.length} common field(s) (${Math.round(v.overlap_ratio * 100)}% overlap)` : ''}
+                        </div>
+                    </div>
+                `).join('')}
+                ${similar.length > 3 ? `<div style="font-size: 11px; color: #94A3B8; margin-top: 4px;">+${similar.length - 3} more</div>` : ''}
+            </div>
+        `;
+    }
+
+    return `
+        <tr style="background: #FCFCFC;">
+            <td class="feature-cell">Visual Similarity</td>
+            <td colspan="2">${content}</td>
+        </tr>
+    `;
+}
+
+function renderComparisonRow(featureName, commonItems, uniqueA, uniqueB) {
+    const common = commonItems || [];
+    const onlyA = uniqueA || [];
+    const onlyB = uniqueB || [];
+
+    const totalCount = common.length + onlyA.length + onlyB.length;
+
+    if (totalCount === 0) {
+        return `
+            <tr>
+                <td class="feature-cell">${featureName}</td>
+                <td colspan="2" class="empty-cell">No ${featureName.toLowerCase()} found in either report</td>
+            </tr>
+        `;
+    }
+
+    // Render common items (shown in both columns with green styling)
+    let cellA = '';
+    let cellB = '';
+
+    // Add common items to both columns
+    if (common.length > 0) {
+        common.forEach(item => {
+            cellA += `<span class="item-tag identical">✓ ${escapeHtml(item)}</span>`;
+            cellB += `<span class="item-tag identical">✓ ${escapeHtml(item)}</span>`;
+        });
+    }
+
+    // Add unique items to respective columns
+    if (onlyA.length > 0) {
+        onlyA.forEach(item => {
+            cellA += `<span class="item-tag unique-a">⊕ ${escapeHtml(item)}</span>`;
+        });
+    }
+
+    if (onlyB.length > 0) {
+        onlyB.forEach(item => {
+            cellB += `<span class="item-tag unique-b">⊕ ${escapeHtml(item)}</span>`;
+        });
+    }
+
+    // If column is empty, show empty state
+    if (!cellA) cellA = '<span class="empty-cell">None</span>';
+    if (!cellB) cellB = '<span class="empty-cell">None</span>';
+
+    return `
+        <tr>
+            <td class="feature-cell">
+                ${featureName}
+                <div style="font-size: 11px; color: #718096; margin-top: 4px;">
+                    ${common.length} common, ${onlyA.length + onlyB.length} unique
+                </div>
+            </td>
+            <td class="report-cell">${cellA}</td>
+            <td class="report-cell">${cellB}</td>
+        </tr>
+    `;
+}
+
+function renderItemList(items, styleClass, emptyMessage) {
+    if (!items || items.length === 0) {
+        return `<div class="empty-list">${emptyMessage || 'No items'}</div>`;
+    }
+
+    const listItems = items.map(item => `<li>${escapeHtml(item)}</li>`).join('');
+    return `<ul class="item-list ${styleClass}">${listItems}</ul>`;
+}
+
+function renderSimilarMeasures(measures) {
+    if (!measures || measures.length === 0) {
+        return '<div class="empty-list">No similar measures</div>';
+    }
+
+    const listItems = measures.map(m =>
+        `<li>${escapeHtml(m.name)} <span style="color: #718096; font-size: 11px;">(${m.similarity}% similar)</span></li>`
+    ).join('');
+    return `<ul class="item-list matched">${listItems}</ul>`;
+}
+
+function closeDetailModal() {
+    document.getElementById('detailModal').style.display = 'none';
+}
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+    const modal = document.getElementById('detailModal');
+    if (event.target === modal) {
+        closeDetailModal();
+    }
+}
+
+// Export functions
+function exportToExcel() {
+    console.log('📥 exportToExcel() called');
+    console.log('   currentResults.length:', currentResults.length);
+
+    const workspaceId = document.getElementById('workspaceSelect').value;
+    console.log('   workspaceId:', workspaceId);
+
+    if (!workspaceId) {
+        alert('⚠️ Please select a workspace first');
+        return;
+    }
+
+    if (currentResults.length === 0) {
+        alert('⚠️ No similarity data to export. Please run an analysis first.');
+        return;
+    }
+
+    console.log('   📤 Sending results to backend for Excel export...');
+    exportResults('excel');
+}
+
+function exportToCSV() {
+    console.log('📄 exportToCSV() called');
+    console.log('   currentResults.length:', currentResults.length);
+
+    const workspaceId = document.getElementById('workspaceSelect').value;
+    console.log('   workspaceId:', workspaceId);
+
+    if (!workspaceId) {
+        alert('⚠️ Please select a workspace first');
+        return;
+    }
+
+    if (currentResults.length === 0) {
+        alert('⚠️ No similarity data to export. Please run an analysis first.');
+        return;
+    }
+
+    console.log('   📤 Sending results to backend for CSV export...');
+    exportResults('csv');
+}
+
+function exportResults(format) {
+    const workspaceId = document.getElementById('workspaceSelect').value;
+
+    // Create a form to POST the data
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/api/similarity-analysis/export';
+    form.style.display = 'none';
+
+    // Add workspace_id
+    const wsInput = document.createElement('input');
+    wsInput.name = 'workspace_id';
+    wsInput.value = workspaceId;
+    form.appendChild(wsInput);
+
+    // Add format
+    const formatInput = document.createElement('input');
+    formatInput.name = 'format';
+    formatInput.value = format;
+    form.appendChild(formatInput);
+
+    // Add results as JSON
+    const resultsInput = document.createElement('input');
+    resultsInput.name = 'results';
+    resultsInput.value = JSON.stringify(currentResults);
+    form.appendChild(resultsInput);
+
+    // Submit the form
+    document.body.appendChild(form);
+    console.log('   ✅ Submitting export request...');
+    form.submit();
+
+    // Clean up
+    setTimeout(() => document.body.removeChild(form), 1000);
+}
+</script>
+{% endblock %}
+

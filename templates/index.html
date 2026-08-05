@@ -1,0 +1,3954 @@
+﻿{% extends "base.html" %}
+
+{% block title %}Report Catalog - Power BI Control Center{% endblock %}
+{% block page_heading %}Report Catalog{% endblock %}
+{% block page_subtitle %}Refresh health, ownership, and usage across workspaces{% endblock %}
+
+{% block extra_css %}
+<!-- Select2 CSS -->
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<style>
+    /* Select2 custom styling — uses theme CSS variables from base.html */
+    .select2-container--default .select2-selection--single {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        height: 34px;
+        padding: 2px 8px;
+        background: var(--input-bg);
+    }
+
+    .select2-container--default .select2-selection--single .select2-selection__rendered {
+        color: var(--text);
+        line-height: 28px;
+        padding-left: 8px;
+        font-size: 13px;
+        font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    .select2-container--default .select2-selection--single .select2-selection__arrow {
+        height: 32px;
+        right: 4px;
+    }
+
+    .select2-container--default.select2-container--open .select2-selection--single {
+        border-color: var(--info);
+    }
+
+    .select2-container--default .select2-search--dropdown .select2-search__field {
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 10px;
+        font-size: 13px;
+        background: var(--input-bg);
+        color: var(--text);
+    }
+
+    .select2-container--default .select2-results__option {
+        color: var(--text);
+        background: var(--bg-surface);
+    }
+    .select2-container--default .select2-results__option--highlighted[aria-selected],
+    .select2-container--default .select2-results__option--highlighted {
+        background-color: #2B6CB0 !important;
+        color: #FFFFFF !important;
+    }
+    .select2-container--default .select2-results__option[aria-selected=true],
+    .select2-container--default .select2-results__option--selected {
+        background: var(--table-hover) !important;
+        color: var(--text-strong) !important;
+    }
+
+    .select2-dropdown {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: var(--shadow-sm);
+        background: var(--bg-surface);
+        color: var(--text);
+    }
+
+    /* Default Select2 width — toolbar overrides below keep one row */
+    .select2-container {
+        min-width: 160px !important;
+    }
+
+    .controls {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+        gap: 10px;
+        flex-wrap: nowrap;
+        background: var(--bg-surface);
+        padding: 10px 14px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow-sm);
+        color: var(--text);
+        overflow-x: auto;
+    }
+
+    .controls-left {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: nowrap;
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .controls-right {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: nowrap;
+        flex: 0 0 auto;
+    }
+
+    /* Keep Select2 widgets compact so toolbar stays one row */
+    .controls-left .select2-container {
+        max-width: 220px;
+    }
+    .controls-left #findReportSelect + .select2-container {
+        min-width: 200px !important;
+        max-width: 260px;
+        width: 220px !important;
+    }
+    .controls-left #workspaceSelect + .select2-container,
+    .controls-left #folderSelect + .select2-container,
+    .controls-left #reportSelect + .select2-container {
+        min-width: 160px !important;
+        width: 180px !important;
+    }
+
+    select {
+        padding: 6px 12px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 12px;
+        min-width: 140px;
+        background: var(--input-bg);
+        color: var(--text);
+        font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+        height: 34px;
+        transition: all 0.2s ease;
+        cursor: pointer;
+    }
+
+    select:hover {
+        border-color: var(--text-muted);
+    }
+
+    select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+    }
+
+    select:disabled {
+        background: var(--bg-surface-2);
+        color: var(--text-muted);
+        border-color: var(--border);
+        cursor: not-allowed;
+    }
+
+    table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        background: var(--bg-surface);
+        color: var(--text);
+        table-layout: fixed;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    thead {
+        background: var(--bg-surface-2);
+        border-bottom: 2px solid var(--border);
+    }
+
+    th {
+        padding: 8px 8px;
+        text-align: left;
+        font-weight: 700;
+        font-size: 10px;
+        color: var(--text-muted);
+        border-right: 1px solid var(--border);
+        background: transparent;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        white-space: normal;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: middle;
+        box-sizing: border-box;
+        line-height: 1.3;
+    }
+
+    th:first-child {
+        padding-left: 16px;
+    }
+
+    th:last-child {
+        border-right: none;
+    }
+
+    th:nth-child(9) {
+        text-align: center;
+    }
+
+    td {
+        padding: 7px 8px;
+        border-bottom: 1px solid var(--border-soft);
+        border-right: 1px solid var(--border-soft);
+        font-size: 12px;
+        color: var(--text);
+        background: transparent;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: middle;
+        box-sizing: border-box;
+        line-height: 1.4;
+    }
+
+    td:first-child {
+        padding-left: 16px;
+    }
+
+    td:last-child {
+        border-right: none;
+    }
+
+    /* Report name (1) — wrap on laptop widths instead of truncating with … */
+    table th:nth-child(1),
+    table td:nth-child(1) {
+        white-space: normal !important;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        line-height: 1.3;
+        overflow: visible !important;
+        text-overflow: unset !important;
+    }
+    table td:nth-child(1) strong {
+        font-weight: 650;
+        display: inline;
+        white-space: normal;
+        word-break: break-word;
+    }
+
+    /* Email columns (2–3) — wrap like Modified by */
+    table th:nth-child(2), table td:nth-child(2),
+    table th:nth-child(3), table td:nth-child(3) {
+        white-space: normal !important;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        font-size: 11px;
+        line-height: 1.3;
+        overflow: visible !important;
+        text-overflow: unset !important;
+    }
+
+    /* Schedule column (5) */
+    table td:nth-child(5) {
+        white-space: normal !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        vertical-align: middle;
+        line-height: 1.25;
+        max-height: 3.6em;
+    }
+
+    /* Views (9) centered */
+    table th:nth-child(9),
+    table td:nth-child(9) {
+        text-align: center;
+        white-space: nowrap;
+    }
+
+    /* Last viewed (10) — wrap user + timestamp */
+    table th:nth-child(10),
+    table td:nth-child(10) {
+        white-space: normal !important;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        line-height: 1.3;
+        overflow: visible !important;
+        text-overflow: unset !important;
+        font-size: 11px;
+    }
+    .last-viewed-cell {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+        min-width: 0;
+    }
+    .last-viewed-cell .lv-user {
+        font-weight: 600;
+        color: var(--text-strong);
+        word-break: break-word;
+    }
+    .last-viewed-cell .lv-ts {
+        color: var(--text-muted);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* Action (11) — wrap buttons */
+    table th:nth-child(11),
+    table td:nth-child(11) {
+        white-space: normal !important;
+        text-align: center;
+        vertical-align: middle;
+        overflow: visible !important;
+    }
+
+    /* Laptop-friendly denser wrapping without horizontal crush */
+    @media (max-width: 1440px) {
+        table td:nth-child(1) { font-size: 11.5px; }
+        table td:nth-child(2),
+        table td:nth-child(3),
+        table td:nth-child(10) { font-size: 10.5px; }
+    }
+
+    tbody tr {
+        transition: all 0.2s ease;
+    }
+
+    tbody tr:hover {
+        background: var(--table-hover);
+    }
+
+    tbody tr:last-child td {
+        border-bottom: none;
+    }
+    
+    .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 650;
+        letter-spacing: 0.02em;
+        border: 1px solid transparent;
+        white-space: nowrap;
+        line-height: 1.3;
+        max-width: 100%;
+    }
+    .badge-success { background: #ECFDF5; color: #047857; border-color: #A7F3D0; }
+    .badge-warning { background: #FFFBEB; color: #B45309; border-color: #FDE68A; }
+    .badge-info { background: #EFF6FF; color: #1D4ED8; border-color: #BFDBFE; }
+    .badge-danger { background: #FEF2F2; color: #B91C1C; border-color: #FECACA; }
+    .badge-muted { background: #F8FAFC; color: #64748B; border-color: #E2E8F0; }
+    .badge-neutral { background: #F1F5F9; color: #334155; border-color: #E2E8F0; }
+
+    /* Compact ops cells */
+    .cell-muted { color: var(--text-muted); font-size: 11px; font-style: italic; }
+    .sched-chip {
+        display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px;
+        max-width: 100%; min-width: 0; padding: 4px 8px; border-radius: 8px;
+        background: #ECFDF5; border: 1px solid #A7F3D0; color: #065F46;
+    }
+    .sched-chip .lbl { font-size: 9px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; opacity: .85; }
+    .sched-chip .val { font-size: 10px; font-weight: 550; line-height: 1.25; color: #064E3B; white-space: normal; word-break: break-word; }
+    .sched-chip.off { background: #FFFBEB; border-color: #FDE68A; color: #92400E; }
+    .sched-chip.off .val { color: #92400E; }
+    .sched-chip.live { background: #EFF6FF; border-color: #BFDBFE; color: #1E40AF; }
+    .sched-chip.live .val { color: #1E3A8A; }
+
+    .ts-cell { font-size: 11px; color: var(--text-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .ts-cell .sub { display:block; font-size: 10px; color: var(--text-muted); font-weight: 500; margin-top: 1px; }
+
+    .days-pill {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 28px; height: 22px; padding: 0 8px; border-radius: 999px;
+        font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+        border: 1px solid transparent;
+    }
+    .days-ok { background: #ECFDF5; color: #047857; border-color: #A7F3D0; }
+    .days-warn { background: #FFFBEB; color: #B45309; border-color: #FDE68A; }
+    .days-hot { background: #FEF2F2; color: #B91C1C; border-color: #FECACA; }
+    .days-info { background: #EFF6FF; color: #1D4ED8; border-color: #BFDBFE; }
+
+    .views-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; }
+    .views-num { font-size: 13px; font-weight: 700; color: var(--text-strong); font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .views-num.zero { color: var(--danger); }
+    .views-tag {
+        font-size: 9px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+        color: #B91C1C; background: #FEF2F2; border: 1px solid #FECACA; border-radius: 999px; padding: 1px 6px;
+    }
+
+    .btn.loading { opacity: .85; pointer-events: none; position: relative; }
+    .btn .btn-spinner {
+        display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,.35);
+        border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; margin-right: 6px;
+    }
+
+    /* Responsive autosize */
+    @media (max-width: 1400px) {
+        .controls { gap: 8px; }
+        .select2-container { min-width: 160px !important; }
+        th, td { font-size: 11px; }
+        .action-buttons .btn { padding: 4px 6px; font-size: 10px; }
+    }
+    @media (max-width: 1100px) {
+        .table-wrapper { max-height: calc(100vh - 240px); }
+        .controls-left, .controls-right { width: 100%; }
+        .controls { align-items: stretch; }
+    }
+    @media (max-width: 768px) {
+        .page-shell { gap: 8px; }
+        .table-wrapper { max-height: calc(100vh - 280px); }
+        th:nth-child(2), td:nth-child(2),
+        th:nth-child(3), td:nth-child(3),
+        th:nth-child(10), td:nth-child(10) { display: none; }
+        .select2-container { min-width: 100% !important; width: 100% !important; }
+    }
+
+    .no-data {
+        text-align: center;
+        padding: 40px 20px;
+        color: var(--text-muted);
+        font-size: 13px;
+        background: var(--bg-surface);
+        border-radius: 8px;
+        border: 1px solid var(--border);
+    }
+
+    .action-buttons {
+        display: flex;
+        gap: 6px;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+
+    .action-buttons .btn {
+        padding: 6px 10px;
+        font-size: 11px;
+        white-space: nowrap;
+    }
+
+    .table-wrapper {
+        overflow: auto;
+        border-radius: 8px;
+        box-shadow: var(--shadow-sm);
+        width: 100%;
+        max-width: 100%;
+        border: 1px solid var(--border);
+        background: var(--bg-surface);
+        position: relative;
+        max-height: calc(100vh - 220px);
+        color: var(--text);
+    }
+    .table-wrapper thead th {
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        background: var(--bg-surface-2) !important;
+        box-shadow: 0 1px 0 var(--border);
+        color: var(--text-muted) !important;
+    }
+
+    .table-wrapper::-webkit-scrollbar {
+        height: 8px;
+    }
+
+    .table-wrapper::-webkit-scrollbar-track {
+        background: var(--bg-surface-2);
+        border-radius: 4px;
+    }
+
+    .table-wrapper::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 4px;
+    }
+
+    .table-wrapper::-webkit-scrollbar-thumb:hover {
+        background: var(--text-muted);
+    }
+
+    .loading {
+        text-align: center;
+        padding: 36px 20px;
+        color: var(--text-muted);
+        font-size: 13px;
+        background: var(--bg-surface);
+        border-radius: 8px;
+        border: 1px solid var(--border);
+    }
+
+    /* Dark-mode chip/badge polish (keep semantic hues, darken surfaces) */
+    html[data-theme="dark"] .badge-success { background: #0f2e22; color: #6ee7b7; border-color: #14532d; }
+    html[data-theme="dark"] .badge-warning { background: #3d2e12; color: #fbbf24; border-color: #78350f; }
+    html[data-theme="dark"] .badge-info { background: #172554; color: #93c5fd; border-color: #1e3a8a; }
+    html[data-theme="dark"] .badge-danger { background: #3f1515; color: #fca5a5; border-color: #7f1d1d; }
+    html[data-theme="dark"] .badge-muted,
+    html[data-theme="dark"] .badge-neutral { background: var(--chip-bg); color: var(--text-muted); border-color: var(--border); }
+    html[data-theme="dark"] .sched-chip { background: #0f2e22; border-color: #14532d; color: #6ee7b7; }
+    html[data-theme="dark"] .sched-chip .val { color: #a7f3d0; }
+    html[data-theme="dark"] .sched-chip.off { background: #3d2e12; border-color: #78350f; color: #fbbf24; }
+    html[data-theme="dark"] .sched-chip.off .val { color: #fde68a; }
+    html[data-theme="dark"] .sched-chip.live { background: #172554; border-color: #1e3a8a; color: #93c5fd; }
+    html[data-theme="dark"] .sched-chip.live .val { color: #bfdbfe; }
+    html[data-theme="dark"] .days-ok { background: #0f2e22; color: #6ee7b7; border-color: #14532d; }
+    html[data-theme="dark"] .days-warn { background: #3d2e12; color: #fbbf24; border-color: #78350f; }
+    html[data-theme="dark"] .days-hot { background: #3f1515; color: #fca5a5; border-color: #7f1d1d; }
+    html[data-theme="dark"] .days-info { background: #172554; color: #93c5fd; border-color: #1e3a8a; }
+    html[data-theme="dark"] .views-tag { background: #3f1515; color: #fca5a5; border-color: #7f1d1d; }
+    html[data-theme="dark"] .select2-container--default .select2-selection__placeholder { color: var(--text-muted); }
+    html[data-theme="dark"] .select2-container--default .select2-results__option {
+        color: var(--text) !important;
+        background: var(--bg-surface) !important;
+    }
+    html[data-theme="dark"] .select2-container--default .select2-results__option[aria-selected=true],
+    html[data-theme="dark"] .select2-container--default .select2-results__option--selected {
+        background: #243B53 !important;
+        color: #F7FAFC !important;
+    }
+    html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted,
+    html[data-theme="dark"] .select2-container--default .select2-results__option--highlighted[aria-selected] {
+        background: #2B6CB0 !important;
+        color: #FFFFFF !important;
+    }
+
+    .spinner {
+        border: 3px solid #E2E8F0;
+        border-top: 3px solid #F6C343;
+        border-radius: 50%;
+        width: 28px;
+        height: 28px;
+        animation: spin 0.8s linear infinite;
+        margin: 0 auto 12px;
+    }
+
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+
+    /* Progress indicator styles */
+    .progress-container {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 8px;
+        padding: 2px;
+        max-width: 100%;
+    }
+
+    .circular-progress {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+    }
+
+    .circular-progress svg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 32px;
+        height: 32px;
+    }
+
+    .progress-circle {
+        transition: stroke-dashoffset 0.35s ease-in-out;
+        transform-origin: center;
+        stroke-linecap: round;
+    }
+
+    .progress-text {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 9px;
+        font-weight: 700;
+        color: var(--text-strong);
+        line-height: 1;
+        z-index: 1;
+    }
+
+    .progress-label {
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--text-muted);
+        white-space: normal;
+        line-height: 1.3;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        max-width: 110px;
+    }
+
+    /* Inline loading spinner for table cells */
+    .inline-spinner {
+        display: inline-block;
+        border: 2px solid var(--border);
+        border-top: 2px solid var(--accent);
+        border-radius: 50%;
+        width: 14px;
+        height: 14px;
+        animation: spin 0.6s linear infinite;
+        vertical-align: middle;
+        margin-right: 6px;
+    }
+
+    @keyframes fadeInUp {
+        from {
+            opacity: 0;
+            transform: translateY(20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .controls, .no-data, table {
+        animation: fadeInUp 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    #reportsTable {
+        animation: fadeInUp 0.6s cubic-bezier(0.4, 0, 0.2, 1) 0.1s both;
+        max-width: 100%;
+        overflow: hidden;
+    }
+
+    /* Page shell — avoid nested .content double padding */
+    .page-shell {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        max-width: 100%;
+        min-width: 0;
+    }
+    .catalog-filter-banner {
+        display: none;
+        background: color-mix(in srgb, var(--warning) 14%, var(--bg-surface));
+        color: var(--text-strong);
+        border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border));
+        border-left: 4px solid var(--warning);
+        padding: 10px 14px;
+        border-radius: 8px;
+    }
+    .catalog-filter-banner.show { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .catalog-filter-banner .title { font-size: 13px; font-weight: 650; color: var(--text-strong); }
+    .catalog-filter-banner .sub { font-size: 12px; color: var(--text-muted); opacity: 0.95; margin-top: 2px; }
+    .catalog-filter-banner a {
+        background: var(--bg-surface); color: var(--text-strong); border: 1px solid var(--border);
+        padding: 6px 12px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 12px; white-space: nowrap;
+    }
+    .catalog-filter-banner a:hover { background: var(--table-hover); }
+    .action-buttons .btn { padding: 5px 8px; font-size: 11px; }
+    #reportsTable { max-width: 100%; min-width: 0; overflow: hidden; }
+    .page-shell > * { max-width: 100%; min-width: 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-shell">
+    <div id="alertContainer"></div>
+
+    <!-- Filter Status Header (IDs preserved for JS) -->
+    <div id="filterStatusHeader" class="catalog-filter-banner">
+        <div>
+            <div id="filterStatusTitle" class="title">Inactive reports filter</div>
+            <div id="filterStatusSubtitle" class="sub">Showing reports not refreshed in 30+ days</div>
+        </div>
+        <a id="clearFilterLink" href="#">Clear filter</a>
+    </div>
+
+    <!-- Active-filters strip — any list filter (folder / status / report) -->
+    <div id="multiFilterBar" class="catalog-filter-banner" style="display:none; border-left-color:#3182CE; background:#EBF8FF; border-color:#BEE3F8; color:#2A4365;">
+        <div>
+            <div class="title" style="color:#2B6CB0;" id="multiFilterTitle">Filters active</div>
+            <div class="sub" id="multiFilterSummary" style="color:#2C5282;">Reset to see the full list</div>
+        </div>
+        <a id="clearAllFiltersBtn" href="#" style="background:#EBF8FF; color:#2B6CB0; border:1px solid #90CDF4;">Clear filters</a>
+    </div>
+
+    <div class="controls">
+        <div class="controls-left">
+            <select id="workspaceSelect" onchange="onWorkspaceChange()">
+                <option value="">Loading workspaces...</option>
+            </select>
+            <select id="folderSelect" onchange="onFolderChange()" style="display: none;">
+                <option value="">All Folders</option>
+            </select>
+            <select id="reportSelect" onchange="onReportChange()">
+                <option value="">Select a report...</option>
+            </select>
+            <!-- Reverse search last: report name → workspace (catalog thin API) -->
+            <select id="findReportSelect">
+                <option value=""></option>
+            </select>
+            <span id="statusFilterBadge" style="display: none;"></span>
+            <button type="button" class="btn btn-secondary" id="clearFiltersToolbarBtn" title="Clear folder / status / report filters" style="display:none; height:34px; padding:0 12px; font-size:12px;">
+                Clear filters
+            </button>
+        </div>
+        <div class="controls-right">
+            <button class="btn btn-primary" onclick="loadUsageMetricsInBackground()" id="usageBtn" style="display: none;" title="Load usage metrics (60-day view counts and last viewed info)">
+                Usage
+            </button>
+            <button class="btn btn-success" onclick="exportToExcel()" id="exportBtn" style="display: none;" title="Export current list to Excel">
+                Export
+            </button>
+            <button class="btn btn-danger" onclick="exportDecommissionReport()" id="decommissionBtn" style="display: none;" title="Generate quarterly decommissioning report for inactive reports">
+                Decommission list
+            </button>
+            <button class="btn btn-secondary" onclick="refreshData()" id="refreshBtn" title="Reload reports for this workspace">
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    <div id="reportsTable">
+        <div class="no-data">
+            <p>Select a workspace to view reports</p>
+        </div>
+    </div>
+</div>
+
+
+{% endblock %}
+
+{% block extra_js %}
+<!-- jQuery (required for Select2) -->
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<!-- Select2 JS -->
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<!-- SheetJS for Excel export -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+
+<script>
+    let reports = [];
+    let currentWorkspaceId = null;
+    let currentFolderId = null;
+    let folders = [];
+    let allWorkspaces = []; // Store all workspaces for filtering
+    let statusFilter = null; // Filter for active/inactive reports
+    let selectedReportId = null; // report dropdown filter
+    // Deep-link from Home KPI tabs: /documentation?workspace=…&report=…
+    let pendingReportIdFromUrl = null;
+    let pendingReportNameFromUrl = null;
+    // Guard: Select2/native change must not re-enter filter apply (stack overflow)
+    let suppressReportChange = false;
+    let applyingReportFilter = false;
+    // Reverse search: Find report → set workspace without wiping pending report filter
+    let navigatingFromFindReport = false;
+    // Owner columns: all rows spin together until batch metadata returns (no per-row early finish)
+    let metadataBatchLoading = false;
+    const VIEW_LOOKBACK_DAYS = 60;
+
+    /** Parse ISO / epoch → Date or null */
+    function parseRefreshTs(value) {
+        if (value == null || value === '') return null;
+        try {
+            if (typeof value === 'number') {
+                const ms = value > 1e12 ? value : value * 1000;
+                const d = new Date(ms);
+                return isNaN(d.getTime()) ? null : d;
+            }
+            const s = String(value).trim();
+            if (!s || ['unknown','n/a','none','null','-','—'].includes(s.toLowerCase())) return null;
+            const d = new Date(s);
+            return isNaN(d.getTime()) ? null : d;
+        } catch (e) { return null; }
+    }
+
+    function daysSinceRefreshClient(value) {
+        const d = parseRefreshTs(value);
+        if (!d) return null;
+        return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000));
+    }
+
+    /**
+     * Pick newer last_refreshed between existing row and incoming (catalog ops vs live).
+     * Days-since is always derived from the winning timestamp.
+     */
+    function mergeRefreshFields(existing, incoming) {
+        if (!incoming) return existing || {};
+        if (!existing) {
+            const out = { ...incoming };
+            if (out.days_since_refresh == null && out.last_refreshed) {
+                out.days_since_refresh = daysSinceRefreshClient(out.last_refreshed);
+            }
+            return out;
+        }
+        const aTs = parseRefreshTs(existing.last_refreshed);
+        const bTs = parseRefreshTs(incoming.last_refreshed);
+        let winner = existing;
+        let loser = incoming;
+        if (bTs && (!aTs || bTs > aTs)) {
+            winner = incoming;
+            loser = existing;
+        }
+        const merged = {
+            ...existing,
+            refresh_schedule: winner.refresh_schedule || loser.refresh_schedule || existing.refresh_schedule,
+            last_refreshed: winner.last_refreshed || loser.last_refreshed || null,
+            last_refresh_status: winner.last_refresh_status || loser.last_refresh_status || existing.last_refresh_status,
+            refresh_type: winner.refresh_type || loser.refresh_type || existing.refresh_type,
+            refresh_note: winner.refresh_note || loser.refresh_note || existing.refresh_note,
+            dataset_workspace_id: winner.dataset_workspace_id || loser.dataset_workspace_id || existing.dataset_workspace_id,
+            refresh_pending: false,
+        };
+        merged.days_since_refresh = daysSinceRefreshClient(merged.last_refreshed);
+        return merged;
+    }
+
+    /** Count active list filters (status, folder, specific report). Workspace is navigation. */
+    function countActiveFilters() {
+        let n = 0;
+        if (statusFilter) n += 1;
+        if (currentFolderId) n += 1;
+        const reportVal = document.getElementById('reportSelect')?.value || selectedReportId;
+        if (reportVal) n += 1;
+        return n;
+    }
+
+    function updateMultiFilterBar() {
+        const bar = document.getElementById('multiFilterBar');
+        const summary = document.getElementById('multiFilterSummary');
+        const title = document.getElementById('multiFilterTitle');
+        const toolbarBtn = document.getElementById('clearFiltersToolbarBtn');
+        if (!bar && !toolbarBtn) return;
+        const n = countActiveFilters();
+        const bits = [];
+        if (statusFilter) bits.push(`status=${statusFilter}`);
+        if (currentFolderId) bits.push('folder');
+        if (document.getElementById('reportSelect')?.value || selectedReportId) bits.push('report');
+
+        // Show clear control whenever ANY list filter is on (not only 2+)
+        if (n >= 1) {
+            if (bar) {
+                bar.style.display = 'flex';
+                bar.classList.add('show');
+            }
+            if (title) {
+                title.textContent = n >= 2 ? 'Multiple filters active' : 'Filter active';
+            }
+            if (summary) {
+                summary.textContent = n >= 2
+                    ? `${n} filters active (${bits.join(', ')}). Clear to reset.`
+                    : `Active: ${bits.join(', ') || 'filter'}. Clear to reset.`;
+            }
+            if (toolbarBtn) toolbarBtn.style.display = 'inline-block';
+        } else {
+            if (bar) {
+                bar.style.display = 'none';
+                bar.classList.remove('show');
+            }
+            if (toolbarBtn) toolbarBtn.style.display = 'none';
+        }
+    }
+
+    function clearAllFilters(ev) {
+        if (ev) ev.preventDefault();
+        statusFilter = null;
+        currentFolderId = null;
+        selectedReportId = null;
+        pendingReportIdFromUrl = null;
+        pendingReportNameFromUrl = null;
+        // Strip filter query params but keep workspace
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('status');
+            url.searchParams.delete('folder_id');
+            url.searchParams.delete('folder');
+            url.searchParams.delete('report');
+            url.searchParams.delete('report_id');
+            url.searchParams.delete('reportName');
+            url.searchParams.delete('report_name');
+            window.history.replaceState({}, '', url.pathname + (url.search || '') + (url.hash || ''));
+        } catch (e) { /* ignore */ }
+        if (window.jQuery) {
+            $('#folderSelect').val('').trigger('change.select2');
+        } else {
+            const fs = document.getElementById('folderSelect');
+            if (fs) fs.value = '';
+        }
+        // Quiet report reset (no onchange recursion)
+        setReportSelectValue('');
+        const header = document.getElementById('filterStatusHeader');
+        if (header) header.style.display = 'none';
+        const badge = document.getElementById('statusFilterBadge');
+        if (badge) badge.style.display = 'none';
+        updateMultiFilterBar();
+        if (currentWorkspaceId) loadReports();
+    }
+
+    // Initialize Select2 on page load
+    window.addEventListener('DOMContentLoaded', function() {
+        // Initialize Select2 for workspace dropdown with search
+        $('#workspaceSelect').select2({
+            placeholder: 'Select a workspace...',
+            allowClear: false,
+            width: '180px',
+            minimumResultsForSearch: 0  // Always show search box
+        });
+
+        // Initialize Select2 for folder dropdown with search
+        $('#folderSelect').select2({
+            placeholder: 'All Folders',
+            allowClear: false,
+            width: '160px',
+            minimumResultsForSearch: 0  // Always show search box
+        });
+
+        // Initialize Select2 for report dropdown with search
+        $('#reportSelect').select2({
+            placeholder: 'Select a report...',
+            allowClear: false,
+            width: '180px',
+            minimumResultsForSearch: 0  // Always show search box
+        });
+
+        // Reverse search: report name → workspace (catalog thin API)
+        initFindReportSelect();
+
+        const clearAll = document.getElementById('clearAllFiltersBtn');
+        if (clearAll) clearAll.addEventListener('click', clearAllFilters);
+        const clearToolbar = document.getElementById('clearFiltersToolbarBtn');
+        if (clearToolbar) clearToolbar.addEventListener('click', clearAllFilters);
+        const clearOne = document.getElementById('clearFilterLink');
+        if (clearOne) {
+            clearOne.addEventListener('click', (e) => {
+                e.preventDefault();
+                // Always clear everything list-related so UX is predictable
+                clearAllFilters(e);
+            });
+        }
+
+        // Load workspaces after Select2 initialization
+        loadWorkspaces();
+    });
+
+    async function loadWorkspaces() {
+        const workspaceSelect = document.getElementById('workspaceSelect');
+        workspaceSelect.innerHTML = '<option value="">Loading workspaces...</option>';
+
+        // Check if workspace / report / status are pre-selected via URL query params
+        // Home KPI Open → /documentation?workspace=…&report=…[&reportName=…]
+        const urlParams = new URLSearchParams(window.location.search);
+        const preselectedWorkspace = urlParams.get('workspace');
+        statusFilter = urlParams.get('status'); // Get status filter (active/inactive)
+        pendingReportIdFromUrl = urlParams.get('report') || urlParams.get('report_id') || null;
+        pendingReportNameFromUrl = urlParams.get('reportName') || urlParams.get('report_name') || null;
+        if (pendingReportIdFromUrl) {
+            selectedReportId = pendingReportIdFromUrl;
+            console.log(`Deep-link report filter: ${pendingReportIdFromUrl}`);
+        }
+
+        try {
+            const response = await fetch('/api/workspaces');
+
+            // Check if we got redirected to login (not authenticated)
+            if (response.status === 401) {
+                const result = await response.json();
+                console.log('Not authenticated, redirecting to login...');
+                if (result.redirect) {
+                    window.location.href = result.redirect;
+                } else {
+                    window.location.href = '/login';
+                }
+                return;
+            }
+
+            const result = await response.json();
+
+            if (result.success) {
+                const workspaces = result.workspaces;
+
+                if (workspaces.length === 0) {
+                    workspaceSelect.innerHTML = '<option value="">No workspaces available</option>';
+                    showAlert('warning', '⚠️ No workspaces found. You may not have access to any Power BI workspaces, or there may be a permissions issue.');
+                    console.log('No workspaces returned from API');
+                    return;
+                }
+
+                // Sort workspaces alphabetically by name (A-Z)
+                workspaces.sort((a, b) => a.name.localeCompare(b.name));
+
+                // Store all workspaces for filtering
+                allWorkspaces = workspaces;
+
+                // Populate dropdown with sorted workspaces
+                populateWorkspaceDropdown(workspaces);
+
+                console.log(`Loaded ${workspaces.length} workspace(s)`);
+
+                // Check if workspace should be pre-selected
+                if (preselectedWorkspace) {
+                    // Find the workspace in the list
+                    const workspace = workspaces.find(w => w.id === preselectedWorkspace);
+                    if (workspace) {
+                        // Single path: Select2 change → onWorkspaceChange → loadReports once
+                        // (do not also call loadReports here — that caused double loads / double errors)
+                        $('#workspaceSelect').val(preselectedWorkspace).trigger('change');
+                        console.log(`Pre-selected workspace: ${workspace.name}`);
+                    } else {
+                        console.log(`Pre-selected workspace not found: ${preselectedWorkspace}`);
+                        document.getElementById('reportsTable').innerHTML = '<div class="no-data">📊 Please select a workspace to view reports</div>';
+                    }
+                } else {
+                    // DO NOT auto-select first workspace - require explicit user selection
+                    // Show initial message prompting user to select a workspace
+                    document.getElementById('reportsTable').innerHTML = '<div class="no-data">📊 Please select a workspace to view reports</div>';
+                }
+            } else {
+                // Check if it's an authentication error
+                if (result.error && result.error.includes('Not authenticated')) {
+                    console.log('Session expired, redirecting to login...');
+                    window.location.href = result.redirect || '/login';
+                    return;
+                }
+
+                // Check if it's a permissions error
+                if (result.error && result.error.includes('permissions')) {
+                    showAlert('error', '⚠️ Power BI API permissions not granted. Please contact your administrator to grant admin consent for Power BI delegated permissions in Azure Portal.');
+                } else {
+                    showAlert('error', 'Failed to load workspaces: ' + result.error);
+                }
+                workspaceSelect.innerHTML = '<option value="">Error loading workspaces</option>';
+                console.error('Workspace API error:', result.error);
+            }
+        } catch (error) {
+            console.error('Error loading workspaces:', error);
+            showAlert('error', 'Failed to load workspaces. Please check the console for details.');
+            workspaceSelect.innerHTML = '<option value="">Error loading workspaces</option>';
+        }
+    }
+
+    function populateWorkspaceDropdown(workspaces) {
+        const workspaceSelect = $('#workspaceSelect');
+
+        // Clear existing options except the placeholder
+        workspaceSelect.empty();
+        workspaceSelect.append(new Option('Select a workspace...', '', true, true));
+
+        // Add all workspace options
+        workspaces.forEach(workspace => {
+            workspaceSelect.append(new Option(workspace.name, workspace.id));
+        });
+
+        // Trigger Select2 update
+        workspaceSelect.trigger('change');
+    }
+
+    function onWorkspaceChange() {
+        const workspaceSelect = document.getElementById('workspaceSelect');
+        const oldWorkspaceId = currentWorkspaceId;
+        currentWorkspaceId = workspaceSelect.value || null;
+
+        console.log(`🔄 Workspace changed: ${oldWorkspaceId} → ${currentWorkspaceId}`);
+
+        // True user switch (not initial deep-link / Find-report navigation)
+        const isUserSwitch = !!(oldWorkspaceId && oldWorkspaceId !== currentWorkspaceId)
+            && !navigatingFromFindReport;
+
+        // Always reset folder when workspace changes
+        currentFolderId = null;
+        folders = [];
+        document.getElementById('folderSelect').value = '';
+        $('#folderSelect').val('').trigger('change');
+        document.getElementById('folderSelect').style.display = 'none';
+
+        if (isUserSwitch) {
+            // Drop report deep-link — it belonged to the previous workspace
+            selectedReportId = null;
+            pendingReportIdFromUrl = null;
+            pendingReportNameFromUrl = null;
+            try {
+                const url = new URL(window.location.href);
+                if (currentWorkspaceId) url.searchParams.set('workspace', currentWorkspaceId);
+                else url.searchParams.delete('workspace');
+                url.searchParams.delete('report');
+                url.searchParams.delete('report_id');
+                url.searchParams.delete('reportName');
+                url.searchParams.delete('report_name');
+                url.searchParams.delete('folder_id');
+                url.searchParams.delete('folder');
+                window.history.replaceState({}, '', url.pathname + (url.search || '') + (url.hash || ''));
+            } catch (e) { /* ignore */ }
+            // Clear reverse-search control when user picks a different workspace manually
+            try {
+                if (window.jQuery && $('#findReportSelect').length) {
+                    $('#findReportSelect').val(null).trigger('change');
+                }
+            } catch (e) { /* ignore */ }
+        } else {
+            // Deep-link / Find-report: keep ?report= so populateReportSelect can apply it
+            try {
+                const url = new URL(window.location.href);
+                if (currentWorkspaceId) url.searchParams.set('workspace', currentWorkspaceId);
+                window.history.replaceState({}, '', url.pathname + (url.search || '') + (url.hash || ''));
+            } catch (e) { /* ignore */ }
+        }
+
+        if (currentWorkspaceId) {
+            loadReports();
+            // Show usage button
+            document.getElementById('usageBtn').style.display = 'inline-block';
+        } else {
+            document.getElementById('reportsTable').innerHTML = '<div class="no-data">📊 Please select a workspace</div>';
+            // Hide buttons
+            document.getElementById('usageBtn').style.display = 'none';
+        }
+        navigatingFromFindReport = false;
+    }
+
+    /**
+     * Reverse search control: type a report name → pick hit (name · workspace)
+     * → open that workspace filtered to the report.
+     */
+    function initFindReportSelect() {
+        if (!window.jQuery || !$('#findReportSelect').length) return;
+
+        function formatFindHit(item) {
+            if (!item || !item.id) return item?.text || '';
+            const name = item.reportName || item.text || '';
+            const ws = item.workspaceName || '';
+            if (!ws) return name;
+            return $(
+                `<span>${escapeHtml(name)}</span>` +
+                `<span class="muted" style="display:block;font-size:11px;opacity:.8">${escapeHtml(ws)}</span>`
+            );
+        }
+
+        $('#findReportSelect').select2({
+            placeholder: 'Find report by name…',
+            allowClear: true,
+            width: '220px',
+            minimumInputLength: 2,
+            ajax: {
+                delay: 280,
+                transport: function (params, success, failure) {
+                    const term = (params.data && params.data.q) || '';
+                    fetch(
+                        `/api/catalog/reports/search?q=${encodeURIComponent(term)}&limit=40`,
+                        { credentials: 'include', headers: { Accept: 'application/json' } }
+                    )
+                        .then((r) => r.json())
+                        .then((body) => {
+                            if (!body || !body.success) {
+                                success({ results: [] });
+                                return;
+                            }
+                            const results = (body.rows || []).map((row) => {
+                                const rid = row.id || row.reportId || '';
+                                const wid = row.wid || row.workspaceId || '';
+                                const rname = row.n || row.reportName || '';
+                                const wname = row.wn || row.workspaceName || '';
+                                return {
+                                    id: `${wid}::${rid}`,
+                                    text: wname ? `${rname} · ${wname}` : rname,
+                                    reportId: rid,
+                                    reportName: rname,
+                                    workspaceId: wid,
+                                    workspaceName: wname,
+                                };
+                            });
+                            success({ results });
+                        })
+                        .catch(() => failure());
+                },
+                processResults: function (data) {
+                    return data || { results: [] };
+                },
+            },
+            templateResult: formatFindHit,
+            templateSelection: function (item) {
+                if (!item || !item.id) return item?.text || 'Find report by name…';
+                const name = item.reportName || item.text || '';
+                const ws = item.workspaceName || '';
+                return ws ? `${name} · ${ws}` : name;
+            },
+            escapeMarkup: function (m) { return m; },
+        });
+
+        $('#findReportSelect').on('select2:select', function (e) {
+            const d = e.params && e.params.data;
+            if (!d || !d.reportId || !d.workspaceId) return;
+            navigateToReportInCatalog({
+                reportId: d.reportId,
+                reportName: d.reportName || '',
+                workspaceId: d.workspaceId,
+                workspaceName: d.workspaceName || '',
+            });
+        });
+    }
+
+    function navigateToReportInCatalog({ reportId, reportName, workspaceId }) {
+        if (!workspaceId || !reportId) return;
+        pendingReportIdFromUrl = reportId;
+        pendingReportNameFromUrl = reportName || null;
+        selectedReportId = reportId;
+        navigatingFromFindReport = true;
+
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.set('workspace', workspaceId);
+            url.searchParams.set('report', reportId);
+            if (reportName) url.searchParams.set('reportName', reportName);
+            url.searchParams.delete('status');
+            url.searchParams.delete('folder');
+            url.searchParams.delete('folder_id');
+            window.history.replaceState({}, '', url.pathname + url.search + (url.hash || ''));
+        } catch (e) { /* ignore */ }
+
+        // Same workspace already open — just re-apply report filter after ensure load
+        if (currentWorkspaceId === workspaceId) {
+            navigatingFromFindReport = false;
+            if (reports && reports.length) {
+                applyReportFilter(reportId, { fromUrl: true, syncSelect: true });
+            } else {
+                loadReports();
+            }
+            return;
+        }
+
+        // Set workspace dropdown → onWorkspaceChange → loadReports → populateReportSelect applies filter
+        if (window.jQuery && $('#workspaceSelect').length) {
+            const exists = allWorkspaces.some((w) => w.id === workspaceId)
+                || $('#workspaceSelect option').filter(function () { return this.value === workspaceId; }).length > 0;
+            if (!exists) {
+                showAlert('warning', 'Workspace for that report is not in your accessible list.');
+                navigatingFromFindReport = false;
+                return;
+            }
+            $('#workspaceSelect').val(workspaceId).trigger('change');
+        } else {
+            const ws = document.getElementById('workspaceSelect');
+            if (ws) {
+                ws.value = workspaceId;
+                onWorkspaceChange();
+            }
+        }
+    }
+
+    function onFolderChange() {
+        const folderSelect = document.getElementById('folderSelect');
+        currentFolderId = folderSelect.value || null;
+        console.log(`📁 Folder changed to: ${currentFolderId || 'All Folders'}`);
+        updateMultiFilterBar();
+
+        if (currentWorkspaceId) {
+            loadReports();
+        }
+    }
+
+    // Pull fresh catalog from SharePoint (ops/refresh fields) + clear report shells
+    async function refreshData() {
+        const btn = document.getElementById('refreshBtn');
+        const originalText = btn.innerHTML;
+
+        try {
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Syncing catalog…';
+
+            // 1) Force server to re-download workspace_catalog + ops from SharePoint
+            //    (sign-out does NOT do this — App Service keeps catalog in memory/disk)
+            let catalogMsg = '';
+            try {
+                const catRes = await fetch('/api/catalog/refresh', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                });
+                const catBody = await catRes.json().catch(() => ({}));
+                if (catRes.ok && catBody.success) {
+                    const ops = catBody.opsEnrichedAt || catBody.generatedAt || '';
+                    catalogMsg = ops
+                        ? `Catalog synced (ops ${new Date(ops).toLocaleString()}). `
+                        : 'Catalog synced from SharePoint. ';
+                } else {
+                    catalogMsg = `Catalog sync skipped (${catBody.error || catRes.status}). `;
+                }
+            } catch (e) {
+                catalogMsg = 'Catalog sync failed; clearing local cache only. ';
+                console.warn('catalog/refresh failed', e);
+            }
+
+            // 2) Clear per-user /api/reports response cache
+            const response = await fetch('/api/clear-cache', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                showAlert('success', `${catalogMsg}Reloading… (${result.cleared_count || 0} session cache entries)`);
+                if (currentWorkspaceId) {
+                    await loadReports();
+                } else {
+                    await loadWorkspaces();
+                }
+            } else {
+                showAlert('error', catalogMsg + 'Failed to clear cache: ' + (result.error || 'unknown'));
+            }
+        } catch (error) {
+            showAlert('error', 'Error refreshing: ' + error.message);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    }
+
+    async function loadReports() {
+        if (!currentWorkspaceId) {
+            document.getElementById('reportsTable').innerHTML = '<div class="no-data">📊 Please select a workspace</div>';
+            document.getElementById('reportSelect').innerHTML = '<option value="">Select a report...</option>';
+            return;
+        }
+
+        const tableDiv = document.getElementById('reportsTable');
+        tableDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Loading reports...</p></div>';
+
+        try {
+            // STEP 1: Load basic report info with optional folder filter and status filter
+            console.log(`📥 Loading reports (workspace: ${currentWorkspaceId}, folder: ${currentFolderId || 'all'}, status: ${statusFilter || 'all'})...`);
+
+            let url = `/api/reports?workspace_id=${currentWorkspaceId}`;
+            if (currentFolderId) {
+                url += `&folder_id=${currentFolderId}`;
+            }
+            // Add status filter to API request (server-side filtering is more accurate)
+            if (statusFilter) {
+                url += `&status=${statusFilter}`;
+                console.log(`   🔍 Requesting ${statusFilter} reports from server...`);
+            }
+
+            const response = await fetch(url);
+            const result = await response.json();
+
+            if (result.success) {
+                const opsFromCatalog = !!result.opsFromCatalog;
+                // Keep owner strings if catalog seeded them, but do NOT mark per-row
+                // metadata_loaded from partial people — all rows spin together
+                // until /api/reports-metadata batch returns (original UX).
+                reports = result.reports.map(r => {
+                    const hasCatalogViews = r.view_count !== undefined && r.view_count !== null;
+                    const hasCatalogRefresh = !!(
+                        r.last_refreshed || r.last_refresh_status || r.refresh_schedule || r.refresh_type
+                    );
+                    return {
+                        ...r,
+                        metadata_loaded: false,
+                        details_loaded: false,
+                        // Keep catalog views; only spinner when truly missing
+                        view_count: hasCatalogViews ? r.view_count : undefined,
+                        usage_loaded: hasCatalogViews || !!r.usage_loaded,
+                        refresh_pending: r.refresh_pending && !hasCatalogRefresh,
+                        ops_from_catalog: r.ops_from_catalog || opsFromCatalog,
+                    };
+                });
+                metadataBatchLoading = reports.length > 0;
+                console.log(`✅ Received ${reports.length} reports from server`);
+
+                // Show/hide filter header based on statusFilter
+                const filterHeader = document.getElementById('filterStatusHeader');
+                const filterTitle = document.getElementById('filterStatusTitle');
+                const filterSubtitle = document.getElementById('filterStatusSubtitle');
+                const clearLink = document.getElementById('clearFilterLink');
+
+                if (statusFilter && filterHeader && filterTitle && filterSubtitle && clearLink) {
+                    // Show compact filter banner
+                    filterHeader.style.display = 'flex';
+                    filterHeader.classList.add('show');
+
+                    if (statusFilter === 'active') {
+                        filterHeader.style.background = '#F0FFF4';
+                        filterHeader.style.borderColor = '#9AE6B4';
+                        filterHeader.style.borderLeftColor = '#38A169';
+                        filterHeader.style.color = '#276749';
+                        filterTitle.style.color = '#276749';
+                        filterTitle.textContent = 'Active reports filter';
+                        filterSubtitle.textContent = `Showing ${reports.length} reports refreshed within 30 days`;
+                    } else {
+                        filterHeader.style.background = '#FFFAF0';
+                        filterHeader.style.borderColor = '#FEEBC8';
+                        filterHeader.style.borderLeftColor = '#ED8936';
+                        filterHeader.style.color = '#9C4221';
+                        filterTitle.style.color = '#C05621';
+                        filterTitle.textContent = 'Inactive reports filter';
+                        filterSubtitle.textContent = `Showing ${reports.length} reports not refreshed in 30+ days`;
+                    }
+                    updateMultiFilterBar();
+
+                    clearLink.href = `/documentation?workspace=${encodeURIComponent(currentWorkspaceId)}`;
+                } else if (filterHeader) {
+                    // Hide filter header
+                    filterHeader.style.display = 'none';
+                    filterHeader.classList.remove('show');
+                }
+
+                // Handle folders if returned (only on first load when no folder is selected)
+                if (result.folders && result.folders.length > 0) {
+                    // Only populate folder dropdown once (check if it's already populated)
+                    const folderSelect = document.getElementById('folderSelect');
+                    const needsPopulation = folderSelect.options.length <= 1; // Only has default option
+
+                    if (needsPopulation) {
+                        console.log('📁 First load - populating folder dropdown');
+                        folders = result.folders;
+                        populateFolderSelect(folders);
+                    } else {
+                        console.log('📁 Folders already loaded - skipping repopulation');
+                    }
+
+                    document.getElementById('folderSelect').style.display = 'inline-block';
+                }
+
+                renderReportsTable(reports);
+                populateReportSelect(reports);
+
+                console.log(
+                    `✅ Loaded ${reports.length} reports (source=${result.source || 'unknown'}, ` +
+                    `opsFromCatalog=${opsFromCatalog}, refreshIncluded=${result.refreshIncluded})`
+                );
+                if (result.catalogGeneratedAt) {
+                    console.log(`   📚 Catalog as of: ${result.catalogGeneratedAt}`);
+                }
+                if (result.opsEnrichedAt) {
+                    console.log(`   ⏱ Ops snapshot as of: ${result.opsEnrichedAt}`);
+                }
+
+                // Dual-source refresh: merge live API + catalog/SharePoint ops, show LATEST.
+                // Run when catalog has no ops, OR when some rows lack last_refreshed
+                // (catalog may be incomplete while SharePoint/live has history).
+                const missingRefresh = reports.filter(r => !r.last_refreshed).length;
+                if (
+                    reports.length > 0 &&
+                    result.refreshIncluded === false &&
+                    (!opsFromCatalog || missingRefresh > 0) &&
+                    !statusFilter &&
+                    !currentFolderId
+                ) {
+                    console.log(
+                        `⚡ Scheduling dual refresh merge (ops=${opsFromCatalog}, missingTs=${missingRefresh})…`
+                    );
+                    setTimeout(() => enrichRefreshInBackground(), 50);
+                }
+                updateMultiFilterBar();
+
+                // STEP 2: Auto-load metadata in background (silently - no alerts)
+                if (reports.length > 0 && !reports[0].metadata_loaded) {
+                    console.log('🔄 Auto-loading metadata in background (silent)...');
+                    setTimeout(() => loadMetadataInBackground(), 100);
+                }
+
+                // STEP 3: Usage — prefer catalog ops; avoid live Activity API when snapshot exists
+                // (Activity Events was returning empty/400 in ops job — live fan-out is slow and noisy)
+                const anyViewsKnown = reports.some(r => r.view_count !== undefined);
+                const needsLiveUsage = reports.length > 0 && !opsFromCatalog && reports.every(r => !r.usage_loaded);
+                if (opsFromCatalog || anyViewsKnown) {
+                    // Ensure zeros from snapshot render without spinners
+                    reports.forEach((r, i) => {
+                        if (reports[i].view_count === undefined) {
+                            reports[i].view_count = null; // show em-dash, not spinner
+                        }
+                        reports[i].usage_loaded = true;
+                    });
+                    rerenderReportsTable();
+                    console.log('📊 Views from catalog/ops snapshot — skip live Activity Events API');
+                    const usageBtn = document.getElementById('usageBtn');
+                    if (usageBtn) usageBtn.style.display = 'inline-block'; // allow manual refresh
+                } else if (needsLiveUsage) {
+                    console.log('📊 Auto-loading usage metrics in background (silent)...');
+                    setTimeout(() => loadUsageMetricsInBackground(), 200);
+                }
+            } else {
+                showAlert('error', 'Failed to load reports: ' + result.error);
+                tableDiv.innerHTML = '<div class="no-data">❌ Failed to load reports</div>';
+                document.getElementById('reportSelect').innerHTML = '<option value="">Error loading reports</option>';
+            }
+        } catch (error) {
+            showAlert('error', 'Failed to load reports: ' + error.message);
+            tableDiv.innerHTML = '<div class="no-data">❌ Error loading reports</div>';
+            document.getElementById('reportSelect').innerHTML = '<option value="">Error loading reports</option>';
+        }
+    }
+
+    function populateFolderSelect(foldersList) {
+        const folderSelect = $('#folderSelect');
+
+        console.log(`📁 Building folder dropdown with ${foldersList.length} folders...`);
+
+        // Clear and rebuild
+        folderSelect.empty();
+        folderSelect.append(new Option('📂 All Folders', '', true, true));
+
+        if (foldersList.length === 0) {
+            console.log('   ℹ️ No folders in this workspace');
+            folderSelect.trigger('change');
+            return;
+        }
+
+        // Build folder hierarchy map
+        const folderMap = {};
+        const rootFolders = [];
+
+        // First pass: Create folder objects
+        foldersList.forEach(folder => {
+            folderMap[folder.id] = {
+                ...folder,
+                children: [],
+                hasChildren: false
+            };
+        });
+
+        // Second pass: Build parent-child relationships
+        foldersList.forEach(folder => {
+            if (folder.parentFolderId && folderMap[folder.parentFolderId]) {
+                folderMap[folder.parentFolderId].children.push(folderMap[folder.id]);
+                folderMap[folder.parentFolderId].hasChildren = true;
+            } else {
+                // Root folder (no parent)
+                rootFolders.push(folderMap[folder.id]);
+            }
+        });
+
+        // Recursive function to add folders with visual hierarchy
+        function addFolderOptions(folderNode, level = 0) {
+            const indent = '  '.repeat(level);
+            const icon = folderNode.hasChildren ? '📁' : '📂';
+            const optionText = `${indent}${icon} ${folderNode.name} (${folderNode.report_count})`;
+
+            const option = new Option(optionText, folderNode.id, false, false);
+            option.setAttribute('data-level', level);
+            folderSelect.append(option);
+
+            // Add children recursively (sorted alphabetically)
+            if (folderNode.children.length > 0) {
+                folderNode.children.sort((a, b) => a.name.localeCompare(b.name));
+                folderNode.children.forEach(child => addFolderOptions(child, level + 1));
+            }
+        }
+
+        // Add root folders (sorted alphabetically)
+        rootFolders.sort((a, b) => a.name.localeCompare(b.name));
+        rootFolders.forEach(folder => addFolderOptions(folder, 0));
+
+        console.log(`✅ Added ${foldersList.length} folders to dropdown`);
+        folderSelect.trigger('change');
+    }
+
+    async function loadMetadata() {
+        if (!currentWorkspaceId || !reports || reports.length === 0) {
+            showAlert('warning', 'Please select a workspace with reports first');
+            return;
+        }
+
+        const btn = document.getElementById('metadataBtn');
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Loading...';
+
+        console.log(`🔄 Manually loading metadata for ${reports.length} reports...`);
+        showAlert('info', `Loading owner metadata (fast path: REST + catalog)…`);
+
+        const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        const timeoutMs = 45000;
+        const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+        try {
+            const response = await fetch(`/api/reports-metadata/${currentWorkspaceId}`, {
+                signal: controller ? controller.signal : undefined,
+            });
+            const result = await response.json();
+
+            if (result.success && result.reports) {
+                console.log(`✅ Got metadata for ${result.reports.length} reports`);
+
+                // Apply batch to all rows together, then flip loaded flag once
+                result.reports.forEach(metadata => {
+                    const reportIndex = reports.findIndex(r => r.id === metadata.report_id);
+                    if (reportIndex !== -1) {
+                        const prev = reports[reportIndex];
+                        const pick = (incoming, existing) => {
+                            if (incoming !== undefined && incoming !== null && String(incoming).trim() !== '' && String(incoming).toUpperCase() !== 'N/A') {
+                                return incoming;
+                            }
+                            return existing;
+                        };
+                        reports[reportIndex] = {
+                            ...prev,
+                            created_by: pick(metadata.created_by, prev.created_by),
+                            modified_by: pick(metadata.modified_by, prev.modified_by),
+                            modified_date_time: pick(metadata.modified_date_time, prev.modified_date_time),
+                            created_date_time: pick(metadata.created_date_time, prev.created_date_time),
+                        };
+                    }
+                });
+
+                metadataBatchLoading = false;
+                reports = reports.map(r => ({ ...r, metadata_loaded: true }));
+                rerenderReportsTable();
+                showAlert('success', `✅ Metadata loaded successfully!`);
+                btn.style.display = 'none';
+            } else {
+                throw new Error(result.error || 'Failed to load metadata');
+            }
+        } catch (error) {
+            console.error('Error loading metadata:', error);
+            const aborted = error && (error.name === 'AbortError' || String(error).includes('abort'));
+            showAlert('error', aborted
+                ? `Metadata timed out after ${timeoutMs / 1000}s. Rows show N/A for missing owners.`
+                : ('Failed to load metadata: ' + (error.message || error)));
+            metadataBatchLoading = false;
+            reports = reports.map(r => ({ ...r, metadata_loaded: true }));
+            rerenderReportsTable();
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+
+    /**
+     * After catalog fast-path paints the table, pull live refresh in background
+     * and merge into existing rows (no full-page reload).
+     */
+    async function enrichRefreshInBackground() {
+        if (!currentWorkspaceId || !reports || reports.length === 0) {
+            return;
+        }
+        // Always try live overlay so we can pick LATEST between catalog ops and live history.
+        // (Previously we skipped when catalog already had some refresh — that missed newer live
+        // rows AND left blank UI when catalog was empty but SharePoint later had data.)
+        const missingMany = reports.filter(r => !r.last_refreshed).length >= Math.max(1, Math.floor(reports.length * 0.3));
+        const alwaysMerge = true;
+        if (!alwaysMerge && !missingMany) {
+            return;
+        }
+        try {
+            console.log('⚡ Background: fetching live refresh (include_refresh=1) for dual-source merge…');
+            let url = `/api/reports?workspace_id=${currentWorkspaceId}&include_refresh=1`;
+            if (currentFolderId) url += `&folder_id=${currentFolderId}`;
+            const response = await fetch(url);
+            const result = await response.json();
+            if (!result.success || !result.reports) {
+                console.warn('Background refresh enrichment failed', result.error);
+                return;
+            }
+            const byId = {};
+            result.reports.forEach(r => { if (r.id) byId[r.id] = r; });
+            let merged = 0;
+            reports = reports.map(r => {
+                const live = byId[r.id];
+                if (!live) {
+                    // Still recompute days-since from existing catalog timestamp
+                    if (r.last_refreshed && r.days_since_refresh == null) {
+                        return { ...r, days_since_refresh: daysSinceRefreshClient(r.last_refreshed), refresh_pending: false };
+                    }
+                    return r;
+                }
+                merged++;
+                const fields = mergeRefreshFields(r, live);
+                return {
+                    ...r,
+                    ...fields,
+                    refresh_pending: false,
+                };
+            });
+            console.log(`✅ Background refresh dual-merged for ${merged} reports`);
+            rerenderReportsTable();
+        } catch (e) {
+            console.warn('Background refresh enrichment error', e);
+        }
+    }
+
+    async function loadMetadataInBackground() {
+        if (!currentWorkspaceId || !reports || reports.length === 0) {
+            return;
+        }
+
+        // Always run one batch load so every owner column finishes together.
+        // Do not skip just because a few rows already have created_by from catalog.
+        metadataBatchLoading = true;
+        console.log(`🔄 Auto-loading metadata for ${reports.length} reports in background (batch)…`);
+        const t0 = performance.now();
+        const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        // Cap so UI never hangs silently for minutes; still one-shot for ALL rows
+        const timeoutMs = 45000;
+        const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+        try {
+            const response = await fetch(`/api/reports-metadata/${currentWorkspaceId}`, {
+                signal: controller ? controller.signal : undefined,
+            });
+            const result = await response.json();
+
+            if (result.success && result.reports) {
+                console.log(
+                    `✅ Got metadata for ${result.reports.length} reports ` +
+                    `in ${((performance.now() - t0) / 1000).toFixed(1)}s`
+                );
+
+                result.reports.forEach(metadata => {
+                    const reportIndex = reports.findIndex(r => r.id === metadata.report_id);
+                    if (reportIndex !== -1) {
+                        const prev = reports[reportIndex];
+                        const pick = (incoming, existing) => {
+                            if (incoming !== undefined && incoming !== null && String(incoming).trim() !== '' && String(incoming).toUpperCase() !== 'N/A') {
+                                return incoming;
+                            }
+                            return existing;
+                        };
+                        reports[reportIndex] = {
+                            ...prev,
+                            created_by: pick(metadata.created_by, prev.created_by),
+                            modified_by: pick(metadata.modified_by, prev.modified_by),
+                            modified_date_time: pick(metadata.modified_date_time, prev.modified_date_time),
+                            created_date_time: pick(metadata.created_date_time, prev.created_date_time),
+                        };
+                    }
+                });
+            } else {
+                console.warn('Metadata response not successful', result && result.error);
+            }
+        } catch (error) {
+            const aborted = error && (error.name === 'AbortError' || String(error).includes('abort'));
+            console.error(
+                aborted
+                    ? `Background metadata timed out after ${timeoutMs / 1000}s — stopping ALL spinners together`
+                    : 'Background metadata loading failed:',
+                error
+            );
+        } finally {
+            if (timer) clearTimeout(timer);
+            // One flip for the whole table (no partial per-row finish)
+            metadataBatchLoading = false;
+            reports = reports.map(r => ({ ...r, metadata_loaded: true }));
+            rerenderReportsTable();
+            const mb = document.getElementById('metadataBtn');
+            if (mb) mb.style.display = 'none';
+        }
+    }
+
+    async function loadUsageMetricsInBackground() {
+        if (!currentWorkspaceId || !reports || reports.length === 0) {
+            return;
+        }
+
+        console.log(`📊 Auto-loading usage metrics for workspace ${currentWorkspaceId}...`);
+
+        // Alert hidden per user request - loading happens silently in background
+        const progressAlert = null;
+
+        // Progress bar removed - loading happens silently
+
+        try {
+            const response = await fetch(`/api/report-usage/${currentWorkspaceId}`);
+
+            // Check if unauthorized (401) - Service Principal lacks admin permissions
+            if (response.status === 401 || response.status === 403) {
+                const errorData = await response.json();
+                console.warn(`⚠️  ${errorData.error || 'Activity Events API requires Power BI Admin role'}`);
+                console.warn(`📋 Solution: Grant "Power BI Administrator" role to the Service Principal`);
+
+                // Show alert to user
+                showAlert('warning',
+                    '⚠️ View counts unavailable: Service Principal needs Power BI Administrator role. Contact your admin to enable usage tracking.',
+                    15000
+                );
+
+                // Set view_count and last_viewed to null
+                reports.forEach((report, index) => {
+                    reports[index] = {
+                        ...reports[index],
+                        view_count: null,
+                        last_viewed: null,
+                        usage_loaded: false
+                    };
+                });
+                rerenderReportsTable();
+                return;
+            }
+
+            const result = await response.json();
+
+            if (result.success) {
+                console.log(`✅ Got usage metrics for ${Object.keys(result.report_views || {}).length} reports`);
+                console.log(`   Days analyzed: ${result.days_analyzed}`);
+                console.log(`   Note: ${result.note}`);
+
+                // Update reports with view counts AND last viewed info
+                reports.forEach((report, index) => {
+                    const viewCount = result.report_views ? result.report_views[report.id] || 0 : 0;
+                    const lv = result.last_viewed ? result.last_viewed[report.id] : null;
+
+                    reports[index] = {
+                        ...reports[index],
+                        view_count: viewCount,
+                        last_viewed: lv || null,
+                        usage_loaded: true,
+                        is_inactive: viewCount === 0
+                    };
+                });
+
+                // Count inactive reports
+                const inactiveCount = reports.filter(r => r.is_inactive).length;
+                const activeCount = reports.length - inactiveCount;
+                console.log(`   📊 Active reports: ${activeCount} | Inactive reports: ${inactiveCount}`);
+
+                console.log('🎨 Re-rendering table with usage data...');
+                rerenderReportsTable();
+
+                // Hide the manual usage button since data is now loaded
+                const usageBtn = document.getElementById('usageBtn');
+                if (usageBtn) usageBtn.style.display = 'none';
+
+                // Success alert hidden per user request - loading happens silently
+            } else if (result.error) {
+                console.warn(`⚠️  Usage metrics loading failed: ${result.error}`);
+                // Set view_count and last_viewed to null
+                reports.forEach((report, index) => {
+                    reports[index] = {
+                        ...reports[index],
+                        view_count: null,
+                        last_viewed: null,
+                        usage_loaded: false
+                    };
+                });
+                rerenderReportsTable();
+            }
+        } catch (error) {
+            console.error('❌ Background usage metrics loading failed:', error);
+            console.error('   Error details:', error.message);
+            console.error('   Stack:', error.stack);
+
+            // Set view_count and last_viewed to null
+            reports.forEach((report, index) => {
+                reports[index] = {
+                    ...reports[index],
+                    view_count: null,
+                    last_viewed: null,
+                    usage_loaded: false
+                };
+            });
+            rerenderReportsTable();
+
+            // Show the actual error so we can fix it
+            showAlert('error', `❌ Failed to load usage data: ${error.message}. Check console for details.`, 10000);
+        }
+    }
+
+    async function loadReportDetailsInBackground(reportsList) {
+        console.log(`🔄 STEP 3: Loading dataset details for ${reportsList.length} reports...`);
+
+        // Load details for each report in parallel for speed
+        const promises = reportsList.map(async (report) => {
+            if (report.datasetId) {
+                try {
+                    console.log(`📊 Fetching details for: ${report.name}`);
+                    const response = await fetch(`/api/report-details/${report.id}?workspace_id=${currentWorkspaceId}&dataset_id=${report.datasetId}`);
+                    const result = await response.json();
+
+                    if (result.success && result.details) {
+                        console.log(`✅ Got details for ${report.name}`);
+                        // Update the report object with detailed information
+                        const reportIndex = reports.findIndex(r => r.id === report.id);
+                        if (reportIndex !== -1) {
+                            reports[reportIndex] = {
+                                ...reports[reportIndex],
+                                ...result.details,
+                                details_loaded: true  // Flag to indicate lazy load is complete
+                            };
+                        }
+                    } else {
+                        console.log(`⚠️ No details returned for ${report.name}`);
+                        // Mark as loaded even if no details returned
+                        const reportIndex = reports.findIndex(r => r.id === report.id);
+                        if (reportIndex !== -1) {
+                            reports[reportIndex].details_loaded = true;
+                        }
+                    }
+                } catch (error) {
+                    console.error(`❌ Could not load details for report ${report.name}:`, error);
+                    // Mark as loaded to stop showing spinner
+                    const reportIndex = reports.findIndex(r => r.id === report.id);
+                    if (reportIndex !== -1) {
+                        reports[reportIndex].details_loaded = true;
+                    }
+                }
+            } else {
+                console.log(`⚠️ Report ${report.name} has no datasetId, skipping details`);
+            }
+        });
+
+        // Wait for all requests to complete, then re-render once
+        await Promise.all(promises);
+        console.log(`✅ All dataset details loaded, re-rendering table...`);
+        rerenderReportsTable();
+    }
+
+    function resolveReportFromUrl(reportList) {
+        /**
+         * Match Home deep-link report id (or name fallback) against loaded rows.
+         * Returns the matched report id or null.
+         */
+        const list = reportList || reports || [];
+        let wantId = pendingReportIdFromUrl || selectedReportId || null;
+        const wantName = (pendingReportNameFromUrl || '').trim().toLowerCase();
+
+        if (wantId) {
+            const byId = list.find((r) => String(r.id) === String(wantId));
+            if (byId) return byId.id;
+        }
+        if (wantName) {
+            const byName = list.find((r) => (r.name || '').trim().toLowerCase() === wantName);
+            if (byName) return byName.id;
+            // Partial match as last resort (Home name may differ slightly)
+            const partial = list.find((r) => (r.name || '').toLowerCase().includes(wantName));
+            if (partial) return partial.id;
+        }
+        return wantId || null;
+    }
+
+    function setReportSelectValue(reportId) {
+        /**
+         * Set Select2/native value without firing native onchange.
+         * The report <select> uses onchange="onReportChange()" — any .trigger('change')
+         * would re-enter applyReportFilter and blow the call stack.
+         */
+        suppressReportChange = true;
+        const el = document.getElementById('reportSelect');
+        const prevOnChange = el ? el.onchange : null;
+        try {
+            const val = reportId || '';
+            if (el) el.onchange = null; // detach native handler while we paint
+            if (window.jQuery && $('#reportSelect').length) {
+                $('#reportSelect').val(val);
+                try {
+                    // UI-only refresh; with onchange null this cannot recurse
+                    $('#reportSelect').trigger('change.select2');
+                } catch (e) { /* ignore select2 paint issues */ }
+            } else if (el) {
+                el.value = val;
+            }
+        } finally {
+            if (el) el.onchange = prevOnChange;
+            setTimeout(() => { suppressReportChange = false; }, 0);
+        }
+    }
+
+    function applyReportFilter(reportId, { fromUrl, syncSelect } = {}) {
+        if (applyingReportFilter) return false;
+        applyingReportFilter = true;
+        try {
+            selectedReportId = reportId || null;
+            if (syncSelect !== false) {
+                setReportSelectValue(selectedReportId);
+            }
+
+            if (!selectedReportId) {
+                renderReportsTable(reports);
+                updateMultiFilterBar();
+                return false;
+            }
+
+            const filteredReports = reports.filter(
+                (report) => String(report.id) === String(selectedReportId)
+            );
+            if (filteredReports.length === 0) {
+                console.warn(`Report filter not found in workspace list: ${selectedReportId}`);
+                renderReportsTable(reports);
+                updateMultiFilterBar();
+                return false;
+            }
+
+            renderReportsTable(filteredReports);
+            updateMultiFilterBar();
+            if (fromUrl) {
+                console.log(`Deep-link report applied: ${filteredReports[0]?.name} (${selectedReportId})`);
+                pendingReportIdFromUrl = null;
+                pendingReportNameFromUrl = null;
+            } else {
+                console.log(`Filtered to show report: ${filteredReports[0]?.name}`);
+            }
+            return true;
+        } finally {
+            applyingReportFilter = false;
+        }
+    }
+
+    function populateReportSelect(reportList) {
+        const select = $('#reportSelect');
+        const list = reportList || reports || [];
+
+        suppressReportChange = true;
+        try {
+            // Clear existing options
+            select.empty();
+            select.append(new Option('All Reports', '', false, false));
+
+            // Add all report options (sorted alphabetically)
+            const sortedReports = [...list].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+            sortedReports.forEach((report) => {
+                const optionText = report.datasetId ? report.name : `${report.name} (No dataset)`;
+                const option = new Option(optionText, report.id, false, false);
+                option.disabled = !report.datasetId;
+                select.append(option);
+            });
+        } finally {
+            // Keep suppressed until after value + filter apply
+        }
+
+        // Prefer deep-link / current selection; do not default-select first report
+        const fromUrl = !!(pendingReportIdFromUrl || pendingReportNameFromUrl);
+        const targetId = resolveReportFromUrl(list);
+        if (targetId && list.some((r) => String(r.id) === String(targetId))) {
+            selectedReportId = targetId;
+            // Apply filter; setReportSelectValue handles suppress
+            applyReportFilter(targetId, { fromUrl, syncSelect: true });
+        } else {
+            selectedReportId = null;
+            setReportSelectValue('');
+            // loadReports already rendered full table
+            updateMultiFilterBar();
+        }
+        // Safety: clear suppress if setReportSelectValue path didn't run timeout yet
+        setTimeout(() => { suppressReportChange = false; }, 0);
+    }
+
+    function onReportChange() {
+        // Programmatic Select2/populate updates must not re-enter
+        if (suppressReportChange || applyingReportFilter) return;
+
+        const val = document.getElementById('reportSelect')?.value || null;
+        // Keep URL in sync when user changes report filter in Catalog
+        try {
+            const url = new URL(window.location.href);
+            if (val) url.searchParams.set('report', val);
+            else url.searchParams.delete('report');
+            url.searchParams.delete('report_id');
+            url.searchParams.delete('reportName');
+            url.searchParams.delete('report_name');
+            window.history.replaceState({}, '', url.pathname + (url.search || '') + (url.hash || ''));
+        } catch (e) { /* ignore */ }
+
+        // Dropdown already has the value — do not write Select2 again
+        applyReportFilter(val, { fromUrl: false, syncSelect: false });
+    }
+
+
+
+    // ⚡ PERFORMANCE OPTIMIZATION: Pagination state
+    let currentPage = 1;
+    const reportsPerPage = 50; // Show 50 reports per page for better performance
+
+    /** Rows currently shown in the table (respects report dropdown / Home deep-link). */
+    function getVisibleReports(sourceList) {
+        const list = sourceList || reports || [];
+        if (!selectedReportId) return list;
+        return list.filter((r) => String(r.id) === String(selectedReportId));
+    }
+
+    /**
+     * Re-paint table after background enrichments without dropping an active report filter.
+     * Always pass the full `reports` array into metadata/usage merge — this filters for display.
+     */
+    function rerenderReportsTable(page) {
+        const p = page != null ? page : currentPage;
+        renderReportsTable(getVisibleReports(reports), p);
+    }
+
+    function renderReportsTable(reportsToShow, page = 1) {
+        const tableDiv = document.getElementById('reportsTable');
+        const exportBtn = document.getElementById('exportBtn');
+        const decommissionBtn = document.getElementById('decommissionBtn');
+        // Parameter name kept as local list; never confuse with global `reports`
+        const reports = reportsToShow;
+
+        if (!reports || reports.length === 0) {
+            tableDiv.innerHTML = '<div class="no-data">📊 No reports found in workspace</div>';
+            if (exportBtn) exportBtn.style.display = 'none';
+            if (decommissionBtn) decommissionBtn.style.display = 'none';
+            return;
+        }
+
+        // Show export buttons when reports are loaded
+        if (exportBtn) exportBtn.style.display = 'inline-block';
+        if (decommissionBtn) decommissionBtn.style.display = 'inline-block';
+
+        // Sort reports alphabetically by name (A-Z)
+        const sortedReports = [...reports].sort((a, b) => a.name.localeCompare(b.name));
+
+        // ⚡ PERFORMANCE OPTIMIZATION: Pagination for large report lists
+        const totalReports = sortedReports.length;
+        const totalPages = Math.ceil(totalReports / reportsPerPage);
+        currentPage = Math.max(1, Math.min(page, totalPages));
+
+        const startIndex = (currentPage - 1) * reportsPerPage;
+        const endIndex = Math.min(startIndex + reportsPerPage, totalReports);
+        const paginatedReports = sortedReports.slice(startIndex, endIndex);
+
+        console.log(`📄 Showing reports ${startIndex + 1}-${endIndex} of ${totalReports} (Page ${currentPage}/${totalPages})`);
+
+        let html = `
+            <div class="table-wrapper">
+                <table id="reportsTableElement">
+                    <colgroup>
+                        <col style="width: 15%;">  <!-- Report -->
+                        <col style="width: 11%;">  <!-- Created By -->
+                        <col style="width: 11%;">  <!-- Modified By -->
+                        <col style="width: 8%;">   <!-- Modified On -->
+                        <col style="width: 12%;">  <!-- Schedule -->
+                        <col style="width: 9%;">   <!-- Last Refresh -->
+                        <col style="width: 5%;">   <!-- Days -->
+                        <col style="width: 7%;">   <!-- Status -->
+                        <col style="width: 6%;">   <!-- Views 60d -->
+                        <col style="width: 9%;">   <!-- Last Viewed -->
+                        <col style="width: 7%;">   <!-- Action -->
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th>Report</th>
+                            <th>Created by</th>
+                            <th>Modified by</th>
+                            <th>Modified</th>
+                            <th>Schedule</th>
+                            <th>Last refresh</th>
+                            <th title="Days since last refresh">Days</th>
+                            <th>Status</th>
+                            <th title="Report views in the last ${VIEW_LOOKBACK_DAYS} days (Activity Events)">Views ${VIEW_LOOKBACK_DAYS}d</th>
+                            <th>Last viewed</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        // ⚡ PERFORMANCE OPTIMIZATION: Render only current page of reports
+        paginatedReports.forEach(report => {
+            // Owner columns: ALL rows show spinners together until the batch metadata
+            // call finishes. Do not hide spinner on a single row just because
+            // that row already has created_by from catalog while others wait.
+            const isLoadingMetadata = metadataBatchLoading || !report.metadata_loaded;
+
+            // Format creator info (Step 2 data) with title for full email on hover
+            const createdBy = report.created_by ?
+                `<span title="${escapeHtml(report.created_by)}">${escapeHtml(report.created_by)}</span>` :
+                (isLoadingMetadata ? '<span class="inline-spinner"></span>' : '<span style="color: #999; font-style: italic;">N/A</span>');
+
+            // Format modifier info (Step 2 data) with title for full email on hover
+            const modifiedBy = report.modified_by ?
+                `<span title="${escapeHtml(report.modified_by)}">${escapeHtml(report.modified_by)}</span>` :
+                (isLoadingMetadata ? '<span class="inline-spinner"></span>' : '<span style="color: #999; font-style: italic;">N/A</span>');
+
+            const modifiedOn = report.modified_date_time ?
+                new Date(report.modified_date_time).toLocaleString('en-US', {month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'}) :
+                (isLoadingMetadata ? '<span class="inline-spinner"></span>' : '<span style="color: #999; font-style: italic;">N/A</span>');
+
+            // Refresh/views prefer catalog ops snapshot; spinner only if still pending live fallback
+            const pending = !!report.refresh_pending && !report.ops_from_catalog;
+            const refreshSchedule = report.refresh_schedule ?
+                formatRefreshSchedule(report.refresh_schedule) :
+                (pending ? '<span class="inline-spinner" title="Loading schedule…"></span>' : '<span class="cell-muted">—</span>');
+
+            const lastRefreshed = formatLastRefreshedCell(report);
+
+            const daysSinceRefresh = formatDaysSinceRefreshCell(report);
+
+            const refreshStatus = report.last_refresh_status ?
+                getRefreshStatusBadge(report.last_refresh_status, report.refresh_note) :
+                (pending ? '<span class="inline-spinner" title="Loading status…"></span>' : '<span class="cell-muted">—</span>');
+
+            const safeName = report.name.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/ /g, '_');
+
+            // Format views count (60 days)
+            const viewCount = report.view_count;
+            let viewsDisplay = '';
+
+            if (viewCount === null) {
+                viewsDisplay = '<span class="cell-muted" title="Activity Events unavailable (admin API / empty snapshot)">—</span>';
+            } else if (viewCount === undefined) {
+                viewsDisplay = '<span class="inline-spinner" title="Loading views…"></span>';
+            } else if (viewCount === 0) {
+                viewsDisplay = `<div class="views-cell" title="No views in last ${VIEW_LOOKBACK_DAYS} days"><span class="views-num zero">0</span><span class="views-tag">Inactive</span></div>`;
+            } else {
+                viewsDisplay = `<div class="views-cell" title="${viewCount.toLocaleString()} views in last ${VIEW_LOOKBACK_DAYS} days"><span class="views-num">${viewCount.toLocaleString()}</span></div>`;
+            }
+
+            // Format Last Viewed By (wraps on laptop widths)
+            let lastViewedDisplay = '<span class="cell-muted">Never</span>';
+            if (report.last_viewed) {
+                const lv = report.last_viewed;
+                if (typeof lv === 'object' && lv.timestamp) {
+                    const ts = new Date(lv.timestamp).toLocaleString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                    let user = 'Unknown';
+                    let fullUser = lv.user || 'Unknown';
+                    if (lv.user && lv.user !== 'Unknown') {
+                        if (lv.user.includes('@')) {
+                            user = lv.user.split('@')[0];
+                        } else {
+                            user = `User #${lv.user.slice(-6)}`;
+                        }
+                    }
+                    lastViewedDisplay = `
+                        <div class="last-viewed-cell" title="${escapeHtml(fullUser)} · ${ts}">
+                            <span class="lv-user">${escapeHtml(user)}</span>
+                            <span class="lv-ts">${ts}</span>
+                        </div>
+                    `;
+                } else if (typeof lv === 'string') {
+                    const ts = new Date(lv).toLocaleString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                    lastViewedDisplay = `<div class="last-viewed-cell"><span class="lv-ts">${ts}</span></div>`;
+                }
+            }
+
+            html += `
+                <tr>
+                    <td title="${escapeHtml(report.name)}"><strong>${escapeHtml(report.name)}</strong></td>
+                    <td>${createdBy}</td>
+                    <td>${modifiedBy}</td>
+                    <td>${modifiedOn}</td>
+                    <td>${refreshSchedule}</td>
+                    <td>${lastRefreshed}</td>
+                    <td>${daysSinceRefresh}</td>
+                    <td>${refreshStatus}</td>
+                    <td style="text-align: center;">${viewsDisplay}</td>
+                    <td>${lastViewedDisplay}</td>
+                    <td>
+                        <div class="action-buttons">
+                            ${report.datasetId ? `
+                                <button class="btn btn-sm btn-success" onclick="generateAndDownloadReport('${report.id}', '${safeName}')" title="Generate documentation">
+                                    Generate
+                                </button>
+                                <button class="btn btn-sm btn-warning" onclick="runCrashTest('${report.id}', '${safeName}', '${report.datasetId}', 'enhanced')" title="Deep analysis with visual detection">
+                                    Crash test
+                                </button>
+                            ` : '<span style="color: #999;">No dataset</span>'}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        });
+
+        html += '</tbody></table>';
+
+        // ⚡ PERFORMANCE OPTIMIZATION: Add pagination controls if needed
+        if (totalPages > 1) {
+            html += `
+                <div style="display: flex; justify-content: center; align-items: center; margin-top: 20px; gap: 10px;">
+                    <button class="btn btn-sm btn-secondary" onclick="rerenderReportsTable(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>
+                        ← Previous
+                    </button>
+                    <span style="padding: 0 15px; color: #555;">
+                        Page ${currentPage} of ${totalPages} (${totalReports} reports)
+                    </span>
+                    <button class="btn btn-sm btn-secondary" onclick="rerenderReportsTable(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>
+                        Next →
+                    </button>
+                    <select onchange="rerenderReportsTable(parseInt(this.value))" style="margin-left: 10px; padding: 5px;">
+                        ${Array.from({length: totalPages}, (_, i) => i + 1).map(p =>
+                            `<option value="${p}" ${p === currentPage ? 'selected' : ''}>Page ${p}</option>`
+                        ).join('')}
+                    </select>
+                </div>
+            `;
+        }
+
+        html += '</div>';
+        tableDiv.innerHTML = html;
+    }
+
+    function formatRefreshSchedule(schedule) {
+        if (!schedule || schedule === 'N/A') {
+            return '<span class="cell-muted">—</span>';
+        }
+
+        if (typeof schedule === 'string') {
+            if (schedule.startsWith('Scheduled:')) {
+                const details = schedule.substring(10).trim();
+                return `<div class="sched-chip" title="${escapeHtml(details)}"><span class="lbl">Scheduled</span><span class="val">${escapeHtml(details)}</span></div>`;
+            }
+            if (schedule.includes('Scheduled')) {
+                return `<div class="sched-chip" title="${escapeHtml(schedule)}"><span class="lbl">Scheduled</span><span class="val">${escapeHtml(schedule.replace(/^Scheduled:?\s*/i,''))}</span></div>`;
+            }
+            if (schedule === 'DirectQuery/Live') {
+                return '<div class="sched-chip live"><span class="lbl">Connection</span><span class="val">DirectQuery / Live</span></div>';
+            }
+            if (schedule === 'Not Refreshable') {
+                return '<span class="badge badge-muted">Not refreshable</span>';
+            }
+            if (schedule === 'No Schedule') {
+                return '<div class="sched-chip off"><span class="lbl">Schedule</span><span class="val">None</span></div>';
+            }
+            if (schedule === 'Disabled') {
+                return '<div class="sched-chip off"><span class="lbl">Schedule</span><span class="val">Disabled</span></div>';
+            }
+            if (schedule.toLowerCase().includes('incomplete')) {
+                return `<span class="badge badge-warning" title="${escapeHtml(schedule)}">Incomplete</span>`;
+            }
+            return `<span class="cell-muted" title="${escapeHtml(schedule)}">${escapeHtml(schedule)}</span>`;
+        }
+
+        if (!schedule.enabled) {
+            return '<div class="sched-chip off"><span class="lbl">Schedule</span><span class="val">Disabled</span></div>';
+        }
+        const days = schedule.days || [];
+        const times = schedule.times || [];
+        if (days.length === 0 || times.length === 0) {
+            return '<div class="sched-chip off"><span class="lbl">Schedule</span><span class="val">None</span></div>';
+        }
+        const details = `${days.join(', ')} at ${times.join(', ')}`;
+        return `<div class="sched-chip" title="${escapeHtml(details)}"><span class="lbl">Scheduled</span><span class="val">${escapeHtml(details)}</span></div>`;
+    }
+
+    function isDirectQueryOrLive(report) {
+        const type = (report.refresh_type || '').toLowerCase();
+        const status = (report.last_refresh_status || '').toLowerCase();
+        const schedule = (report.refresh_schedule || '').toLowerCase();
+        return (
+            type === 'directquery' ||
+            type === 'live' ||
+            status.includes('directquery') ||
+            status.includes('live') ||
+            schedule.includes('directquery') ||
+            schedule.includes('live')
+        );
+    }
+
+    function formatLastRefreshedCell(report) {
+        const note = report.refresh_note ? String(report.refresh_note) : '';
+        const titleAttr = note ? ` title="${escapeHtml(note)}"` : '';
+
+        if (isDirectQueryOrLive(report)) {
+            return `<span class="badge badge-info"${titleAttr}>Live</span>`;
+        }
+
+        if (report.last_refreshed) {
+            const d = new Date(report.last_refreshed);
+            const datePart = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+            const timePart = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            const status = (report.last_refresh_status || '').toLowerCase();
+            const tip = note || (status === 'inprogress' || status === 'in progress' ? 'Refresh in progress — showing last completed time' : d.toLocaleString());
+            const sub = (status === 'inprogress' || status === 'in progress')
+                ? '<span class="sub">in progress</span>'
+                : `<span class="sub">${escapeHtml(timePart)}</span>`;
+            return `<span class="ts-cell" title="${escapeHtml(tip)}">${escapeHtml(datePart)}${sub}</span>`;
+        }
+
+        const status = (report.last_refresh_status || '').toLowerCase();
+        if (status === 'no history' || status === 'nohistory') return `<span class="cell-muted"${titleAttr}>No history</span>`;
+        if (status === 'not refreshable') return `<span class="cell-muted"${titleAttr}>Not refreshable</span>`;
+        if (status === 'access denied') return `<span class="badge badge-danger"${titleAttr}>Access denied</span>`;
+        if (status === 'error') return `<span class="badge badge-danger"${titleAttr}>Error</span>`;
+        if (status === 'no dataset') return `<span class="cell-muted"${titleAttr}>No dataset</span>`;
+        return `<span class="cell-muted"${titleAttr}>—</span>`;
+    }
+
+    function formatDaysSinceRefreshCell(report) {
+        if (isDirectQueryOrLive(report)) {
+            return '<span class="cell-muted" title="Live connection — not applicable">—</span>';
+        }
+        // Prefer precomputed catalog value when present
+        if (report.days_since_refresh !== undefined && report.days_since_refresh !== null && report.days_since_refresh !== '') {
+            return styleDaysSince(Number(report.days_since_refresh));
+        }
+        if (!report.last_refreshed) {
+            if (report.refresh_pending) {
+                return '<span class="inline-spinner" title="Loading refresh info…"></span>';
+            }
+            return '<span style="color: #999; font-style: italic;">N/A</span>';
+        }
+        return calculateDaysSinceRefresh(report.last_refreshed);
+    }
+
+    function styleDaysSince(diffDays) {
+        if (isNaN(diffDays)) {
+            return '<span class="cell-muted">—</span>';
+        }
+        let cls = 'days-ok';
+        if (diffDays >= 31) cls = 'days-hot';
+        else if (diffDays >= 8) cls = 'days-warn';
+        else if (diffDays >= 2) cls = 'days-info';
+        const tip = diffDays === 0 ? 'Refreshed today' : `${diffDays} day${diffDays === 1 ? '' : 's'} since last refresh`;
+        return `<span class="days-pill ${cls}" title="${tip}">${diffDays}</span>`;
+    }
+
+    function calculateDaysSinceRefresh(lastRefreshedDate) {
+        if (!lastRefreshedDate) {
+            return '<span style="color: #999; font-style: italic;">N/A</span>';
+        }
+        const now = new Date();
+        const refreshDate = new Date(lastRefreshedDate);
+        const diffDays = Math.floor(Math.abs(now - refreshDate) / (1000 * 60 * 60 * 24));
+        return styleDaysSince(diffDays);
+    }
+
+    function getRefreshStatusBadge(status, note) {
+        if (!status) {
+            return '<span class="cell-muted">—</span>';
+        }
+
+        const statusLower = String(status).toLowerCase();
+        const titleAttr = note ? ` title="${escapeHtml(String(note))}"` : '';
+
+        if (statusLower === 'completed' || statusLower === 'success' || statusLower === 'succeeded') {
+            return `<span class="badge badge-success"${titleAttr}>Success</span>`;
+        }
+        if (statusLower === 'failed' || statusLower === 'failure') {
+            return `<span class="badge badge-danger"${titleAttr}>Failed</span>`;
+        }
+        if (statusLower === 'inprogress' || statusLower === 'in progress' || statusLower === 'unknown' || statusLower === 'running') {
+            return `<span class="badge badge-warning"${titleAttr}>Running</span>`;
+        }
+        if (statusLower.includes('directquery') || statusLower.includes('live')) {
+            return `<span class="badge badge-info"${titleAttr}>Live</span>`;
+        }
+        if (statusLower === 'not refreshable') {
+            return `<span class="badge badge-muted"${titleAttr}>N/A</span>`;
+        }
+        if (statusLower === 'no history') {
+            return `<span class="badge badge-muted"${titleAttr}>No history</span>`;
+        }
+        if (statusLower === 'access denied') {
+            return `<span class="badge badge-danger"${titleAttr}>Denied</span>`;
+        }
+        if (statusLower === 'disabled') {
+            return `<span class="badge badge-warning"${titleAttr}>Disabled</span>`;
+        }
+        if (statusLower === 'error') {
+            return `<span class="badge badge-danger"${titleAttr}>Error</span>`;
+        }
+        if (statusLower === 'cancelled' || statusLower === 'canceled') {
+            return `<span class="badge badge-muted"${titleAttr}>Cancelled</span>`;
+        }
+
+        return `<span class="badge badge-neutral"${titleAttr}>${escapeHtml(status)}</span>`;
+    }
+
+    async function generateAndDownloadReport(reportId, reportName) {
+        if (!currentWorkspaceId) {
+            showAlert('error', 'Please select a workspace first');
+            return;
+        }
+
+        // Find the report to get dataset_id
+        const report = reports.find(r => r.id === reportId);
+        if (!report || !report.datasetId) {
+            showAlert('error', 'Cannot generate documentation: Dataset ID not found for this report');
+            return;
+        }
+
+        // Find the button and show progress
+        const button = document.querySelector(`button[onclick*="${reportId}"]`);
+        const buttonContainer = button ? button.parentElement : null;
+
+        if (buttonContainer) {
+            // Replace button with progress indicator
+            buttonContainer.innerHTML = `
+                <div class="progress-container">
+                    <div class="circular-progress">
+                        <svg viewBox="0 0 32 32">
+                            <circle cx="16" cy="16" r="14" fill="none" stroke="#E2E8F0" stroke-width="3"></circle>
+                            <circle cx="16" cy="16" r="14" fill="none" stroke="#48BB78" stroke-width="3"
+                                    stroke-dasharray="87.96" stroke-dashoffset="87.96"
+                                    class="progress-circle"></circle>
+                        </svg>
+                        <div class="progress-text">0%</div>
+                    </div>
+                    <span class="progress-label">Starting...</span>
+                </div>
+            `;
+        }
+
+        // Generate a unique job ID for this generation
+        const jobId = `${reportId}_${Date.now()}`;
+
+        try {
+            // Start the generation request (returns immediately with job_id)
+            const response = await fetch('/api/generate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    workspace_id: currentWorkspaceId,
+                    report_id: reportId,
+                    dataset_id: report.datasetId,
+                    report_name: reportName,
+                    job_id: jobId
+                })
+            });
+
+            const result = await response.json();
+
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to start generation');
+            }
+
+            console.log(`✅ Generation started with job ID: ${jobId}`);
+
+            // Start polling for progress updates
+            const progressInterval = setInterval(async () => {
+                try {
+                    const progressResponse = await fetch(`/api/generate/progress/${jobId}`);
+                    if (progressResponse.ok) {
+                        const progressData = await progressResponse.json();
+                        console.log(`Progress: ${progressData.progress}% - ${progressData.status}`);
+                        updateProgressUI(buttonContainer, progressData.progress, progressData.status);
+
+                        // Check if generation is complete
+                        if (progressData.complete) {
+                            clearInterval(progressInterval);
+
+                            if (progressData.error) {
+                                // Handle error
+                                showAlert('error', 'Failed to generate documentation: ' + progressData.error);
+
+                                // Show error state
+                                if (buttonContainer) {
+                                    buttonContainer.innerHTML = `
+                                        <div style="display: flex; align-items: center; gap: 6px; padding: 4px;">
+                                            <span style="font-size: 16px; line-height: 1;">❌</span>
+                                            <span style="font-size: 11px; font-weight: 600; color: #F56565;">Failed</span>
+                                        </div>
+                                    `;
+                                }
+
+                                // Restore button after delay
+                                setTimeout(() => {
+                                    restoreGenerateButton(buttonContainer, reportId, reportName);
+                                }, 2000);
+                            } else {
+                                // Success - download the file
+                                await downloadGeneratedFile(jobId, reportName, buttonContainer, reportId);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error fetching progress:', error);
+                }
+            }, 500);  // Poll every 500ms
+
+
+        } catch (error) {
+            console.error('Error starting generation:', error);
+            showAlert('error', 'Failed to start documentation generation: ' + error.message);
+
+            // Show error state
+            if (buttonContainer) {
+                buttonContainer.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 6px; padding: 4px;">
+                        <span style="font-size: 16px; line-height: 1;">❌</span>
+                        <span style="font-size: 11px; font-weight: 600; color: #F56565;">Error</span>
+                    </div>
+                `;
+            }
+
+            // Restore button after delay
+            setTimeout(() => {
+                restoreGenerateButton(buttonContainer, reportId, reportName);
+            }, 2000);
+        }
+    }
+
+    async function downloadGeneratedFile(jobId, reportName, buttonContainer, reportId) {
+        try {
+            // Show success state
+            if (buttonContainer) {
+                buttonContainer.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 6px; padding: 4px;">
+                        <span style="font-size: 16px; line-height: 1;">✅</span>
+                        <span style="font-size: 11px; font-weight: 600; color: #48BB78;">Done!</span>
+                    </div>
+                `;
+            }
+
+            // Wait a moment to show success
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // Download the file
+            const downloadUrl = `/api/generate/download/${jobId}`;
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = `${reportName}_Documentation.docx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            showAlert('success', 'Documentation generated and downloaded successfully!');
+
+            // Restore button after a short delay
+            setTimeout(() => {
+                restoreGenerateButton(buttonContainer, reportId, reportName);
+            }, 1000);
+
+            loadReports(); // Refresh the table
+
+        } catch (error) {
+            console.error('Error downloading file:', error);
+            showAlert('error', 'Failed to download documentation: ' + error.message);
+
+            setTimeout(() => {
+                restoreGenerateButton(buttonContainer, reportId, reportName);
+            }, 2000);
+        }
+    }
+
+    function restoreGenerateButton(buttonContainer, reportId, reportName) {
+        if (!buttonContainer) return;
+
+        const safeName = reportName.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/ /g, '_');
+
+        // Find the report to get dataset ID
+        const report = reports.find(r => r.id === reportId);
+        const datasetId = report ? report.datasetId : '';
+
+        buttonContainer.innerHTML = `
+            <button class="btn btn-sm btn-success" onclick="generateAndDownloadReport('${reportId}', '${safeName}')">
+                📄 Generate
+            </button>
+            <button class="btn btn-sm btn-warning" onclick="runCrashTest('${reportId}', '${safeName}', '${datasetId}', 'enhanced')" title="Deep analysis with visual detection - detects broken visuals">
+                🔍 Crash Test
+            </button>
+        `;
+    }
+
+    function updateProgressUI(container, progress, status) {
+        if (!container) return;
+
+        const progressCircle = container.querySelector('.progress-circle');
+        const progressText = container.querySelector('.progress-text');
+        const progressLabel = container.querySelector('.progress-label');
+
+        if (progressCircle && progressText && progressLabel) {
+            // Update circular progress (circumference = 2 * π * r = 2 * 3.14159 * 14 ≈ 87.96)
+            const circumference = 87.96;
+            const offset = circumference - (progress / 100) * circumference;
+
+            console.log(`Progress: ${progress}%, Offset: ${offset}, Circumference: ${circumference}`);
+
+            progressCircle.style.strokeDashoffset = offset;
+            progressCircle.setAttribute('stroke-dashoffset', offset);
+
+            // Update text
+            progressText.textContent = `${Math.round(progress)}%`;
+            progressLabel.textContent = status || `Generating...`;
+        }
+    }
+
+
+
+    function showAlert(type, message) {
+        const container = document.getElementById('alertContainer');
+        const alertClass = type === 'success' ? 'alert-success' :
+                          type === 'error' ? 'alert-error' :
+                          type === 'warning' ? 'alert-warning' : 'alert-info';
+
+        const alert = document.createElement('div');
+        alert.className = `alert ${alertClass}`;
+        alert.textContent = message;
+
+        container.appendChild(alert);
+
+        setTimeout(() => {
+            alert.remove();
+        }, 5000);
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    /**
+     * Extract visual field bindings from embedded report using Power BI JavaScript SDK
+     * This is the KEY to getting field-level root cause analysis!
+     */
+    async function extractVisualFieldBindings(reportId) {
+        console.log('🔍 Attempting to extract visual field bindings...');
+
+        try {
+            // Check if we have an embedded report
+            const embedContainer = document.getElementById('reportContainer');
+            if (!embedContainer) {
+                console.log('⚠️  No embed container found - skipping visual extraction');
+                return null;
+            }
+
+            // Get the embedded report instance
+            const report = powerbi.get(embedContainer);
+            if (!report) {
+                console.log('⚠️  No embedded report found - skipping visual extraction');
+                return null;
+            }
+
+            console.log('✅ Found embedded report - extracting visual metadata...');
+
+            const pages = await report.getPages();
+            const visualMetadata = [];
+
+            for (const page of pages) {
+                console.log(`   📄 Processing page: ${page.displayName}`);
+                const visuals = await page.getVisuals();
+
+                for (const visual of visuals) {
+                    try {
+                        // Get capabilities (what data roles this visual supports)
+                        const capabilities = await visual.getCapabilities();
+
+                        const visualData = {
+                            page: page.displayName,
+                            name: visual.name,
+                            title: visual.title || 'Untitled',
+                            type: visual.type,
+                            fields: {}
+                        };
+
+                        // For each data role (Category, Values, Legend, etc.)
+                        if (capabilities && capabilities.dataRoles) {
+                            for (const dataRole of capabilities.dataRoles) {
+                                try {
+                                    // Get the actual fields bound to this role
+                                    const fields = await visual.getDataFields(dataRole.name);
+                                    visualData.fields[dataRole.name] = fields.map(f => ({
+                                        table: f.table || '',
+                                        column: f.column || '',
+                                        aggregation: f.aggregation || ''
+                                    }));
+                                } catch (e) {
+                                    // Some data roles might not have fields
+                                    console.log(`      ⚠️  Could not get fields for ${dataRole.name}: ${e.message}`);
+                                }
+                            }
+                        }
+
+                        visualMetadata.push(visualData);
+                        console.log(`      ✓ Extracted ${visual.title}: ${Object.keys(visualData.fields).length} data roles`);
+
+                    } catch (e) {
+                        console.log(`      ⚠️  Error processing visual ${visual.title}: ${e.message}`);
+                    }
+                }
+            }
+
+            console.log(`✅ Extracted metadata from ${visualMetadata.length} visuals`);
+            return visualMetadata;
+
+        } catch (error) {
+            console.error('❌ Error extracting visual field bindings:', error);
+            return null;
+        }
+    }
+
+    async function runCrashTest(reportId, reportName, datasetId, mode = 'standard') {
+        if (!currentWorkspaceId) {
+            showAlert('error', 'Please select a workspace first');
+            return;
+        }
+
+        console.log('🔬 Running crash test:', reportId, reportName, datasetId, 'Mode:', mode);
+
+        // Find the button
+        const button = event.target;
+        const originalContent = button.innerHTML;
+
+        // Show loading state
+        button.disabled = true;
+        button.innerHTML = '⏳ Testing... (60-120s)';
+        showAlert('info', 'Running crash test with visual detection. This may take 60-120 seconds...');
+
+        try {
+            // ⭐ NEW: Extract visual field bindings from embedded report (if available)
+            let visualFieldBindings = null;
+            try {
+                visualFieldBindings = await extractVisualFieldBindings(reportId);
+                if (visualFieldBindings && visualFieldBindings.length > 0) {
+                    console.log(`🎯 Successfully extracted field bindings from ${visualFieldBindings.length} visuals`);
+                } else {
+                    console.log('ℹ️  No visual field bindings extracted (report may not be embedded)');
+                }
+            } catch (extractError) {
+                console.warn('⚠️  Visual field extraction failed:', extractError);
+                // Continue with crash test even if extraction fails
+            }
+
+            // Build request body
+            const requestBody = {
+                workspace_id: currentWorkspaceId,
+                dataset_id: datasetId,
+                mode: mode,
+                visual_field_bindings: visualFieldBindings  // ⭐ NEW!
+            };
+
+            const response = await fetch(`/api/reports/crash-test/${reportId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const result = await response.json();
+
+            if (result.success) {
+                console.log('✅ Crash test completed successfully');
+                console.log('Result data:', result);
+
+                // Show success
+                button.innerHTML = '✅ Done';
+
+                // Show results in alert
+                const healthScore = result.health_score;
+                const status = result.status;
+                const issueCount = result.issues.length;
+                const warningCount = result.warnings.length;
+
+                console.log(`Health Score: ${healthScore}, Issues: ${issueCount}, Warnings: ${warningCount}`);
+
+                let healthIcon = healthScore >= 90 ? '🟢' : healthScore >= 70 ? '🟡' : '🔴';
+                let message = `${healthIcon} Crash Test Results for "${reportName}"\n\n` +
+                             `Health Score: ${healthScore}/100 (${status.toUpperCase()})\n` +
+                             `Issues: ${issueCount}`;
+
+                // Always show detailed modal (even if no issues, to show health score, refresh status, and lineage)
+                console.log('🎯 Calling showCrashTestModal...');
+                try {
+                    showCrashTestModal(reportName, result, reportId, currentWorkspaceId);
+                    console.log('✅ Modal function called successfully');
+                } catch (modalError) {
+                    console.error('❌ Error showing modal:', modalError);
+                    alert('Error displaying results: ' + modalError.message);
+                }
+
+                // Restore button after delay
+                setTimeout(() => {
+                    button.disabled = false;
+                    button.innerHTML = originalContent;
+                }, 2000);
+
+            } else {
+                throw new Error(result.error || 'Unknown error');
+            }
+
+        } catch (error) {
+            console.error('Crash test error:', error);
+            showAlert('error', 'Crash test failed: ' + error.message);
+
+            // Restore button
+            button.disabled = false;
+            button.innerHTML = '🔍 Crash Test';
+        }
+    }
+
+    // Toggle function for collapsible refresh error details
+    function toggleRefreshDetails(elementId) {
+        // Prevent event from bubbling up to parent elements
+        if (event) {
+            event.stopPropagation();
+        }
+
+        const element = document.getElementById(elementId);
+        const button = event ? event.target : null;
+
+        if (element) {
+            if (element.style.display === 'none' || element.style.display === '') {
+                element.style.display = 'block';
+                if (button) button.innerHTML = '▲ Hide';
+            } else {
+                element.style.display = 'none';
+                if (button) button.innerHTML = '▼ Details';
+            }
+        } else {
+            console.error('❌ Could not find element with ID:', elementId);
+        }
+    }
+
+    function showCrashTestModal(reportName, result, reportId, workspaceId) {
+        const healthScore = result.health_score;
+        const status = result.status;
+        const issues = result.issues || [];
+        const warnings = result.warnings || [];
+        const refreshInfo = result.refresh_info || null;
+        const lineageAnalysis = result.lineage_analysis || null;
+        const rootCauseAnalysis = result.root_cause_analysis || [];
+
+        console.log('🔬 Root Cause Analysis:', rootCauseAnalysis);
+        console.log('📊 Refresh Info:', refreshInfo);
+
+        let healthColor = healthScore >= 90 ? '#48BB78' : healthScore >= 70 ? '#ECC94B' : '#F56565';
+        const reportLink = `https://app.powerbi.com/groups/${workspaceId}/reports/${reportId}`;
+
+        // Helper function to format datetime
+        const formatDateTime = (dateStr) => {
+            if (!dateStr) return 'N/A';
+            try {
+                const date = new Date(dateStr);
+                return date.toLocaleString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                    hour: 'numeric',
+                    minute: '2-digit',
+                    hour12: true
+                });
+            } catch {
+                return dateStr;
+            }
+        };
+
+        // Create centered modal with backdrop
+        let modalHtml = `
+            <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;" onclick="this.remove()">
+                <div style="background: white; border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-width: 95%; width: 100%; max-height: 90vh; display: flex; flex-direction: column;" onclick="event.stopPropagation()">
+
+                    <!-- Compact Header -->
+                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 18px 24px; border-radius: 8px 8px 0 0; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;">
+                        <div style="flex: 1;">
+                            <div style="color: rgba(255,255,255,0.9); font-size: 13px; font-weight: 600; margin-bottom: 6px;">🔍 Crash Test Results</div>
+                            <div style="color: white; font-size: 22px; font-weight: 800; text-shadow: 0 2px 4px rgba(0,0,0,0.2); letter-spacing: -0.5px; margin-bottom: 8px;">${reportName}</div>
+        `;
+
+        // Generate consistent ID for refresh details section
+        const refreshDetailsId = 'refreshDetails_' + Date.now();
+
+        // Add last refresh as collapsible bar (shown inline in header)
+        if (refreshInfo) {
+            const refreshColor = refreshInfo.status === 'Completed' ? '#48BB78' : refreshInfo.status === 'Failed' ? '#F56565' : '#ECC94B';
+            const refreshIcon = refreshInfo.status === 'Completed' ? '✅' : refreshInfo.status === 'Failed' ? '❌' : '⚠️';
+
+            modalHtml += `
+                            <div style="display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.3);">
+                                <span style="font-size: 16px;">${refreshIcon}</span>
+                                <span style="color: white; font-size: 11px; font-weight: 600;">Last Refresh: <strong>${refreshInfo.status}</strong></span>
+                                <span style="color: rgba(255,255,255,0.8); font-size: 10px;">${formatDateTime(refreshInfo.endTime)}</span>
+            `;
+
+            // Add expand button ONLY if refresh failed (to show error details)
+            if (refreshInfo.status === 'Failed') {
+                modalHtml += `
+                                <button onclick="event.stopPropagation(); toggleRefreshDetails('${refreshDetailsId}');" style="margin-left: 4px; background: rgba(255,255,255,0.3); border: none; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; cursor: pointer; font-weight: 600;" title="Show error details">
+                                    ▼ Details
+                                </button>
+                `;
+            }
+
+            modalHtml += `
+                            </div>
+            `;
+        }
+
+        modalHtml += `
+                        </div>
+                        <div style="display: flex; gap: 8px;">
+                            <a href="${reportLink}" target="_blank" style="padding: 8px 16px; background: rgba(255,255,255,0.25); color: white; text-decoration: none; border-radius: 5px; font-size: 12px; font-weight: 600; border: 1px solid rgba(255,255,255,0.4); box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                🔗 Open Report
+                            </a>
+                            <button onclick="this.closest('[style*=\\'position: fixed\\']').remove()" style="padding: 8px 16px; background: rgba(255,255,255,0.25); color: white; border: 1px solid rgba(255,255,255,0.4); border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                ✕ Close
+                            </button>
+                        </div>
+                    </div>
+        `;
+
+        // Add collapsible refresh error details section (ONLY if refresh failed)
+        if (refreshInfo && refreshInfo.status === 'Failed') {
+            // Simple: just show whatever error info we have
+            let errorMessage = 'No error details available from Power BI';
+
+            // Power BI Error Code Translator - converts cryptic codes to human-readable messages
+            const translateErrorCode = (errorCode) => {
+                const errorCodeMap = {
+                    'DMTS_MonikerWithUnboundDataSources': {
+                        title: 'Data Source Connection Missing',
+                        description: 'The dataset cannot connect to its data source because the connection details are not configured.',
+                        causes: [
+                            'The report was copied or moved without preserving data source connections',
+                            'The data source credentials have not been set up in Power BI Service',
+                            'The dataset is missing binding to a gateway or cloud connection'
+                        ],
+                        solutions: [
+                            'Open the dataset settings in Power BI Service',
+                            'Go to "Data source credentials" section',
+                            'Click "Edit credentials" and enter the connection details',
+                            'If using an on-premises data source, ensure a gateway is configured',
+                            'Re-bind the data source to the correct gateway or cloud connection'
+                        ]
+                    },
+                    'DMTS_DatasourceHasNoCredentialError': {
+                        title: 'Data Source Credentials Not Set',
+                        description: 'The data source exists but no credentials have been configured for authentication.',
+                        causes: [
+                            'First-time dataset publish without credentials',
+                            'Credentials expired or were removed',
+                            'OAuth token expired for cloud data sources'
+                        ],
+                        solutions: [
+                            'Navigate to dataset Settings → Data source credentials',
+                            'Click "Edit credentials" for each data source',
+                            'Enter the correct username and password',
+                            'For OAuth sources (SharePoint, Dynamics), re-authenticate',
+                            'Ensure the credentials have proper permissions to access the data'
+                        ]
+                    },
+                    'DMTS_GatewayNotReachable': {
+                        title: 'Data Gateway Offline or Unreachable',
+                        description: 'Power BI cannot connect to the on-premises data gateway.',
+                        causes: [
+                            'Gateway service is stopped or crashed',
+                            'Gateway machine is powered off or unreachable',
+                            'Network firewall blocking connection',
+                            'Gateway was uninstalled or moved to different machine'
+                        ],
+                        solutions: [
+                            'Verify the gateway machine is powered on and connected to network',
+                            'Check gateway service is running (services.msc → "On-premises data gateway service")',
+                            'Open the gateway configuration app and verify status',
+                            'Check firewall allows outbound HTTPS (443) to *.powerbi.com',
+                            'Restart the gateway service if showing as degraded'
+                        ]
+                    },
+                    'Premium_ASWL_Error': {
+                        title: 'Premium Workspace Query Error',
+                        description: 'The dataset query failed due to a Premium capacity or Analysis Services issue.',
+                        causes: [
+                            'Premium capacity is overloaded or paused',
+                            'Query timeout due to complex calculations',
+                            'Calculated tables or columns referencing Single Sign-On data sources',
+                            'DirectQuery schema changes not reflected'
+                        ],
+                        solutions: [
+                            'Check if Premium capacity is active (not paused)',
+                            'Review calculated tables/columns - avoid SSO data sources in calculated items',
+                            'For DirectQuery, use explicit connection settings instead of SSO',
+                            'Optimize DAX queries to reduce processing time',
+                            'Contact workspace admin to check capacity health'
+                        ]
+                    },
+                    'DMTS_RefreshFailedInvalidDataSource': {
+                        title: 'Invalid Data Source Configuration',
+                        description: 'The data source configuration is invalid or incompatible with Power BI Service.',
+                        causes: [
+                            'File path using local drive (C:\\) instead of network path',
+                            'Data source URL changed or no longer exists',
+                            'Unsupported authentication method',
+                            'Web URL requires parameters not supported in Service'
+                        ],
+                        solutions: [
+                            'For files: Use SharePoint, OneDrive, or network UNC path (\\\\server\\share)',
+                            'Verify web URLs are still accessible',
+                            'Check connection strings use supported authentication',
+                            'Replace local file references with cloud-accessible locations',
+                            'Use gateway for on-premises file sources'
+                        ]
+                    }
+                };
+
+                return errorCodeMap[errorCode] || null;
+            };
+
+            // Try to extract error message from serviceExceptionJson
+            let translatedError = null;
+            if (refreshInfo.serviceExceptionJson) {
+                try {
+                    let errorData = refreshInfo.serviceExceptionJson;
+                    if (typeof errorData === 'string' && errorData.trim() !== '') {
+                        errorData = JSON.parse(errorData);
+                    }
+
+                    // Extract error message based on different Power BI error formats
+                    if (errorData.errorDescription) {
+                        // Format 1: Direct errorDescription field
+                        errorMessage = errorData.errorDescription;
+                    } else if (errorData.error) {
+                        // Format 2: Nested error object
+                        if (typeof errorData.error === 'string') {
+                            errorMessage = errorData.error;
+                        } else if (errorData.error['pbi.error']) {
+                            // Format 3: Deep nested pbi.error structure
+                            const pbiError = errorData.error['pbi.error'];
+                            const details = pbiError.details || [];
+
+                            // Check for error code to translate
+                            if (pbiError.code) {
+                                translatedError = translateErrorCode(pbiError.code);
+                            }
+
+                            // Build full error message from nested structure
+                            let fullMessage = [];
+
+                            // Add main error code/message
+                            if (pbiError.code) fullMessage.push(`Error Code: ${pbiError.code}`);
+                            if (pbiError.parameters && pbiError.parameters.details) {
+                                fullMessage.push(pbiError.parameters.details);
+                            }
+
+                            // Add all detail messages
+                            details.forEach(detail => {
+                                if (detail.detail) {
+                                    if (typeof detail.detail === 'string') {
+                                        fullMessage.push(detail.detail);
+                                    } else if (detail.detail.value) {
+                                        fullMessage.push(detail.detail.value);
+                                    }
+                                }
+                            });
+
+                            // Add exceptionCulprit if available
+                            if (pbiError.exceptionCulprit) {
+                                fullMessage.push(`\nCulprit: ${pbiError.exceptionCulprit}`);
+                            }
+
+                            errorMessage = fullMessage.join('\n\n');
+                        } else {
+                            errorMessage = JSON.stringify(errorData.error, null, 2);
+                        }
+                    } else if (errorData.message) {
+                        errorMessage = errorData.message;
+                    } else if (errorData.errorCode) {
+                        // Format 4: Just an error code (like "DMTS_MonikerWithUnboundDataSources")
+                        translatedError = translateErrorCode(errorData.errorCode);
+                        errorMessage = errorData.errorCode;
+                    } else {
+                        // Fallback: show the entire JSON formatted
+                        errorMessage = JSON.stringify(errorData, null, 2);
+                    }
+                } catch (e) {
+                    // If parsing fails, just show the raw string
+                    errorMessage = refreshInfo.serviceExceptionJson || 'Failed to parse error details';
+                }
+            }
+
+            // Build the error details HTML
+            let errorDetailsHtml = '';
+
+            if (translatedError) {
+                // Show user-friendly translated error with structured sections
+                errorDetailsHtml = `
+                    <div style="margin-bottom: 16px;">
+                        <div style="font-size: 15px; font-weight: 600; color: #C53030; margin-bottom: 8px;">
+                            🚨 ${translatedError.title}
+                        </div>
+                        <div style="font-size: 13px; color: #742A2A; line-height: 1.6; margin-bottom: 12px;">
+                            ${translatedError.description}
+                        </div>
+                    </div>
+
+                    <div style="background: #FFFBEB; border-left: 3px solid #F59E0B; padding: 12px; margin-bottom: 12px; border-radius: 4px;">
+                        <div style="font-size: 12px; font-weight: 600; color: #92400E; margin-bottom: 6px;">
+                            ⚠️ COMMON CAUSES:
+                        </div>
+                        <ul style="margin: 0; padding-left: 20px; font-size: 12px; color: #78350F; line-height: 1.8;">
+                            ${translatedError.causes.map(cause => `<li>${cause}</li>`).join('')}
+                        </ul>
+                    </div>
+
+                    <div style="background: #DBEAFE; border-left: 3px solid #3B82F6; padding: 12px; margin-bottom: 12px; border-radius: 4px;">
+                        <div style="font-size: 12px; font-weight: 600; color: #1E40AF; margin-bottom: 6px;">
+                            ✅ HOW TO FIX:
+                        </div>
+                        <ol style="margin: 0; padding-left: 20px; font-size: 12px; color: #1E3A8A; line-height: 1.8;">
+                            ${translatedError.solutions.map(solution => `<li>${solution}</li>`).join('')}
+                        </ol>
+                    </div>
+
+                    <div style="background: #F3F4F6; border-radius: 4px; padding: 10px; margin-top: 12px;">
+                        <details style="cursor: pointer;">
+                            <summary style="font-size: 11px; color: #6B7280; font-weight: 600;">
+                                🔍 Technical Details (Click to expand)
+                            </summary>
+                            <div style="margin-top: 8px; font-size: 11px; color: #4B5563; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-word;">
+                                Error Code: ${errorMessage}
+                            </div>
+                        </details>
+                    </div>
+                `;
+            } else {
+                // Show raw error message if no translation available
+                errorDetailsHtml = `
+                    <div style="background: white; border: 1px solid #FEB2B2; border-radius: 6px; padding: 14px; max-height: 400px; overflow-y: auto;">
+                        <div style="font-size: 13px; color: #742A2A; line-height: 1.8; white-space: pre-wrap; word-break: break-word; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">${errorMessage}</div>
+                    </div>
+                `;
+            }
+
+            modalHtml += `
+                <!-- Refresh Failure Reason -->
+                <div id="${refreshDetailsId}" style="display: none; background: #FFF5F5; border-left: 4px solid #F56565; padding: 16px 20px; margin: 0;">
+                    <div style="display: flex; align-items: start; gap: 12px;">
+                        <div style="font-size: 24px;">❌</div>
+                        <div style="flex: 1;">
+                            <div style="font-weight: 700; color: #C53030; font-size: 14px; margin-bottom: 12px;">Refresh Failure Reason:</div>
+                            ${errorDetailsHtml}
+                            <div style="margin-top: 12px; font-size: 12px; color: #718096;">
+                                <strong>Failed at:</strong> ${formatDateTime(refreshInfo.endTime)}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Add issues section with enhanced broken visual details
+        if (issues.length > 0) {
+            // Check if we have broken visual issues
+            const brokenVisuals = issues.filter(issue => issue.category === 'Broken Visual');
+            const otherIssues = issues.filter(issue => issue.category !== 'Broken Visual');
+
+            // Separate broken and blank visuals
+            const actuallyBroken = brokenVisuals.filter(v => v.category !== 'Blank Visual');
+            const blankVisuals = brokenVisuals.filter(v => v.category === 'Blank Visual');
+
+            // NEW: Show success message if NO issues found
+            if (actuallyBroken.length === 0 && otherIssues.length === 0 && warnings.length === 0) {
+                modalHtml += `
+                    <div style="flex: 1; overflow-y: auto; padding: 24px;">
+                        <div style="background: linear-gradient(135deg, #48BB78 0%, #38A169 100%); border-radius: 12px; padding: 32px; text-align: center; box-shadow: 0 4px 12px rgba(72, 187, 120, 0.3);">
+                            <div style="font-size: 64px; margin-bottom: 16px;">✅</div>
+                            <h3 style="color: white; font-size: 24px; font-weight: 800; margin: 0 0 12px 0; text-shadow: 0 2px 4px rgba(0,0,0,0.2);">No Issues Found!</h3>
+                            <p style="color: rgba(255,255,255,0.95); font-size: 16px; margin: 0 0 20px 0; line-height: 1.6;">
+                                This report is working perfectly. All visuals are rendering correctly, and no data field issues were detected.
+                            </p>
+                            <div style="background: rgba(255,255,255,0.2); border-radius: 8px; padding: 16px; display: inline-block;">
+                                <div style="color: white; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Health Score</div>
+                                <div style="color: white; font-size: 32px; font-weight: 800;">${healthScore}/100</div>
+                            </div>
+                        </div>
+                `;
+
+                // Still show refresh info if available
+                if (refreshInfo) {
+                    modalHtml += `
+                        <div style="background: #F0FFF4; border: 1px solid #9AE6B4; border-radius: 8px; padding: 16px; margin-top: 16px;">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                <span style="font-size: 20px;">🔄</span>
+                                <span style="font-weight: 600; color: #22543D; font-size: 14px;">Refresh Status</span>
+                            </div>
+                            <div style="color: #2F855A; font-size: 13px;">
+                                <div><strong>Last Refresh:</strong> ${refreshInfo.last_refresh || 'Never'}</div>
+                                <div><strong>Status:</strong> ${refreshInfo.status || 'Unknown'}</div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                modalHtml += `</div>`;
+            }
+
+            // Show broken visuals section with enhanced schema details
+            else if (actuallyBroken.length > 0) {
+                modalHtml += `
+                    <div style="flex: 1; overflow-y: auto; padding: 16px;">
+                        <h3 style="font-size: 13px; color: #2D3748; margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px; font-weight: 700;">
+                            🔴 Broken Visuals Detected
+                            <span style="background: #F56565; color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;">${actuallyBroken.length}</span>
+                        </h3>
+                        <div style="border: 1px solid #E2E8F0; border-radius: 6px; overflow: hidden;">
+                            <div style="overflow-x: auto;">
+                                <table style="width: 100%; border-collapse: collapse; font-size: 12px; min-width: 1200px;">
+                                    <thead style="background: #F7FAFC; position: sticky; top: 0; z-index: 5;">
+                                        <tr>
+                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 140px;">PAGE</th>
+                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 200px;">VISUAL NAME</th>
+                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 140px;">TYPE</th>
+                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 160px;">ERROR</th>
+                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; min-width: 280px;">MISSING FIELDS</th>
+                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 200px;">MODIFIED BY</th>
+                                            <th style="padding: 10px 12px; text-align: center; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; width: 80px;">DETAILS</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                `;
+
+                actuallyBroken.forEach((issue, idx) => {
+                    const bgColor = idx % 2 === 0 ? '#FFFFFF' : '#FAFAFA';
+                    const visualName = issue.visual || issue.visual_name || 'Unknown Visual';
+                    const visualType = issue.visual_type || 'Unknown';
+                    const pageName = issue.page || 'Unknown Page';
+                    const errorType = issue.error_type || '';
+                    const errorReason = issue.error_reason || errorType || issue.message || 'Unknown error';
+                    const missingFields = issue.missing_fields || [];
+
+                    // Better display for visual type
+                    let typeDisplay = visualType;
+                    if (visualType === 'Broken Visual (Unable to Load)') {
+                        typeDisplay = '<span style="color: #E53E3E;">⚠️ Failed to Load</span>';
+                    } else if (visualType === 'Unknown' || visualType === 'Unknown Visual Type') {
+                        typeDisplay = '<span style="color: #A0AEC0;">Unknown</span>';
+                    } else {
+                        typeDisplay = visualType.replace(/([A-Z])/g, ' $1').trim();
+                    }
+
+                    // Find root cause analysis
+                    const rootCauseData = rootCauseAnalysis.find(rca =>
+                        rca.visual === visualName && rca.page === pageName
+                    );
+
+                    console.log(`🔍 Issue ${idx}:`, {
+                        visualName,
+                        pageName,
+                        missingFields,
+                        rootCauseData,
+                        hasRootCause: !!rootCauseData
+                    });
+
+                    // Build compact missing fields list (show all missing fields)
+                    let missingFieldsList = '';
+                    if (missingFields && missingFields.length > 0) {
+                        missingFieldsList = missingFields.map(f => {
+                            const fieldName = f.field || f.name || f;
+                            const tableName = f.table || '';
+                            const prefix = tableName && tableName !== 'Unknown' ? `${tableName}.` : '';
+                            return `${prefix}${fieldName}`;
+                        }).filter(f => f).join(', ');
+                    } else if (visualType === 'Broken Visual (Unable to Load)') {
+                        missingFieldsList = '<span style="color: #A0AEC0; font-style: italic;">Unable to extract - visual failed to load</span>';
+                    } else {
+                        missingFieldsList = '<span style="color: #A0AEC0; font-style: italic;">No missing fields detected</span>';
+                    }
+
+                    // For detailed view, filter verified ones
+                    const verifiedMissing = missingFields.filter(f => f.verified !== false || !f.hasOwnProperty('verified'));
+
+                    console.log(`   Missing fields for ${visualName}:`, {
+                        total: missingFields.length,
+                        verified: verifiedMissing.length,
+                        fieldsList: missingFieldsList,
+                        rawMissingFields: missingFields
+                    });
+
+                    // Extract Modified By with timestamp
+                    let modifiedByDisplay = 'N/A';
+                    if (rootCauseData && rootCauseData.likely_culprit) {
+                        const culprit = rootCauseData.likely_culprit;
+                        // Try to get modification time from timeline analysis
+                        let modifiedTime = '';
+
+                        if (rootCauseData.timeline_analysis && rootCauseData.timeline_analysis.estimated_break_time) {
+                            modifiedTime = `<div style="font-size: 10px; color: #718096; margin-top: 2px;">${formatDateTime(rootCauseData.timeline_analysis.estimated_break_time)}</div>`;
+                        } else if (rootCauseData.breaking_change_correlation && rootCauseData.breaking_change_correlation.timestamp_estimate) {
+                            modifiedTime = `<div style="font-size: 10px; color: #718096; margin-top: 2px;">${formatDateTime(rootCauseData.breaking_change_correlation.timestamp_estimate)}</div>`;
+                        } else if (refreshInfo && refreshInfo.endTime) {
+                            // Fallback to refresh time if no specific modification time
+                            modifiedTime = `<div style="font-size: 10px; color: #718096; margin-top: 2px;">${formatDateTime(refreshInfo.endTime)}</div>`;
+                        }
+
+                        modifiedByDisplay = `<div style="color: #C05621; font-weight: 600;">${culprit}</div>${modifiedTime}`;
+                    }
+
+                    // Confidence badge
+                    let confidenceBadge = '';
+                    if (rootCauseData) {
+                        const conf = rootCauseData.confidence || 'Unknown';
+                        const confColor = conf === 'Very High' || conf === 'High' ? '#48BB78' : conf === 'Medium' ? '#ECC94B' : '#A0AEC0';
+                        confidenceBadge = `<span style="background: ${confColor}; color: white; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 600;">${conf}</span>`;
+                    }
+
+                    // Build detailed panel (hidden by default)
+                    let detailsHtml = '';
+                    if (rootCauseData) {
+                        detailsHtml = `
+                            <tr id="details-${idx}" style="display: none; background: #F7FAFC;">
+                                <td colspan="7" style="padding: 16px; border-bottom: 1px solid #E2E8F0;">
+                                    <div style="font-size: 12px; font-weight: 700; color: #2D3748; margin-bottom: 10px;">🔬 Root Cause Analysis ${confidenceBadge}</div>
+                                    <div style="font-size: 12px; color: #2D3748; font-weight: 600; margin-bottom: 12px;">${rootCauseData.root_cause_category}: ${rootCauseData.symptom}</div>
+                        `;
+
+                        // Missing fields detail (show all missing fields, not just verified)
+                        if (missingFields.length > 0) {
+                            detailsHtml += `<div style="margin-bottom: 12px;"><strong style="color: #C53030; font-size: 12px;">Missing Fields:</strong><br/>`;
+                            missingFields.forEach(f => {
+                                const fieldName = f.field || f.name || f;
+                                const tableName = f.table || '';
+                                const fieldType = f.type || 'column';
+                                const prefix = tableName && tableName !== 'Unknown' ? `<span style="color: #805AD5; font-weight: 600;">${tableName}</span>.` : '';
+                                detailsHtml += `<div style="font-family: 'Consolas', monospace; font-size: 11px; margin: 4px 0; color: #2D3748; font-weight: 600;">${prefix}<span style="color: #E53E3E; font-weight: 700;">${fieldName}</span> <span style="color: #718096; font-weight: 500;">(${fieldType})</span></div>`;
+                            });
+                            detailsHtml += `</div>`;
+                        }
+
+                        // Resolution options
+                        if (rootCauseData.actionable_resolution && rootCauseData.actionable_resolution.length > 0) {
+                            detailsHtml += `<div><strong style="color: #2D3748; font-size: 12px;">Resolution Options:</strong>`;
+                            rootCauseData.actionable_resolution.slice(0, 2).forEach(res => {
+                                detailsHtml += `<div style="margin-top: 8px; padding: 10px; background: white; border-radius: 4px; font-size: 11px; border-left: 3px solid #4299E1;">`;
+                                detailsHtml += `<strong style="color: #2D3748; font-weight: 700;">${res.priority}. ${res.action}</strong><br/><span style="color: #4A5568; font-weight: 500;">${res.details}</span>`;
+                                detailsHtml += `</div>`;
+                            });
+                            detailsHtml += `</div>`;
+                        }
+
+                        detailsHtml += `</td></tr>`;
+                    }
+
+                    modalHtml += `
+                        <tr style="background: ${bgColor}; border-bottom: 1px solid #E2E8F0;">
+                            <td style="padding: 10px 12px; color: #2D3748; font-weight: 600; vertical-align: middle; font-size: 12px;">${pageName}</td>
+                            <td style="padding: 10px 12px; color: #2D3748; font-weight: 700; vertical-align: middle; font-size: 12px;">${visualName}</td>
+                            <td style="padding: 10px 12px; color: #805AD5; font-weight: 600; vertical-align: middle; font-size: 12px;">${typeDisplay}</td>
+                            <td style="padding: 10px 12px; color: #E53E3E; font-family: 'Consolas', monospace; font-size: 11px; font-weight: 700; vertical-align: middle;">${errorType || 'Missing_References'}</td>
+                            <td style="padding: 10px 12px; font-family: 'Consolas', monospace; font-size: 11px; color: #2D3748; font-weight: 600; vertical-align: middle; word-break: break-word;">
+                                ${missingFieldsList}
+                            </td>
+                            <td style="padding: 10px 12px; vertical-align: middle; font-size: 11px;">${modifiedByDisplay}</td>
+                            <td style="padding: 10px 12px; text-align: center; vertical-align: middle;">
+                                ${detailsHtml ? `<button onclick="const row = document.getElementById('details-${idx}'); row.style.display = row.style.display === 'none' ? 'table-row' : 'none'; this.textContent = row.style.display === 'none' ? '▼' : '▲';" style="background: #4299E1; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 700; color: white;">▼</button>` : '—'}
+                            </td>
+                        </tr>
+                        ${detailsHtml}
+                    `;
+                });
+
+                modalHtml += `
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Show blank visuals section (NEW)
+            if (blankVisuals.length > 0) {
+                modalHtml += `
+                    <div style="margin-bottom: 20px;">
+                        <h3 style="font-size: 15px; color: #2D3748; margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px;">
+                            ⚪ Blank/Empty Visuals
+                            <span style="background: #A0AEC0; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">${blankVisuals.length}</span>
+                        </h3>
+                        <div style="border: 1px solid #E2E8F0; border-radius: 8px; overflow-x: auto;">
+                            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                                <thead style="background: #F7FAFC;">
+                                    <tr>
+                                        <th style="padding: 12px 14px; text-align: left; font-weight: 700; color: #4A5568; border-bottom: 2px solid #E2E8F0; white-space: nowrap;">Visual Name</th>
+                                        <th style="padding: 12px 14px; text-align: left; font-weight: 700; color: #4A5568; border-bottom: 2px solid #E2E8F0; white-space: nowrap;">Page</th>
+                                        <th style="padding: 12px 14px; text-align: left; font-weight: 700; color: #4A5568; border-bottom: 2px solid #E2E8F0; width: 100%;">Reason</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                `;
+
+                blankVisuals.forEach((issue, idx) => {
+                    const bgColor = idx % 2 === 0 ? '#FFFFFF' : '#F7FAFC';
+                    const visualName = issue.visual || issue.visual_name || 'Unnamed';
+                    const pageName = issue.page || 'Unknown Page';
+                    const reason = issue.root_cause || issue.error_reason || 'Visual has no type configuration';
+
+                    modalHtml += `
+                        <tr style="background: ${bgColor}; border-bottom: 1px solid #E2E8F0;">
+                            <td style="padding: 12px 14px; color: #2D3748; font-weight: 600; white-space: nowrap;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span>⚪</span>
+                                    <span>${visualName}</span>
+                                </div>
+                            </td>
+                            <td style="padding: 12px 14px; color: #4A5568; font-size: 12px; white-space: nowrap;">${pageName}</td>
+                            <td style="padding: 12px 14px; color: #4A5568; font-size: 12px;">${reason}</td>
+                        </tr>
+                    `;
+                });
+
+                modalHtml += `
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Show other issues if any
+            if (otherIssues.length > 0) {
+                modalHtml += `
+                    <div style="margin-bottom: 20px;">
+                        <h3 style="font-size: 15px; color: #2D3748; margin: 0 0 10px 0;">❌ Other Critical Issues</h3>
+                `;
+                otherIssues.forEach((issue, idx) => {
+                    // Check if this is a Dataset Health issue with an error message
+                    const errorMessage = issue.error_message || null;
+                    const showErrorDetails = issue.category === 'Dataset Health' && errorMessage;
+
+                    modalHtml += `
+                        <div style="background: #FFF5F5; padding: 12px; border-radius: 6px; margin-bottom: 8px; border-left: 3px solid #F56565;">
+                            <div style="font-weight: 600; color: #C53030; font-size: 13px; margin-bottom: 4px;">${issue.category || 'Issue'}</div>
+                            <div style="font-size: 13px; color: #2D3748;">${issue.message || issue.description || 'No description'}</div>
+                            ${showErrorDetails ? `
+                                <div style="background: #FFFBEB; border: 1px solid #FCD34D; border-radius: 4px; padding: 10px; margin-top: 8px;">
+                                    <div style="font-weight: 600; color: #B45309; font-size: 12px; margin-bottom: 4px;">🔍 Error Details:</div>
+                                    <div style="font-family: 'Courier New', monospace; font-size: 12px; color: #92400E; white-space: pre-wrap; word-break: break-word;">${errorMessage}</div>
+                                </div>
+                            ` : ''}
+                            ${issue.recommendation ? `<div style="font-size: 12px; color: #718096; margin-top: 4px;">💡 ${issue.recommendation}</div>` : ''}
+                        </div>
+                    `;
+                });
+                modalHtml += `</div>`;
+            }
+        }
+
+        // Close container
+        modalHtml += `
+                </div>
+            </div>
+        `;
+
+        // Add to DOM
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+    }
+
+    // Export Decommissioning Report (Server-generated Excel with enhanced metadata)
+    async function exportDecommissionReport() {
+        console.log('🗑️ exportDecommissionReport() called!');
+        console.log('   currentWorkspaceId:', currentWorkspaceId);
+        console.log('   reports:', reports ? reports.length : 'null');
+
+        if (!currentWorkspaceId) {
+            console.error('❌ No workspace selected');
+            showAlert('warning', 'Please select a workspace first.');
+            return;
+        }
+
+        if (!reports || reports.length === 0) {
+            console.error('❌ No reports found');
+            showAlert('warning', 'No reports found in this workspace.');
+            return;
+        }
+
+        const decomBtn = document.getElementById('decommissionBtn');
+        const decomOriginal = decomBtn ? decomBtn.innerHTML : '';
+        try {
+            if (decomBtn) {
+                decomBtn.classList.add('loading');
+                decomBtn.disabled = true;
+                decomBtn.innerHTML = '<span class="btn-spinner"></span>Preparing…';
+            }
+            showAlert('info', 'Generating decommission list… this can take a minute for large workspaces.', 120000);
+
+            const url = `/api/export-inactive-reports/${currentWorkspaceId}`;
+            console.log(`📋 Requesting decommission report from: ${url}`);
+
+            const response = await fetch(url);
+            console.log(`📡 Response status: ${response.status} ${response.statusText}`);
+            console.log(`📡 Response headers:`, [...response.headers.entries()]);
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error(`❌ Server error: ${errorText}`);
+                throw new Error(`HTTP ${response.status}: ${response.statusText}\n${errorText}`);
+            }
+
+            // Get the blob from the response
+            const blob = await response.blob();
+            console.log(`📦 Blob size: ${blob.size} bytes, type: ${blob.type}`);
+
+            // Create download link
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = downloadUrl;
+
+            // Get filename from Content-Disposition header or use default
+            const contentDisposition = response.headers.get('Content-Disposition');
+            let filename = 'Decommission_Report.xlsx';
+            if (contentDisposition) {
+                console.log(`📄 Content-Disposition: ${contentDisposition}`);
+                const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                if (match && match[1]) {
+                    filename = match[1].replace(/['"]/g, '');
+                }
+            }
+
+            console.log(`💾 Downloading as: ${filename}`);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+
+            window.URL.revokeObjectURL(downloadUrl);
+            document.body.removeChild(a);
+
+            showAlert('success', `Decommission list ready: ${filename}`);
+            console.log(`✅ Decommission report downloaded: ${filename}`);
+
+        } catch (error) {
+            console.error('❌ Error generating decommission report:', error);
+            console.error('❌ Error stack:', error.stack);
+            showAlert('error', `Failed to generate decommission report: ${error.message}`);
+        } finally {
+            if (decomBtn) {
+                decomBtn.classList.remove('loading');
+                decomBtn.disabled = false;
+                decomBtn.innerHTML = decomOriginal || 'Decommission list';
+            }
+        }
+    }
+
+    // Export table to Excel
+    function exportToExcel() {
+        if (!reports || reports.length === 0) {
+            showAlert('warning', 'No data to export. Please select a workspace with reports.');
+            return;
+        }
+
+        try {
+            // Get current workspace name
+            const workspaceSelect = document.getElementById('workspaceSelect');
+            const workspaceName = workspaceSelect.options[workspaceSelect.selectedIndex].text || 'Workspace';
+
+            // Prepare data for export
+            const exportData = [];
+
+            // Add headers
+            exportData.push([
+                'Report Name',
+                'Created By',
+                'Last Modified By',
+                'Last Modified On',
+                'Refresh Schedule',
+                'Last Refresh',
+                'Days Since Refresh',
+                'Refresh Status',
+                'Views (Last 7 Days)',
+                'Status'
+            ]);
+
+            // Add data rows
+            reports.forEach(report => {
+                // Get values, handling spinners and N/A
+                const createdBy = report.created_by || 'N/A';
+                const modifiedBy = report.modified_by || 'N/A';
+                const modifiedOn = report.modified_date_time ?
+                    new Date(report.modified_date_time).toLocaleString('en-US', {
+                        month: '2-digit',
+                        day: '2-digit',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    }) : 'N/A';
+
+                // Backend now sends formatted strings
+                const refreshSchedule = report.refresh_schedule || 'N/A';
+
+                let lastRefreshed = 'N/A';
+                if (isDirectQueryOrLive(report)) {
+                    lastRefreshed = 'DirectQuery/Live';
+                } else if (report.last_refreshed) {
+                    lastRefreshed = new Date(report.last_refreshed).toLocaleString('en-US', {
+                        month: '2-digit',
+                        day: '2-digit',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+                } else if (report.last_refresh_status) {
+                    lastRefreshed = report.last_refresh_status;
+                }
+
+                let daysSince = 'N/A';
+                if (isDirectQueryOrLive(report)) {
+                    daysSince = 'N/A (Live)';
+                } else if (report.last_refreshed) {
+                    const diffMs = Math.abs(Date.now() - new Date(report.last_refreshed).getTime());
+                    daysSince = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                }
+
+                const status = report.last_refresh_status || report.refresh_status || 'N/A';
+                const viewCount = report.view_count !== undefined && report.view_count !== null ? report.view_count : 'N/A';
+                const activityStatus = report.view_count === 0 ? 'Inactive' : (report.view_count > 0 ? 'Active' : 'N/A');
+
+                exportData.push([
+                    report.name,
+                    createdBy,
+                    modifiedBy,
+                    modifiedOn,
+                    refreshSchedule,
+                    lastRefreshed,
+                    daysSince,
+                    status,
+                    viewCount,
+                    activityStatus
+                ]);
+            });
+
+            // Create worksheet
+            const ws = XLSX.utils.aoa_to_sheet(exportData);
+
+            // Set column widths
+            ws['!cols'] = [
+                { wch: 30 },  // Report Name
+                { wch: 25 },  // Created By
+                { wch: 25 },  // Last Modified By
+                { wch: 20 },  // Last Modified On
+                { wch: 30 },  // Refresh Schedule
+                { wch: 20 },  // Last Refresh
+                { wch: 18 },  // Days Since Refresh
+                { wch: 15 },  // Refresh Status
+                { wch: 18 },  // Views (Last 7 Days)
+                { wch: 12 }   // Status
+            ];
+
+            // Style header row
+            const headerRange = XLSX.utils.decode_range(ws['!ref']);
+            for (let col = headerRange.s.c; col <= headerRange.e.c; col++) {
+                const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
+                if (ws[cellAddress]) {
+                    ws[cellAddress].s = {
+                        font: { bold: true },
+                        fill: { fgColor: { rgb: "F7F9FC" } },
+                        alignment: { horizontal: "left", vertical: "center" }
+                    };
+                }
+            }
+
+            // Create workbook
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'Reports');
+
+            // Generate filename with workspace name and timestamp
+            const timestamp = new Date().toISOString().slice(0, 10);
+            const filename = `${workspaceName}_Reports_${timestamp}.xlsx`;
+
+            // Download
+            XLSX.writeFile(wb, filename);
+
+            showAlert('success', `✅ Exported ${reports.length} reports to ${filename}`);
+            console.log(`Exported ${reports.length} reports to Excel`);
+        } catch (error) {
+            console.error('Error exporting to Excel:', error);
+            showAlert('error', 'Failed to export to Excel: ' + error.message);
+        }
+    }
+
+    // ============================================================================
+    // SIMILARITY ANALYSIS FEATURE
+    // ============================================================================
+
+    async function runSimilarityAnalysis() {
+        console.log('🔍 runSimilarityAnalysis() called');
+        console.log('   currentWorkspaceId:', currentWorkspaceId);
+
+        if (!currentWorkspaceId) {
+            showAlert('warning', '⚠️ Please select a workspace first');
+            return;
+        }
+
+        const btn = document.getElementById('similarityBtn');
+        if (!btn) {
+            console.error('❌ Similarity button not found');
+            showAlert('error', 'Similarity analysis button not found');
+            return;
+        }
+
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Analyzing...';
+
+        try {
+            const url = `/api/reports/similarity-analysis/${currentWorkspaceId}`;
+            console.log(`📡 Fetching: ${url}`);
+
+            const response = await fetch(url);
+            console.log(`📡 Response status: ${response.status}`);
+
+            const result = await response.json();
+            console.log('📡 Response data:', result);
+
+            if (result.success) {
+                console.log(`✅ Found ${result.similar_pairs} similar pairs`);
+                showSimilarityResults(result);
+            } else {
+                console.error('❌ Analysis failed:', result.error);
+                showAlert('error', 'Analysis failed: ' + result.error);
+            }
+        } catch (error) {
+            console.error('❌ Similarity analysis error:', error);
+            console.error('❌ Error stack:', error.stack);
+            showAlert('error', 'Similarity analysis failed: ' + error.message);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    }
+
+    function showSimilarityResults(result) {
+        let comparisons = result.comparisons || [];
+
+        if (comparisons.length === 0) {
+            showAlert('info', '✅ No duplicate reports found! All reports appear to be unique.');
+            return;
+        }
+
+        // ENHANCED SORTING: First by Report A Name (A-Z), then by Similarity Score (Descending)
+        comparisons.sort((a, b) => {
+            const nameA = (a.report_a?.name || a.report1_name || '').toLowerCase();
+            const nameB = (b.report_a?.name || b.report1_name || '').toLowerCase();
+
+            // First sort by report A name
+            if (nameA !== nameB) {
+                return nameA.localeCompare(nameB);
+            }
+
+            // If same report A, sort by similarity score (descending)
+            return (b.similarity_score || 0) - (a.similarity_score || 0);
+        });
+
+        // Check if this is cross-workspace analysis
+        const hasCrossWorkspace = comparisons.some(c => c.is_cross_workspace);
+
+        // Create simple card-based modal HTML (enhanced design)
+        let modalHtml = `
+            <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; display: flex; align-items: center; justify-content: center;" onclick="this.remove()">
+                <div style="background: white; padding: 30px; border-radius: 12px; max-width: 1200px; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3);" onclick="event.stopPropagation()">
+                    <div style="text-align: center; margin-bottom: 24px;">
+                        <h2 style="margin: 0; color: #2D3748;">🔄 Report Similarity Analysis</h2>
+                        <p style="margin: 8px 0 0 0; color: #718096;">Found ${comparisons.length} potential duplicate report pair(s)</p>
+                        ${hasCrossWorkspace ? '<p style="margin: 4px 0 0 0; color: #2563EB; font-weight: 600;">🌍 Includes cross-workspace matches</p>' : ''}
+                    </div>
+                    <div style="display: grid; gap: 20px;">
+        `;
+
+        // Display each comparison as a card
+        comparisons.forEach((comp, index) => {
+            const score = comp.similarity_score;
+            // Backend returns flat structure, not nested in details.scores
+            const daxSim = comp.dax_similarity || 0;
+            const tableSim = comp.table_similarity || 0;
+            const pageSim = comp.page_similarity || 0;
+            const visualSim = comp.visual_similarity || 0;
+
+            let scoreColor = score >= 90 ? '#48BB78' : score >= 80 ? '#ECC94B' : '#ED8936';
+            let scoreBg = score >= 90 ? '#F0FFF4' : score >= 80 ? '#FEFCBF' : '#FFF5F0';
+
+            // Get report names and workspace info
+            const reportAName = comp.report_a?.name || comp.report1_name || 'Report A';
+            const reportBName = comp.report_b?.name || comp.report2_name || 'Report B';
+            const workspaceAName = comp.report_a?.workspace_name || '';
+            const workspaceBName = comp.report_b?.workspace_name || '';
+            const isCrossWorkspace = comp.is_cross_workspace || false;
+
+            modalHtml += `
+                <div style="background: white; border: 2px solid #E2E8F0; border-radius: 8px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <h3 style="margin: 0; color: #2D3748; font-size: 16px;">
+                            Comparison ${index + 1}
+                            ${isCrossWorkspace ? '<span style="background: #DBEAFE; color: #1D4ED8; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px;">🌍 CROSS-WORKSPACE</span>' : ''}
+                        </h3>
+                        <div style="background: ${scoreBg}; color: ${scoreColor}; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 18px;">
+                            ${score}% Similar
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                        <div style="background: #F7FAFC; padding: 12px; border-radius: 6px; border-left: 3px solid #4299E1;">
+                            <div style="font-weight: 600; color: #2D3748; margin-bottom: 4px;">📄 Report A</div>
+                            <div style="color: #4A5568; font-size: 14px;">${reportAName}</div>
+                            ${workspaceAName ? `<div style="color: #94A3B8; font-size: 12px; margin-top: 4px;">📁 ${workspaceAName}</div>` : ''}
+                        </div>
+                        <div style="background: #F7FAFC; padding: 12px; border-radius: 6px; border-left: 3px solid #4299E1;">
+                            <div style="font-weight: 600; color: #2D3748; margin-bottom: 4px;">📄 Report B</div>
+                            <div style="color: #4A5568; font-size: 14px;">${reportBName}</div>
+                            ${workspaceBName ? `<div style="color: #94A3B8; font-size: 12px; margin-top: 4px;">📁 ${workspaceBName}</div>` : ''}
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; background: #F7FAFC; padding: 12px; border-radius: 6px;">
+                        <div style="text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #4299E1;">${daxSim}%</div>
+                            <div style="font-size: 11px; color: #718096;">DAX Logic</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #4299E1;">${tableSim}%</div>
+                            <div style="font-size: 11px; color: #718096;">Data Model</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #4299E1;">${pageSim}%</div>
+                            <div style="font-size: 11px; color: #718096;">Pages</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #4299E1;">${visualSim}%</div>
+                            <div style="font-size: 11px; color: #718096;">Visuals</div>
+                        </div>
+                    </div>
+
+                    <div style="background: white; padding: 12px; border-radius: 6px; border: 1px solid #E2E8F0;">
+                        <div style="margin-bottom: 8px;">
+                            <strong style="color: #2D3748;">📊 Identical Measures:</strong>
+                            <span style="color: #48BB78; font-weight: 600;">${(comp.identical_measures || []).length}</span>
+                        </div>
+                        ${(comp.logic_matched_measures || []).length > 0 ? `
+                        <div style="margin-bottom: 8px;">
+                            <strong style="color: #2D3748;">🔗 Logic-Matched Measures:</strong>
+                            <span style="color: #9F7AEA; font-weight: 600;">${(comp.logic_matched_measures || []).length}</span>
+                            <span style="color: #94A3B8; font-size: 11px; margin-left: 4px;">(same DAX, different names)</span>
+                        </div>
+                        ` : ''}
+                        ${(comp.similar_measures || []).length > 0 ? `
+                        <div style="margin-bottom: 8px;">
+                            <strong style="color: #2D3748;">📈 Similar Measures:</strong>
+                            <span style="color: #ECC94B; font-weight: 600;">${(comp.similar_measures || []).length}</span>
+                        </div>
+                        ` : ''}
+                        ${(comp.identical_tables || []).length > 0 ? `
+                        <div style="margin-bottom: 8px;">
+                            <strong style="color: #2D3748;">🗃️ Common Tables:</strong>
+                            <span style="color: #4A5568;">${(comp.identical_tables || []).slice(0, 5).join(', ')}${(comp.identical_tables || []).length > 5 ? ` (+${(comp.identical_tables || []).length - 5} more)` : ''}</span>
+                        </div>
+                        ` : ''}
+                        ${(comp.identical_pages || []).length > 0 ? `
+                        <div style="margin-bottom: 8px;">
+                            <strong style="color: #2D3748;">📑 Common Pages:</strong>
+                            <span style="color: #4A5568;">${(comp.identical_pages || []).slice(0, 3).join(', ')}${(comp.identical_pages || []).length > 3 ? ` (+${(comp.identical_pages || []).length - 3} more)` : ''}</span>
+                        </div>
+                        ` : ''}
+                        ${(comp.identical_visuals || []).length > 0 ? `
+                        <div style="margin-bottom: 8px;">
+                            <strong style="color: #2D3748;">📊 Identical Visuals:</strong>
+                            <span style="color: #48BB78; font-weight: 600;">${(comp.identical_visuals || []).length}</span>
+                            <span style="color: #94A3B8; font-size: 11px; margin-left: 4px;">(same type, title & fields)</span>
+                        </div>
+                        ` : ''}
+                        ${(comp.similar_visuals || []).length > 0 ? `
+                        <div>
+                            <strong style="color: #2D3748;">📈 Similar Visuals:</strong>
+                            <span style="color: #ECC94B; font-weight: 600;">${(comp.similar_visuals || []).length}</span>
+                            <span style="color: #94A3B8; font-size: 11px; margin-left: 4px;">(70%+ field overlap)</span>
+                        </div>
+                        ` : ''}
+                    </div>
+
+                    ${score >= 90 ? `
+                    <div style="margin-top: 12px; padding: 10px; background: #FFF5F0; border-left: 3px solid #ED8936; border-radius: 4px;">
+                        <strong style="color: #ED8936;">⚠️ Recommendation:</strong>
+                        <span style="color: #4A5568; font-size: 13px;">These reports appear highly similar. Consider consolidating them to reduce maintenance overhead.</span>
+                    </div>
+                    ` : ''}
+                </div>
+            `;
+        });
+
+        modalHtml += `
+                    </div>
+                    <div style="text-align: center; margin-top: 24px;">
+                        <button onclick="this.closest('div[style*=fixed]').remove()" style="background: #4299E1; color: white; border: none; padding: 10px 24px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+    }
+</script>
+{% endblock %}
+
+

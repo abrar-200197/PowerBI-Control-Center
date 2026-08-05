@@ -1,0 +1,551 @@
+{% extends "base.html" %}
+
+{% block title %}Semantic Models - Power BI Control Center{% endblock %}
+{% block page_heading %}Semantic Models{% endblock %}
+{% block page_subtitle %}Inventory and health of datasets across a workspace{% endblock %}
+
+{% block extra_css %}
+<style>
+    .page-shell { display:flex; flex-direction:column; gap:12px; }
+    .toolbar {
+        display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap;
+        background:var(--bg-surface); border:1px solid var(--border); border-radius:8px; padding:10px 14px;
+        box-shadow:var(--shadow-sm); color:var(--text);
+    }
+    .field { display:flex; flex-direction:column; gap:4px; min-width:240px; }
+    .field label { font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; }
+    .field select {
+        height:34px; border:1px solid var(--border); border-radius:6px; padding:0 10px; font-size:13px;
+        background:var(--input-bg); color:var(--text); min-width:280px;
+    }
+    .panel { background:var(--bg-surface); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow-sm); overflow:hidden; color:var(--text); }
+    .panel-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 14px; border-bottom:1px solid var(--border-soft); background:var(--bg-surface-2); }
+    .panel-head h2 { margin:0; font-size:13px; font-weight:650; color:var(--text-strong); }
+    .badge-count { display:inline-flex; align-items:center; height:22px; padding:0 10px; border-radius:999px; background:var(--chip-bg); color:var(--text-strong); font-size:11px; font-weight:650; }
+    .table-scroll { overflow:auto; max-height:calc(100vh - 240px); background:var(--bg-surface); }
+    table.sm-table { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; background:var(--bg-surface); color:var(--text); }
+    table.sm-table thead th {
+        position:sticky; top:0; z-index:2; background:var(--bg-surface-2); border-bottom:1px solid var(--border);
+        padding:8px 12px; text-align:left; font-size:10px; font-weight:700; color:var(--text-muted);
+        text-transform:uppercase; letter-spacing:.04em; white-space:nowrap;
+    }
+    table.sm-table td { padding:8px 12px; border-bottom:1px solid var(--border-soft); color:var(--text); vertical-align:middle; }
+    table.sm-table tbody tr { background:var(--bg-surface); }
+    table.sm-table tbody tr:hover { background:var(--table-hover); }
+    .empty-state, .loading-box { text-align:center; padding:40px 16px; color:var(--text-muted); font-size:13px; }
+    .status-pill { display:inline-flex; align-items:center; height:22px; padding:0 10px; border-radius:999px; font-size:11px; font-weight:650; }
+    .status-ok { background:#F0FFF4; color:#276749; border:1px solid #C6F6D5; }
+    .status-warn { background:#FFFAF0; color:#C05621; border:1px solid #FEEBC8; }
+    .status-err { background:#FFF5F5; color:#C53030; border:1px solid #FED7D7; }
+    .act { display:inline-flex; gap:6px; flex-wrap:wrap; }
+    .act .btn { padding:5px 8px; font-size:11px; }
+    .sm-modal { display:none; position:fixed; inset:0; z-index:2000; background:rgba(15,23,42,.55); align-items:center; justify-content:center; padding:24px; }
+    .sm-modal.open { display:flex; }
+    .sm-modal-card { background:var(--bg-surface); border-radius:10px; width:min(960px,96vw); max-height:88vh; overflow:auto; border:1px solid var(--border); box-shadow:var(--shadow-sm); color:var(--text); }
+    .sm-modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border-bottom:1px solid var(--border-soft); position:sticky; top:0; background:var(--bg-surface); z-index:1; }
+    .sm-modal-head h3 { margin:0; font-size:15px; color:var(--text-strong); }
+    .sm-modal-body { padding:16px; font-size:13px; color:var(--text); }
+    .sm-modal-foot { padding:12px 16px; border-top:1px solid var(--border-soft); display:flex; justify-content:flex-end; gap:8px; position:sticky; bottom:0; background:var(--bg-surface); }
+    .icon-btn { border:1px solid var(--border); background:var(--bg-surface); color:var(--text); border-radius:6px; width:32px; height:32px; cursor:pointer; font-size:18px; line-height:1; }
+    .list-group { border:1px solid var(--border); border-radius:8px; overflow:auto; max-height:320px; background:var(--bg-surface); }
+    .list-group-item { padding:8px 12px; border-bottom:1px solid var(--border-soft); color:var(--text); }
+    .list-group-item:last-child { border-bottom:none; }
+    .sm-modal-body table { width:100%; border-collapse:collapse; font-size:12px; }
+    .sm-modal-body th, .sm-modal-body td { padding:6px 8px; border-bottom:1px solid var(--border-soft); text-align:left; color:var(--text); }
+    .sm-modal-body th { background:var(--bg-surface-2); color:var(--text-muted); }
+    html[data-theme="dark"] .status-ok { background:#0f2e22; color:#6ee7b7; border-color:#14532d; }
+    html[data-theme="dark"] .status-warn { background:#3d2e12; color:#fbbf24; border-color:#78350f; }
+    html[data-theme="dark"] .status-err { background:#3f1515; color:#fca5a5; border-color:#7f1d1d; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-shell">
+    <div class="toolbar">
+        <div class="field">
+            <label for="workspaceSelect">Workspace</label>
+            <select id="workspaceSelect" onchange="loadSemanticModels()">
+                <option value="">Select a workspace…</option>
+            </select>
+        </div>
+        <div>
+            <button class="btn btn-secondary" onclick="loadSemanticModels()" id="refreshBtn" type="button">Refresh</button>
+        </div>
+    </div>
+
+    <section class="panel">
+        <div class="panel-head">
+            <h2>Models</h2>
+            <span id="modelCount" class="badge-count">0 models</span>
+        </div>
+        <div id="loadingSpinner" class="loading-box" style="display:none;">Loading semantic models…</div>
+        <div id="modelsTableContainer" class="table-scroll" style="display:none;">
+            <table class="sm-table" id="modelsTable">
+                <thead>
+                    <tr>
+                        <th>Model Name</th>
+                        <th>Tables</th>
+                        <th>Relationships</th>
+                        <th>Measures</th>
+                        <th>Last Refresh</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="modelsTableBody"></tbody>
+            </table>
+        </div>
+        <div id="emptyState" class="empty-state" style="display:none;">No semantic models found in this workspace</div>
+    </section>
+</div>
+
+<div class="sm-modal" id="modelDetailsModal" role="dialog" aria-modal="true">
+    <div class="sm-modal-card">
+        <div class="sm-modal-head">
+            <h3><span id="modalModelName"></span></h3>
+            <button type="button" class="icon-btn" onclick="closeSmModal('modelDetailsModal')" aria-label="Close">×</button>
+        </div>
+        <div class="sm-modal-body" id="modelDetailsContent"></div>
+        <div class="sm-modal-foot">
+            <button type="button" class="btn btn-secondary" onclick="closeSmModal('modelDetailsModal')">Close</button>
+            <button type="button" class="btn btn-primary" id="downloadDocsBtn">Download docs</button>
+        </div>
+    </div>
+</div>
+
+<div class="sm-modal" id="healthCheckModal" role="dialog" aria-modal="true">
+    <div class="sm-modal-card">
+        <div class="sm-modal-head">
+            <h3>Health check: <span id="healthModalModelName"></span></h3>
+            <button type="button" class="icon-btn" onclick="closeSmModal('healthCheckModal')" aria-label="Close">×</button>
+        </div>
+        <div class="sm-modal-body" id="healthCheckContent"></div>
+        <div class="sm-modal-foot">
+            <button type="button" class="btn btn-secondary" onclick="closeSmModal('healthCheckModal')">Close</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function openSmModal(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.add('open');
+}
+function closeSmModal(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.remove('open');
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.sm-modal.open').forEach(m => m.classList.remove('open'));
+  }
+});
+</script>
+<script>
+    let currentWorkspaceId = null;
+    let semanticModels = [];
+
+    // Load workspaces on page load
+    document.addEventListener('DOMContentLoaded', async () => {
+        await loadWorkspaces();
+    });
+
+    async function loadWorkspaces() {
+        try {
+            const response = await fetch('/api/workspaces');
+            const data = await response.json();
+            
+            const select = document.getElementById('workspaceSelect');
+            select.innerHTML = '<option value="">-- Select Workspace --</option>';
+
+            const workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
+            // A–Z by name so large lists are easy to scan
+            workspaces
+                .slice()
+                .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }))
+                .forEach(ws => {
+                    select.appendChild(new Option(ws.name, ws.id));
+                });
+        } catch (error) {
+            console.error('Error loading workspaces:', error);
+            showAlert('error', 'Failed to load workspaces');
+        }
+    }
+
+    async function loadSemanticModels() {
+        const workspaceId = document.getElementById('workspaceSelect').value;
+        
+        if (!workspaceId) {
+            showAlert('warning', 'Please select a workspace');
+            return;
+        }
+        
+        currentWorkspaceId = workspaceId;
+        
+        // Show loading
+        document.getElementById('loadingSpinner').style.display = 'block';
+        document.getElementById('modelsTableContainer').style.display = 'none';
+        document.getElementById('emptyState').style.display = 'none';
+
+        const btn = document.getElementById('refreshBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+
+        try {
+            // Catalog-first API — no live refresh fan-out (that was the multi-minute hang)
+            const response = await fetch(`/api/semantic-models?workspace_id=${encodeURIComponent(workspaceId)}`);
+            const data = await response.json();
+
+            if (!data.success) {
+                throw new Error(data.error || 'Failed to load semantic models');
+            }
+
+            semanticModels = data.models || [];
+            console.log(`Semantic models loaded: ${semanticModels.length} (source=${data.source || 'unknown'})`);
+
+            document.getElementById('loadingSpinner').style.display = 'none';
+
+            if (semanticModels.length === 0) {
+                document.getElementById('emptyState').style.display = 'block';
+                document.getElementById('modelsTableContainer').style.display = 'none';
+            } else {
+                document.getElementById('emptyState').style.display = 'none';
+                document.getElementById('modelsTableContainer').style.display = 'block';
+                renderModelsTable();
+            }
+
+            const src = data.source ? ` · ${data.source}` : '';
+            document.getElementById('modelCount').textContent = `${semanticModels.length} models${src}`;
+
+        } catch (error) {
+            console.error('Error loading semantic models:', error);
+            document.getElementById('loadingSpinner').style.display = 'none';
+            document.getElementById('emptyState').style.display = 'block';
+            document.getElementById('modelsTableContainer').style.display = 'none';
+            showAlert('error', 'Failed to load semantic models: ' + error.message);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Refresh'; }
+        }
+    }
+
+    function statusPill(status, refreshType) {
+        const s = String(status || '').toLowerCase();
+        const t = String(refreshType || '').toLowerCase();
+        if (t === 'directquery' || t === 'live' || s.includes('directquery') || s.includes('live')) {
+            return '<span class="status-pill status-ok">Live</span>';
+        }
+        if (s === 'completed' || s === 'success' || s === 'succeeded') {
+            return '<span class="status-pill status-ok">Healthy</span>';
+        }
+        if (s === 'failed' || s === 'failure' || s === 'error') {
+            return '<span class="status-pill status-err">Failed</span>';
+        }
+        if (s === 'inprogress' || s === 'in progress' || s === 'unknown' || s === 'running') {
+            return '<span class="status-pill status-warn">Running</span>';
+        }
+        if (s === 'disabled') return '<span class="status-pill status-warn">Disabled</span>';
+        if (s === 'access denied') return '<span class="status-pill status-err">Denied</span>';
+        if (!status) return '<span class="status-pill status-warn">—</span>';
+        return `<span class="status-pill status-warn">${escapeHtml(status)}</span>`;
+    }
+
+    function renderModelsTable() {
+        const tbody = document.getElementById('modelsTableBody');
+        tbody.innerHTML = '';
+
+        semanticModels.forEach(model => {
+            const row = document.createElement('tr');
+            const tableCount = model.tableCount != null ? model.tableCount : (model.tables?.length || 0);
+            const relationshipCount = model.relationshipCount != null
+                ? model.relationshipCount
+                : (model.relationships?.length != null ? model.relationships.length : null);
+            const measureCount = model.measureCount != null
+                ? model.measureCount
+                : (model.measures?.length != null ? model.measures.length : null);
+
+            let refreshDate = '—';
+            if (model.lastRefresh) {
+                try {
+                    const d = new Date(model.lastRefresh);
+                    refreshDate = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                        + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                } catch (e) {
+                    refreshDate = String(model.lastRefresh);
+                }
+            }
+
+            const statusBadge = statusPill(model.refreshStatus, model.refreshType);
+            const safeId = String(model.id || '').replace(/'/g, '');
+            const fmtCount = (n, tipMissing) => {
+                if (n == null) return `<span title="${tipMissing || 'Not in catalog extract'}" style="color:#94A3B8;">—</span>`;
+                return String(n);
+            };
+
+            row.innerHTML = `
+                <td><strong>${escapeHtml(model.name || '')}</strong></td>
+                <td>${fmtCount(tableCount, 'Table count unavailable')}</td>
+                <td>${fmtCount(relationshipCount, 'Relationships not included in catalog extract')}</td>
+                <td>${fmtCount(measureCount, 'Measures not included in catalog extract')}</td>
+                <td title="${escapeHtml(model.lastRefresh || '')}">${escapeHtml(refreshDate)}</td>
+                <td>${statusBadge}</td>
+                <td>
+                    <div class="act">
+                    <button class="btn btn-secondary" onclick="showModelDetails('${safeId}')">Details</button>
+                    <button class="btn btn-secondary" onclick="runHealthCheck('${safeId}')">Health</button>
+                    <button class="btn btn-primary" onclick="downloadModelDocs('${safeId}')">Download</button>
+                    </div>
+                </td>
+            `;
+
+            tbody.appendChild(row);
+        });
+    }
+
+    async function showModelDetails(modelId) {
+        const model = semanticModels.find(m => m.id === modelId);
+        if (!model) return;
+
+        document.getElementById('modalModelName').textContent = model.name;
+
+        const content = document.getElementById('modelDetailsContent');
+        content.innerHTML = `
+            <div class="empty-state" style="padding:28px 16px;">
+                <div class="loading-box" style="padding:0 0 8px;">Loading full model schema…</div>
+                <div style="font-size:12px;color:#94A3B8;max-width:360px;margin:0 auto;">
+                    First open in a workspace may run a one-time Scanner enrich (columns, measures, relationships). Later models in the same workspace are fast.
+                </div>
+            </div>`;
+
+        openSmModal('modelDetailsModal');
+
+        try {
+            // enrich=1 fills measures/relationships when catalog snapshot is incomplete
+            const response = await fetch(
+                `/api/semantic-model-details?workspace_id=${encodeURIComponent(currentWorkspaceId)}&dataset_id=${encodeURIComponent(modelId)}&enrich=1`
+            );
+            const data = await response.json();
+
+            if (!data.success) {
+                throw new Error(data.error || 'Failed to load details');
+            }
+
+            content.innerHTML = buildDetailsHTML(data);
+
+        } catch (error) {
+            content.innerHTML = `<div class="empty-state" style="color:#C53030;">Failed to load details: ${escapeHtml(error.message)}</div>`;
+        }
+    }
+
+    function buildDetailsHTML(data) {
+        const tables = data.tables || [];
+        const measures = data.measures || [];
+        const relationships = data.relationships || [];
+        const colTotal = data.columnCount != null
+            ? data.columnCount
+            : tables.reduce((s, t) => s + ((t.columns && t.columns.length) || t.columnCount || 0), 0);
+
+        let html = '';
+        html += `<div class="sm-meta" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:12px;color:#64748B;">
+            <span class="badge-count">${tables.length} tables</span>
+            <span class="badge-count">${colTotal} columns</span>
+            <span class="badge-count">${measures.length} measures</span>
+            <span class="badge-count">${relationships.length} relationships</span>
+            ${data.source ? `<span class="badge-count" title="Data source">source: ${escapeHtml(data.source)}</span>` : ''}
+        </div>`;
+
+        // Tables — columns visible by default
+        html += `<h6 style="margin:0 0 8px;font-size:12px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.04em;">Tables (${tables.length})</h6>`;
+        if (!tables.length) {
+            html += `<div class="empty-state" style="padding:20px;">No tables in schema</div>`;
+        } else {
+            html += `<div class="list-group" style="max-height:420px;overflow:auto;margin-bottom:16px;">`;
+            tables.forEach((table, idx) => {
+                const cols = table.columns || [];
+                const colCount = cols.length || table.columnCount || 0;
+                const tid = `sm-cols-${idx}`;
+                const colRows = cols.map(c => {
+                    const name = typeof c === 'string' ? c : (c.name || '');
+                    const dt = typeof c === 'object' ? (c.dataType || '') : '';
+                    const hidden = typeof c === 'object' && c.isHidden;
+                    return `<tr style="${hidden ? 'opacity:.55;' : ''}">
+                        <td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;font-weight:500;color:#0F172A;">${escapeHtml(name)}</td>
+                        <td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;color:#64748B;font-size:11px;white-space:nowrap;">${escapeHtml(dt || '—')}</td>
+                        <td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;color:#94A3B8;font-size:11px;">${hidden ? 'hidden' : ''}</td>
+                    </tr>`;
+                }).join('');
+
+                html += `
+                <div class="list-group-item" style="padding:10px 12px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;"
+                         onclick="(function(id,btn){var el=document.getElementById(id);if(!el)return;var open=el.style.display==='none';el.style.display=open?'block':'none';if(btn)btn.textContent=open?'Hide columns':'Show columns';})('${tid}', this.querySelector('[data-toggle]'))">
+                        <div>
+                            <strong style="color:#0F172A;">${escapeHtml(table.name || '')}</strong>
+                            <div style="font-size:11px;color:#64748B;margin-top:2px;">${colCount} column${colCount === 1 ? '' : 's'}${table.sourceTypeLabel ? ' · ' + escapeHtml(table.sourceTypeLabel) : ''}</div>
+                        </div>
+                        <span data-toggle style="font-size:11px;color:#3182CE;font-weight:600;white-space:nowrap;">${cols.length ? 'Hide columns' : '—'}</span>
+                    </div>
+                    <div id="${tid}" style="display:${cols.length ? 'block' : 'none'};margin-top:8px;padding-top:8px;border-top:1px solid #EDF2F7;">
+                        ${cols.length
+                            ? `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+                                <thead><tr>
+                                  <th style="text-align:left;padding:4px 8px;color:#64748B;font-size:10px;text-transform:uppercase;">Column</th>
+                                  <th style="text-align:left;padding:4px 8px;color:#64748B;font-size:10px;text-transform:uppercase;">Type</th>
+                                  <th style="text-align:left;padding:4px 8px;color:#64748B;font-size:10px;text-transform:uppercase;"></th>
+                                </tr></thead>
+                                <tbody>${colRows}</tbody>
+                               </table>`
+                            : `<div style="font-size:12px;color:#94A3B8;font-style:italic;">No column names returned for this table.</div>`}
+                    </div>
+                </div>`;
+            });
+            html += `</div>`;
+        }
+
+        // Measures
+        html += `<h6 style="margin:0 0 8px;font-size:12px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.04em;">Measures (${measures.length})</h6>`;
+        if (!measures.length) {
+            html += `<div class="empty-state" style="padding:16px;margin-bottom:16px;">No DAX measures on this model (or none returned by Scanner for this dataset).</div>`;
+        } else {
+            html += `<div class="list-group" style="max-height:240px;overflow:auto;margin-bottom:16px;">`;
+            measures.forEach(measure => {
+                const expr = measure.expression ? String(measure.expression) : '';
+                html += `
+                <div class="list-group-item" style="padding:8px 12px;">
+                    <strong>${escapeHtml(measure.name || '')}</strong>
+                    <div style="font-size:11px;color:#64748B;margin-top:2px;">${escapeHtml(measure.table || 'Unknown table')}</div>
+                    ${expr ? `<pre style="margin:6px 0 0;padding:8px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:100px;overflow:auto;">${escapeHtml(expr)}</pre>` : ''}
+                </div>`;
+            });
+            html += `</div>`;
+        }
+
+        // Relationships
+        html += `<h6 style="margin:0 0 8px;font-size:12px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.04em;">Relationships (${relationships.length})</h6>`;
+        if (!relationships.length) {
+            html += `<div class="empty-state" style="padding:16px;">No relationships returned for this model.</div>`;
+        } else {
+            html += `<div style="overflow:auto;max-height:240px;border:1px solid #E2E8F0;border-radius:8px;">
+                <table class="sm-table" style="font-size:12px;">
+                    <thead><tr><th>From</th><th>To</th><th>Cardinality</th></tr></thead>
+                    <tbody>`;
+            relationships.forEach(rel => {
+                const from = `${rel.fromTable || ''}.${rel.fromColumn || ''}`;
+                const to = `${rel.toTable || ''}.${rel.toColumn || ''}`;
+                html += `<tr>
+                    <td>${escapeHtml(from)}</td>
+                    <td>${escapeHtml(to)}</td>
+                    <td>${escapeHtml(rel.cardinality || '—')}</td>
+                </tr>`;
+            });
+            html += `</tbody></table></div>`;
+        }
+
+        return html;
+    }
+
+    async function runHealthCheck(modelId) {
+        const model = semanticModels.find(m => m.id === modelId);
+        if (!model) return;
+
+        document.getElementById('healthModalModelName').textContent = model.name;
+
+        const content = document.getElementById('healthCheckContent');
+        content.innerHTML = '<div class="empty-state">Running health check…</div>';
+
+        openSmModal('healthCheckModal');
+
+        try {
+            const response = await fetch(`/api/semantic-model-health-check`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    workspace_id: currentWorkspaceId,
+                    dataset_id: modelId
+                })
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                throw new Error(data.error || 'Health check failed');
+            }
+
+            content.innerHTML = buildHealthCheckHTML(data);
+
+        } catch (error) {
+            content.innerHTML = `<div class="alert alert-danger">Health check failed: ${error.message}</div>`;
+        }
+    }
+
+    function buildHealthCheckHTML(data) {
+        const score = data.health_score || 0;
+        const scoreClass = score >= 80 ? 'success' : score >= 50 ? 'warning' : 'danger';
+
+        let html = `
+            <div class="alert alert-${scoreClass}">
+                <h4>Health Score: ${score}/100</h4>
+            </div>
+        `;
+
+        if (data.issues && data.issues.length > 0) {
+            html += '<h6>⚠️ Issues Found:</h6>';
+            html += '<ul class="list-group mb-3">';
+            data.issues.forEach(issue => {
+                html += `<li class="list-group-item list-group-item-${issue.severity || 'warning'}">${escapeHtml(issue.message)}</li>`;
+            });
+            html += '</ul>';
+        } else {
+            html += '<div class="alert alert-success">✅ No issues found!</div>';
+        }
+
+        if (data.warnings && data.warnings.length > 0) {
+            html += '<h6>💡 Warnings:</h6>';
+            html += '<ul>';
+            data.warnings.forEach(warning => {
+                html += `<li>${escapeHtml(warning)}</li>`;
+            });
+            html += '</ul>';
+        }
+
+        return html;
+    }
+
+    async function downloadModelDocs(modelId) {
+        const model = semanticModels.find(m => m.id === modelId);
+        if (!model) return;
+
+        try {
+            showAlert('info', 'Generating documentation...');
+
+            const response = await fetch(`/api/semantic-model-documentation?workspace_id=${currentWorkspaceId}&dataset_id=${modelId}`);
+            const blob = await response.blob();
+
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${model.name}_SemanticModel_Documentation.docx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+            showAlert('success', 'Documentation downloaded successfully!');
+
+        } catch (error) {
+            showAlert('error', 'Failed to download documentation: ' + error.message);
+        }
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function showAlert(type, message) {
+        // You can implement this to show Bootstrap toasts or alerts
+        console.log(`[${type.toUpperCase()}] ${message}`);
+        alert(message);
+    }
+</script>
+{% endblock %}

@@ -19,19 +19,35 @@ load_dotenv()
 
 class PowerBIDataFetcher:
     """Fetches data from Power BI API"""
-    
-    def __init__(self, client_id, client_secret, tenant_id, group_id):
+
+    def __init__(self, client_id, client_secret, tenant_id, group_id, user_token=None):
+        """
+        Initialize PowerBIDataFetcher
+
+        Args:
+            client_id: Azure AD application client ID
+            client_secret: Azure AD application client secret
+            tenant_id: Azure AD tenant ID
+            group_id: Power BI workspace/group ID
+            user_token: Optional user-delegated access token (takes priority over service principal)
+        """
         self.client_id = client_id
         self.client_secret = client_secret
         self.tenant_id = tenant_id
         self.group_id = group_id
         self.access_token = None
+        self.user_token = user_token  # User-delegated token (takes priority)
         self.base_url = "https://api.powerbi.com/v1.0/myorg"
-    
+
+    def set_user_token(self, token):
+        """Set user-delegated access token for API calls"""
+        self.user_token = token
+        print("   🔑 Using user-delegated access token")
+
     def get_access_token(self):
-        """Retrieve Azure AD access token for Power BI API access"""
-        print("   🔐 Getting Power BI access token...")
-        
+        """Retrieve Azure AD access token for Power BI API access using service principal"""
+        print("   🔐 Getting Power BI access token (Service Principal)...")
+
         url = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
         data = {
             "client_id": self.client_id,
@@ -39,18 +55,26 @@ class PowerBIDataFetcher:
             "client_secret": self.client_secret,
             "grant_type": "client_credentials"
         }
-        
+
         try:
             response = requests.post(url=url, data=data)
             response.raise_for_status()
             self.access_token = response.json().get("access_token")
-            print("   ✅ Access token obtained")
+            print("   ✅ Service Principal access token obtained")
             return self.access_token
         except Exception as e:
             raise Exception(f"Token request failed: {e}")
-    
+
     def _get_headers(self):
         """Get headers with access token"""
+        # Priority 1: Use user-delegated token if available
+        if self.user_token:
+            return {
+                'Authorization': f'Bearer {self.user_token}',
+                'Content-Type': 'application/json'
+            }
+
+        # Priority 2: Use service principal token
         if not self.access_token:
             self.get_access_token()
         return {
@@ -68,8 +92,19 @@ class PowerBIDataFetcher:
             data = response.json()
             print("   ✅ Report details retrieved")
             return data
+        except requests.exceptions.HTTPError as e:
+            print(f"   ❌ HTTP Error fetching report: {e}")
+            print(f"      Status Code: {e.response.status_code}")
+            try:
+                error_detail = e.response.json()
+                print(f"      Error Details: {error_detail}")
+            except:
+                print(f"      Response: {e.response.text[:200]}")
+            return None
         except Exception as e:
             print(f"   ❌ Error fetching report: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def get_report_pages(self, report_id):
@@ -98,8 +133,26 @@ class PowerBIDataFetcher:
             data = response.json()
             print("   ✅ Dataset details retrieved")
             return data
+        except requests.exceptions.HTTPError as e:
+            print(f"   ❌ HTTP Error fetching dataset: {e}")
+            print(f"      Workspace ID: {self.group_id}")
+            print(f"      Dataset ID: {dataset_id}")
+            print(f"      Status Code: {e.response.status_code}")
+            try:
+                error_detail = e.response.json()
+                print(f"      Error Details: {error_detail}")
+            except:
+                print(f"      Response: {e.response.text[:200]}")
+
+            if e.response.status_code == 404:
+                print(f"      💡 Dataset not found in this workspace. The dataset may be in a different workspace.")
+            elif e.response.status_code == 403:
+                print(f"      💡 Access denied. User may not have permissions to this dataset.")
+            return None
         except Exception as e:
             print(f"   ❌ Error fetching dataset: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def get_dataset_datasources(self, dataset_id):
@@ -344,8 +397,9 @@ class PowerBIDataFetcher:
             try:
                 scanner = PowerBIScanner()
                 # Get tables, columns, expressions, measures, and relationships
-                print(f"   🔍 Calling scanner.get_dataset_model('{dataset_id}')...")
-                model = scanner.get_dataset_model(dataset_id)
+                # Pass the workspace_id (group_id) to scan the correct workspace
+                print(f"   🔍 Calling scanner.get_dataset_model('{dataset_id}', workspace_id='{self.group_id}')...")
+                model = scanner.get_dataset_model(dataset_id, workspace_id=self.group_id)
 
                 metadata['model_tables'] = model.get('tables', [])
                 metadata['model_columns'] = model.get('columns', {})

@@ -644,7 +644,6 @@ def _is_weak_created_fallback(src):
     note = str(src.get('refresh_note') or '').lower()
     if 'created date' in note or 'dataset created' in note:
         return True
-    # legacy: content_modified note that only mentions created
     if src_l == 'content_modified' and 'created' in note and 'modified' not in note:
         return True
     return False
@@ -682,7 +681,6 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
     if true_hist:
         pool = true_hist
     else:
-        # Content only: drop weak created stamps when any non-created content exists
         strong = [(s, dt) for s, dt in with_ts if not _is_weak_created_fallback(s)]
         pool = strong if strong else with_ts
 
@@ -692,7 +690,6 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
         if best is None or dt > best_dt:
             best, best_dt = src, dt
 
-    # Base: first source that has any useful structure, else first
     base = dict(cleaned[0])
     for src in cleaned[1:]:
         for k in prefer_keys:
@@ -701,7 +698,6 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
 
     if best is not None:
         base['last_refreshed'] = best.get('last_refreshed')
-        # Prefer status / source labels from the same winner
         if best.get('last_refresh_status'):
             base['last_refresh_status'] = best.get('last_refresh_status')
         if best.get('refresh_source'):
@@ -727,7 +723,6 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
         elif any(not parse_refresh_timestamp(s.get('last_refreshed')) for s in cleaned):
             note_bits.append('filled from alternate refresh source')
 
-        # Drop empty / duplicate notes
         seen_n = set()
         clean_notes = []
         for n in note_bits:
@@ -739,7 +734,6 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
         if clean_notes:
             base['refresh_note'] = '; '.join(clean_notes)
     else:
-        # No timestamps anywhere — still take best status label available
         for src in cleaned:
             if src.get('last_refresh_status') and not base.get('last_refresh_status'):
                 base['last_refresh_status'] = src.get('last_refresh_status')
@@ -748,7 +742,6 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
             if src.get('refresh_source') and not base.get('refresh_source'):
                 base['refresh_source'] = src.get('refresh_source')
 
-        # Clarify OneDrive-only case for the UI (Scheduled tab empty, portal OneDrive has rows)
         status = str(base.get('last_refresh_status') or '').lower()
         if status in ('', 'no history', 'none', 'null') or not base.get('last_refreshed'):
             base['last_refresh_status'] = base.get('last_refresh_status') or 'No History'
@@ -795,11 +788,8 @@ def refresh_info_from_content_modified(dataset_info, report_meta=None, *, datase
       1) report modifiedDateTime (often tracks OneDrive .pbix publish/sync)
       2) dataset modifiedDateTime / lastModified
       3) dataset createdDate only if nothing else (weak — labeled content_created)
-
-    Not true OneDrive history (REST does not expose that tab). Never pretends
-    this is Scheduled history.
     """
-    modified_candidates = []  # (raw_ts, label)
+    modified_candidates = []
     created_candidates = []
 
     if isinstance(report_meta, dict):

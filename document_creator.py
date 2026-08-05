@@ -471,10 +471,19 @@ class PowerBIDocumentCreator:
         
         # Get all used tables
         all_used_tables = tables_in_expressions.union(tables_in_relationships)
-        
+
         # Detect unused tables (tables not in expressions or relationships)
-        model_table_set = set([t for t in model_tables if t])
-        unused_tables = model_table_set - all_used_tables
+        # Extract table names from table objects (which can be dicts or strings)
+        model_table_names = set()
+        for t in model_tables:
+            if isinstance(t, dict):
+                table_name = t.get('name') or t.get('table')
+                if table_name:
+                    model_table_names.add(table_name)
+            elif isinstance(t, str) and t:
+                model_table_names.add(t)
+
+        unused_tables = model_table_names - all_used_tables
         
         if unused_tables:
             result['unused_tables'] = sorted(list(unused_tables))
@@ -1213,13 +1222,18 @@ Understanding these technical details is essential for troubleshooting, optimiza
         
         if metadata:
             self.doc.add_heading('A. Report Metadata Summary', level=2)
+
+            # Safely get refresh_details (it might be None)
+            refresh_details = metadata.get('refresh_details') or {}
+            storage_mode = refresh_details.get('targetStorageMode', 'N/A') if isinstance(refresh_details, dict) else 'N/A'
+
             appendix_data = {
                 'Report Name': self.safe_str(metadata.get('report_name', 'N/A')),
                 'Report ID': self.safe_str(metadata.get('report_id', 'N/A')),
                 'Dataset Name': self.safe_str(metadata.get('dataset_name', 'N/A')),
                 'Tables': str(len(metadata.get('model_tables', []))),
                 'Data Sources': str(len(metadata.get('detailed_sources', []))),
-                'Storage Mode': self.safe_str(metadata.get('refresh_details', {}).get('targetStorageMode', 'N/A')),
+                'Storage Mode': self.safe_str(storage_mode),
                 'Generated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
             self.add_section('', appendix_data, level=3)
