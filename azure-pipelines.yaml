@@ -1,15 +1,17 @@
-name: $(Date:yyyyMMdd)$(Rev:.r) 
+name: $(Date:yyyyMMdd)$(Rev:.r)
 
 trigger:
   branches:
     include:
       - master
-      
-resources: 
-  repositories: 
-    - repository: pipeline_templates 
+      - main
+      - github-main
+
+resources:
+  repositories:
+    - repository: pipeline_templates
       type: git
-      name: Infra-Cloud/infra-devops-pipelines 
+      name: Infra-Cloud/infra-devops-pipelines
 
 variables:
   dockerRegistryServiceConnection: 'ashleyfurniture'
@@ -29,27 +31,34 @@ stages:
       - job: Build
         displayName: 'Build Docker Image'
         steps:
-          # CRITICAL: Clear ALL Docker cache before build
           - script: |
-              echo "🧹 Clearing Docker build cache..."
-              docker builder prune -af --filter "until=1h"
-              docker system prune -af --filter "until=1h"
-              echo "✅ Cache cleared"
+              set -euo pipefail
+              echo "Clearing Docker build cache..."
+              docker builder prune -af --filter "until=1h" || true
+              docker system prune -af --filter "until=1h" || true
+              echo "Cache clear done"
             displayName: 'Clear Docker Cache'
 
           - script: |
-              echo "🔨 Building Docker image with ZERO cache..."
+              set -euo pipefail
+              echo "Building Docker image (no cache)..."
               BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+              IMAGE="$(containerRegistry)/$(imageRepository)"
               echo "Build Date: $BUILD_DATE"
               echo "Build ID: $(tag)"
+              echo "Dockerfile: $(dockerfilePath)"
+              test -f "$(dockerfilePath)"
               docker build --no-cache --pull \
                 --build-arg BUILD_DATE="$BUILD_DATE" \
                 --build-arg BUILD_ID="$(tag)" \
-                -t $(containerRegistry)/$(imageRepository):$(tag) \
-                -t $(containerRegistry)/$(imageRepository):latest \
-                -f $(dockerfilePath) \
-                $(Build.SourcesDirectory)
-              echo "✅ Build complete with unique build args"
+                -t "${IMAGE}:$(tag)" \
+                -t "${IMAGE}:latest" \
+                -f "$(dockerfilePath)" \
+                "$(Build.SourcesDirectory)"
+              echo "Build complete"
+              docker images "${IMAGE}"
+              docker image inspect "${IMAGE}:$(tag)" >/dev/null
+              docker image inspect "${IMAGE}:latest" >/dev/null
             displayName: 'Build Docker Image - Force Clean Build'
 
           - task: Docker@2
@@ -59,8 +68,17 @@ stages:
               command: 'login'
 
           - script: |
-              docker push $(containerRegistry)/$(imageRepository):$(tag)
-              docker push $(containerRegistry)/$(imageRepository):latest
+              set -euo pipefail
+              IMAGE="$(containerRegistry)/$(imageRepository)"
+              echo "Local images before push:"
+              docker images "${IMAGE}"
+              docker image inspect "${IMAGE}:$(tag)" >/dev/null
+              docker image inspect "${IMAGE}:latest" >/dev/null
+              echo "Pushing ${IMAGE}:$(tag)"
+              docker push "${IMAGE}:$(tag)"
+              echo "Pushing ${IMAGE}:latest"
+              docker push "${IMAGE}:latest"
+              echo "Push complete"
             displayName: 'Push Docker Images'
 
   - stage: Deployment
@@ -80,48 +98,45 @@ stages:
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
-                      echo "Deploying image: $(containerRegistry)/$(imageRepository):$(tag)"
-                      
-                      # Set container image
+                      set -euo pipefail
+                      IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
+                      echo "Deploying image: $IMAGE"
+
                       az webapp config container set \
                         --name afi-powerbi-documentation-prod-app \
                         --resource-group afi-bi-analytics-rg \
-                        --docker-custom-image-name $(containerRegistry)/$(imageRepository):$(tag) \
-                        --docker-registry-server-url https://$(containerRegistry)
-                      
-                      # Enable managed identity for ACR
+                        --docker-custom-image-name "$IMAGE" \
+                        --docker-registry-server-url "https://$(containerRegistry)"
+
                       az webapp config set \
                         --name afi-powerbi-documentation-prod-app \
                         --resource-group afi-bi-analytics-rg \
                         --generic-configurations '{"acrUseManagedIdentityCreds": true}'
-                      
-                      # Stop application
+
                       echo "Stopping application..."
                       az webapp stop \
                         --name afi-powerbi-documentation-prod-app \
                         --resource-group afi-bi-analytics-rg
-                      
+
                       sleep 15
-                      
-                      # Start application
+
                       echo "Starting application with new container..."
                       az webapp start \
                         --name afi-powerbi-documentation-prod-app \
                         --resource-group afi-bi-analytics-rg
-                      
+
                       sleep 30
-                      
-                      # Verify
+
                       STATUS=$(az webapp show \
                         --name afi-powerbi-documentation-prod-app \
                         --resource-group afi-bi-analytics-rg \
                         --query state -o tsv)
-                      
+
                       CURRENT_IMAGE=$(az webapp config show \
                         --name afi-powerbi-documentation-prod-app \
                         --resource-group afi-bi-analytics-rg \
                         --query linuxFxVersion -o tsv)
-                      
+
                       echo "App Status: $STATUS"
                       echo "Current Image: $CURRENT_IMAGE"
                       echo "Expected: DOCKER|$(containerRegistry)/$(imageRepository):$(tag)"
