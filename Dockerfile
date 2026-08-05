@@ -59,11 +59,14 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 # Chromium for Playwright visual metadata fallback (OS libs installed above).
-# Do NOT run playwright install-deps — it often fails on private Linux agents.
+# Best-effort only: many DevOps agents block playwright CDN downloads.
+# App already degrades gracefully if browsers are missing (Scanner API path).
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN mkdir -p /ms-playwright \
-    && playwright install chromium \
-    && chmod -R a+rX /ms-playwright
+    && (python -m playwright install chromium \
+        && chmod -R a+rX /ms-playwright \
+        && echo "Playwright Chromium installed") \
+    || echo "WARN: Playwright Chromium install skipped (network/CDN). Core app still runs."
 
 # Application source
 COPY . .
