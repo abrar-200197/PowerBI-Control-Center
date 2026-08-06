@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 
-{% block title %}Orphaned Reports - Power BI Control Center{% endblock %}
-{% block page_heading %}Orphaned Reports{% endblock %}
-{% block page_subtitle %}Reports with missing or inactive ownership signals{% endblock %}
+{% block title %}Unowned Reports - Power BI Control Center{% endblock %}
+{% block page_heading %}Unowned Reports{% endblock %}
+{% block page_subtitle %}Reports with no active owner on file{% endblock %}
 
 {% block extra_css %}
 <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
@@ -191,11 +191,11 @@
                 <div class="stat-value" id="total-reports">0</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Orphaned Reports</div>
+                <div class="stat-label">Unowned Reports</div>
                 <div class="stat-value" id="orphaned-count" style="color: #EF4444;">0</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Orphaned %</div>
+                <div class="stat-label">Unowned %</div>
                 <div class="stat-value" id="orphaned-percentage" style="color: #F59E0B;">0%</div>
             </div>
             <div class="stat-card">
@@ -208,7 +208,7 @@
     <div id="orphaned-container" class="orphaned-table">
         <div class="idle-state">
             <div class="idle-icon" aria-hidden="true">🗂️</div>
-            <p><strong>Select a workspace</strong> to detect orphaned reports</p>
+            <p><strong>Select a workspace</strong> to find unowned reports</p>
             <p style="margin-top:6px;font-size:12px;opacity:.85;">No scan runs until you choose a workspace.</p>
         </div>
     </div>
@@ -251,7 +251,7 @@
             document.getElementById('orphaned-container').innerHTML = `
                 <div class="idle-state">
                     <div class="idle-icon" aria-hidden="true">🗂️</div>
-                    <p><strong>Select a workspace</strong> to detect orphaned reports</p>
+                    <p><strong>Select a workspace</strong> to find unowned reports</p>
                     <p style="margin-top:6px;font-size:12px;opacity:.85;">No scan runs until you choose a workspace.</p>
                 </div>`;
             document.getElementById('stats-container').style.display = 'none';
@@ -264,7 +264,7 @@
         document.getElementById('orphaned-container').innerHTML = `
             <div class="loading">
                 <div class="spinner"></div>
-                <p>Scanning for orphaned reports... This may take a moment.</p>
+                <p>Scanning for unowned reports… This may take a moment.</p>
             </div>`;
         document.getElementById('stats-container').style.display = 'none';
 
@@ -275,7 +275,7 @@
             if (data.success) {
                 displayResults(data);
             } else {
-                throw new Error(data.error || 'Failed to detect orphaned reports');
+                throw new Error(data.error || 'Failed to find unowned reports');
             }
         } catch (error) {
             console.error('Error:', error);
@@ -309,7 +309,7 @@
         if (data.reports.length === 0) {
             document.getElementById('orphaned-container').innerHTML = `
                 <div style="padding: 40px; text-align: center; color: #10B981;">
-                    ✅ No orphaned reports found! All reports have proper ownership.
+                    ✅ No unowned reports found. All reports have an owner signal.
                 </div>`;
             return;
         }

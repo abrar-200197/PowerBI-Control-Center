@@ -27,6 +27,9 @@
         <button class="section-tab nav-item" data-view="lookup" type="button" role="tab" aria-selected="false">
           Impact lookup
         </button>
+        <button class="section-tab nav-item" data-view="lineage" type="button" role="tab" aria-selected="false">
+          Lineage map
+        </button>
         <div class="section-tabs-meta">
           <span id="viewSubtitle" class="muted small tab-subtitle">Search every source table → reports / datasets / workspaces</span>
           <button id="exportCsvBtn" class="btn secondary sm" type="button">Export CSV</button>
@@ -190,6 +193,53 @@
               <button id="lookupBtn" class="btn primary" type="button">Find affected reports</button>
             </div>
             <div id="lookupResults"></div>
+          </div>
+        </section>
+
+        <!-- LINEAGE MAP (Service-style end-to-end: Source → Model → Report) -->
+        <section id="view-lineage" class="view hidden">
+          <div class="filters card filters-one-line">
+            <div class="filter-row one-line">
+              <label class="field grow">
+                <span class="sr-only">Start from</span>
+                <select id="lineageStartMode" title="Start map from">
+                  <option value="table">Start: Source table</option>
+                  <option value="report">Start: Report</option>
+                </select>
+              </label>
+              <label class="field grow">
+                <span class="sr-only">Pick item</span>
+                <select id="lineagePick" title="Table or report">
+                  <option value="">Select…</option>
+                </select>
+              </label>
+              <button id="lineageDrawBtn" class="btn primary sm" type="button">Show map</button>
+              <button id="lineageClearBtn" class="btn ghost sm" type="button">Clear</button>
+            </div>
+            <div class="filter-meta compact">
+              <span id="lineageMeta" class="muted small">Pick a source table or report to draw end-to-end lineage</span>
+            </div>
+          </div>
+          <div class="card lineage-map-card">
+            <div class="lineage-legend" aria-hidden="true">
+              <span class="lg-item lg-source">Source</span>
+              <span class="lg-arrow">→</span>
+              <span class="lg-item lg-model">Semantic model</span>
+              <span class="lg-arrow">→</span>
+              <span class="lg-item lg-report">Report</span>
+              <span class="lg-item lg-ws">Workspace</span>
+            </div>
+            <div id="lineageEmpty" class="lineage-empty">
+              <div class="lineage-empty-title">Lineage map</div>
+              <p class="muted small">
+                Power BI Service–style view of how a <strong>source</strong> connects through a
+                <strong>semantic model</strong> to <strong>reports</strong>. Use Table impact / Report sources for deep dive (SQL, measures).
+              </p>
+            </div>
+            <div id="lineageCanvasWrap" class="lineage-canvas-wrap hidden">
+              <svg id="lineageEdges" class="lineage-edges" aria-hidden="true"></svg>
+              <div id="lineageColumns" class="lineage-columns"></div>
+            </div>
           </div>
         </section>
       </div>

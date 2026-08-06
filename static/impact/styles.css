@@ -1221,3 +1221,169 @@ html[data-theme="dark"] .app.embedded .list-item-clickable:hover,
 html[data-theme="dark"] .app.embedded .is-focus-row {
   background: #1F2A3A !important;
 }
+
+/* ── Lineage map (Service-style left → right) ── */
+.lineage-map-card {
+  padding: 12px 14px 16px;
+  min-height: min(62vh, 640px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.lineage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  font-size: 12px;
+  color: var(--muted, #718096);
+}
+.lineage-legend .lg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #E2E8F0);
+  background: var(--bg-soft, #F7FAFC);
+  font-weight: 600;
+  color: var(--text, #1A202C);
+}
+.lineage-legend .lg-source { border-color: #90CDF4; background: #EBF8FF; color: #2B6CB0; }
+.lineage-legend .lg-model { border-color: #9AE6B4; background: #F0FFF4; color: #276749; }
+.lineage-legend .lg-report { border-color: #D6BCFA; background: #FAF5FF; color: #6B46C1; }
+.lineage-legend .lg-ws { border-color: #FBD38D; background: #FFFAF0; color: #C05621; }
+.lineage-legend .lg-arrow { opacity: 0.55; }
+.lineage-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 28px 12px 36px;
+  max-width: 560px;
+}
+.lineage-empty-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: var(--text, #1A202C);
+}
+.lineage-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border, #E2E8F0);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(148, 163, 184, 0.35) 1px, transparent 0) 0 0 / 18px 18px,
+    var(--bg-soft, #F7FAFC);
+}
+.lineage-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 0;
+}
+.lineage-edges path {
+  fill: none;
+  stroke: #94A3B8;
+  stroke-width: 1.75;
+  opacity: 0.85;
+}
+.lineage-columns {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(200px, 1fr));
+  gap: 28px;
+  padding: 20px 18px 28px;
+  min-width: 880px;
+  align-items: start;
+}
+.lineage-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.lineage-col-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #718096);
+  padding: 0 4px 4px;
+}
+.lineage-node {
+  background: #fff;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 20px rgba(15, 23, 42, 0.04);
+  min-height: 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: default;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .12s ease;
+}
+.lineage-node.is-clickable { cursor: pointer; }
+.lineage-node.is-clickable:hover {
+  border-color: #90CDF4;
+  box-shadow: 0 2px 10px rgba(43, 108, 176, 0.12);
+  transform: translateY(-1px);
+}
+.lineage-node.is-focus {
+  border-color: #3182CE;
+  box-shadow: 0 0 0 2px rgba(49, 130, 206, 0.25);
+}
+.lineage-node .ln-kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #718096;
+}
+.lineage-node .ln-name {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: #1A202C;
+  line-height: 1.3;
+  word-break: break-word;
+}
+.lineage-node .ln-sub {
+  font-size: 11.5px;
+  color: #718096;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.lineage-node[data-kind="source"] { border-left: 3px solid #3182CE; }
+.lineage-node[data-kind="model"] { border-left: 3px solid #38A169; }
+.lineage-node[data-kind="report"] { border-left: 3px solid #805AD5; }
+.lineage-node[data-kind="workspace"] { border-left: 3px solid #DD6B20; }
+
+html[data-theme="dark"] .app.embedded .lineage-canvas-wrap {
+  background:
+    radial-gradient(circle at 1px 1px, rgba(148, 163, 184, 0.12) 1px, transparent 0) 0 0 / 18px 18px,
+    #0F1419 !important;
+  border-color: #2D3A4D !important;
+}
+html[data-theme="dark"] .app.embedded .lineage-node {
+  background: #1A2332 !important;
+  border-color: #2D3A4D !important;
+  color: #E2E8F0 !important;
+}
+html[data-theme="dark"] .app.embedded .lineage-node .ln-name { color: #E2E8F0 !important; }
+html[data-theme="dark"] .app.embedded .lineage-node .ln-sub,
+html[data-theme="dark"] .app.embedded .lineage-node .ln-kind { color: #94A3B8 !important; }
+html[data-theme="dark"] .app.embedded .lineage-edges path { stroke: #64748B; }
+html[data-theme="dark"] .app.embedded .lineage-legend .lg-item {
+  background: #151C27 !important;
+  border-color: #2D3A4D !important;
+  color: #E2E8F0 !important;
+}

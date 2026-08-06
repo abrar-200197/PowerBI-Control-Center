@@ -2059,9 +2059,440 @@ function closeAllDrawers() {
   document.body.classList.remove("drawer-open");
 }
 
+/* ------------------------------------------------------------------ */
+/* Lineage map — Service-style Source → Model → Report → Workspace     */
+/* ------------------------------------------------------------------ */
+
+const LINEAGE_MAX_MODELS = 12;
+const LINEAGE_MAX_REPORTS = 24;
+const LINEAGE_MAX_SOURCES = 16;
+
+function populateLineagePick() {
+  const mode = $("#lineageStartMode")?.value || "table";
+  const sel = $("#lineagePick");
+  if (!sel) return;
+  const prev = sel.value;
+  if (mode === "report") {
+    const rows = (state.reportRows || []).slice().sort((a, b) =>
+      String(a.reportName || "").localeCompare(String(b.reportName || ""))
+    );
+    // Cap options for usability; user can still search via native select typeahead in some browsers
+    const slice = rows.slice(0, 800);
+    sel.innerHTML =
+      `<option value="">Select a report…</option>` +
+      slice
+        .map(
+          (r) =>
+            `<option value="${escapeAttr(r.reportId)}">${escapeHtml(
+              `${r.reportName || r.reportId} · ${r.workspaceName || ""}`
+            )}</option>`
+        )
+        .join("");
+  } else {
+    const rows = (state.rows || [])
+      .slice()
+      .sort((a, b) => (b.reportCount || 0) - (a.reportCount || 0));
+    const slice = rows.slice(0, 800);
+    sel.innerHTML =
+      `<option value="">Select a source table…</option>` +
+      slice
+        .map((r) => {
+          const label = [
+            r.table || r.tableKey,
+            r.sourceType ? `(${r.sourceType})` : "",
+            r.database || r.server || "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          return `<option value="${escapeAttr(r.tableKey)}">${escapeHtml(label)}</option>`;
+        })
+        .join("");
+  }
+  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  else sel.value = "";
+}
+
+async function ensureLineagePickData() {
+  const mode = $("#lineageStartMode")?.value || "table";
+  if (mode === "report") {
+    try {
+      await ensureReportRows(false);
+    } catch (e) {
+      console.warn("lineage report list", e);
+    }
+  }
+  populateLineagePick();
+}
+
+function lineageNodeHtml(n) {
+  const clickable = n.clickable ? " is-clickable" : "";
+  const focus = n.focus ? " is-focus" : "";
+  const dataAttrs = [
+    n.datasetId ? `data-dataset-id="${escapeAttr(n.datasetId)}"` : "",
+    n.workspaceId ? `data-workspace-id="${escapeAttr(n.workspaceId)}"` : "",
+    n.reportId ? `data-report-id="${escapeAttr(n.reportId)}"` : "",
+    n.tableKey ? `data-table-key="${escapeAttr(n.tableKey)}"` : "",
+    n.datasetName ? `data-dataset-name="${escapeAttr(n.datasetName)}"` : "",
+    n.workspaceName ? `data-workspace-name="${escapeAttr(n.workspaceName)}"` : "",
+    n.modelTableName ? `data-model-table="${escapeAttr(n.modelTableName)}"` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `<div class="lineage-node${clickable}${focus}" data-kind="${escapeAttr(n.kind)}" data-node-id="${escapeAttr(n.id)}" ${dataAttrs}>
+    <div class="ln-kind">${escapeHtml(n.kindLabel || n.kind)}</div>
+    <div class="ln-name">${escapeHtml(n.name || "—")}</div>
+    ${n.sub ? `<div class="ln-sub">${escapeHtml(n.sub)}</div>` : ""}
+  </div>`;
+}
+
+function clearLineageMap() {
+  const empty = $("#lineageEmpty");
+  const wrap = $("#lineageCanvasWrap");
+  const cols = $("#lineageColumns");
+  const svg = $("#lineageEdges");
+  if (empty) empty.classList.remove("hidden");
+  if (wrap) wrap.classList.add("hidden");
+  if (cols) cols.innerHTML = "";
+  if (svg) svg.innerHTML = "";
+  if ($("#lineageMeta")) {
+    $("#lineageMeta").textContent = "Pick a source table or report to draw end-to-end lineage";
+  }
+  if ($("#lineagePick")) $("#lineagePick").value = "";
+}
+
+function drawLineageEdges(edgePairs) {
+  const wrap = $("#lineageCanvasWrap");
+  const svg = $("#lineageEdges");
+  const cols = $("#lineageColumns");
+  if (!wrap || !svg || !cols) return;
+
+  const wr = wrap.getBoundingClientRect();
+  const scrollW = Math.max(wrap.scrollWidth, wr.width);
+  const scrollH = Math.max(wrap.scrollHeight, wr.height);
+  svg.setAttribute("width", String(scrollW));
+  svg.setAttribute("height", String(scrollH));
+  svg.style.width = `${scrollW}px`;
+  svg.style.height = `${scrollH}px`;
+  svg.innerHTML = "";
+
+  const wrapRect = wrap.getBoundingClientRect();
+  const sx = wrap.scrollLeft;
+  const sy = wrap.scrollTop;
+
+  for (const [fromId, toId] of edgePairs) {
+    const a = cols.querySelector(`[data-node-id="${cssEsc(fromId)}"]`);
+    const b = cols.querySelector(`[data-node-id="${cssEsc(toId)}"]`);
+    if (!a || !b) continue;
+    const ar = a.getBoundingClientRect();
+    const br = b.getBoundingClientRect();
+    const x1 = ar.right - wrapRect.left + sx;
+    const y1 = ar.top + ar.height / 2 - wrapRect.top + sy;
+    const x2 = br.left - wrapRect.left + sx;
+    const y2 = br.top + br.height / 2 - wrapRect.top + sy;
+    const dx = Math.max(40, (x2 - x1) * 0.45);
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`);
+    svg.appendChild(path);
+  }
+}
+
+async function buildLineageFromTable(tableKey) {
+  const res = await fetchJsonNoCache(
+    `/api/catalog/impact/table?key=${encodeURIComponent(tableKey)}`,
+    { timeoutMs: 120000 }
+  );
+  if (!res.ok) throw new Error(`Detail HTTP ${res.status}`);
+  const body = await res.json();
+  if (!body.success || !body.table) throw new Error(body.error || "No lineage for table");
+
+  const t = body.table;
+  const rowMeta = (state.rows || []).find((r) => r.tableKey === tableKey) || {};
+  const sourceLabel = t.table || rowMeta.table || tableKey;
+  const sourceSub = [
+    t.sourceType || rowMeta.sourceType,
+    t.server || rowMeta.server,
+    t.database || rowMeta.database,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const sources = [
+    {
+      id: `src:${tableKey}`,
+      kind: "source",
+      kindLabel: "Source",
+      name: sourceLabel,
+      sub: sourceSub || tableKey,
+      tableKey,
+      focus: true,
+      clickable: true,
+    },
+  ];
+
+  const models = [];
+  const reports = [];
+  const workspaces = new Map();
+  const edges = [];
+  const seenModel = new Set();
+  const seenReport = new Set();
+
+  let dsList = (t.datasets || []).slice(0, LINEAGE_MAX_MODELS);
+  for (const d of dsList) {
+    const mid = d.datasetId || d.datasetName || Math.random().toString(36).slice(2);
+    const modelId = `mdl:${mid}`;
+    if (!seenModel.has(modelId)) {
+      seenModel.add(modelId);
+      models.push({
+        id: modelId,
+        kind: "model",
+        kindLabel: "Semantic model",
+        name: d.datasetName || d.datasetId || "Model",
+        sub: [d.workspaceName, d.modelTableName ? `Table: ${d.modelTableName}` : ""]
+          .filter(Boolean)
+          .join(" · "),
+        datasetId: d.datasetId || "",
+        workspaceId: d.workspaceId || "",
+        datasetName: d.datasetName || "",
+        workspaceName: d.workspaceName || "",
+        modelTableName: d.modelTableName || "",
+        clickable: !!(d.datasetId),
+      });
+      edges.push([`src:${tableKey}`, modelId]);
+    }
+    for (const rep of d.reports || []) {
+      if (reports.length >= LINEAGE_MAX_REPORTS) break;
+      const rid = rep.reportId || rep.reportName;
+      if (!rid || seenReport.has(rid)) continue;
+      seenReport.add(rid);
+      const reportId = `rep:${rid}`;
+      reports.push({
+        id: reportId,
+        kind: "report",
+        kindLabel: "Report",
+        name: rep.reportName || rid,
+        sub: rep.workspaceName || d.workspaceName || "",
+        reportId: rep.reportId || "",
+        workspaceId: rep.workspaceId || d.workspaceId || "",
+        datasetId: d.datasetId || "",
+        datasetName: d.datasetName || "",
+        workspaceName: rep.workspaceName || d.workspaceName || "",
+        clickable: true,
+      });
+      edges.push([modelId, reportId]);
+      const wid = rep.workspaceId || d.workspaceId || "";
+      const wname = rep.workspaceName || d.workspaceName || wid || "Workspace";
+      if (wid && !workspaces.has(wid)) {
+        workspaces.set(wid, {
+          id: `ws:${wid}`,
+          kind: "workspace",
+          kindLabel: "Workspace",
+          name: wname,
+          sub: wid,
+          workspaceId: wid,
+          workspaceName: wname,
+        });
+      }
+      if (wid) edges.push([reportId, `ws:${wid}`]);
+    }
+  }
+
+  return {
+    columns: [
+      { title: "Source", nodes: sources },
+      { title: "Semantic model", nodes: models },
+      { title: "Report", nodes: reports },
+      { title: "Workspace", nodes: [...workspaces.values()] },
+    ],
+    edges,
+    meta: `${sourceLabel} · ${models.length} model(s) · ${reports.length} report(s)`,
+  };
+}
+
+async function buildLineageFromReport(reportId) {
+  const res = await fetchJsonNoCache(
+    `/api/catalog/impact/report?report_id=${encodeURIComponent(reportId)}`,
+    { timeoutMs: 120000 }
+  );
+  if (!res.ok) throw new Error(`Report detail HTTP ${res.status}`);
+  const body = await res.json();
+  if (!body.success || !body.report) throw new Error(body.error || "No lineage for report");
+
+  const rep = body.report;
+  const meta = (state.reportRows || []).find((r) => String(r.reportId) === String(reportId)) || {};
+  const rname = rep.reportName || meta.reportName || reportId;
+  const wname = rep.workspaceName || meta.workspaceName || "";
+  const wid = rep.workspaceId || meta.workspaceId || "";
+
+  const reportNode = {
+    id: `rep:${reportId}`,
+    kind: "report",
+    kindLabel: "Report",
+    name: rname,
+    sub: wname,
+    reportId,
+    workspaceId: wid,
+    workspaceName: wname,
+    focus: true,
+    clickable: true,
+  };
+
+  const sources = [];
+  const models = [];
+  const edges = [];
+  const seenSrc = new Set();
+  const seenMdl = new Set();
+  const srcList = (rep.sources || rep.tables || []).slice(0, LINEAGE_MAX_SOURCES);
+
+  for (const s of srcList) {
+    const tk = s.tableKey || s.table || Math.random().toString(36).slice(2);
+    const sid = `src:${tk}`;
+    if (!seenSrc.has(sid)) {
+      seenSrc.add(sid);
+      sources.push({
+        id: sid,
+        kind: "source",
+        kindLabel: s.sourceType || "Source",
+        name: s.table || tk,
+        sub: [s.server, s.database, s.schema].filter(Boolean).join(" · "),
+        tableKey: s.tableKey || "",
+        clickable: !!s.tableKey,
+      });
+    }
+    for (const d of s.datasets || []) {
+      const mid = d.datasetId || d.datasetName || "model";
+      const modelId = `mdl:${mid}`;
+      if (!seenMdl.has(modelId)) {
+        seenMdl.add(modelId);
+        models.push({
+          id: modelId,
+          kind: "model",
+          kindLabel: "Semantic model",
+          name: d.datasetName || mid,
+          sub: d.workspaceName || wname || "",
+          datasetId: d.datasetId || "",
+          workspaceId: d.workspaceId || wid,
+          datasetName: d.datasetName || "",
+          workspaceName: d.workspaceName || wname,
+          modelTableName: d.modelTableName || "",
+          clickable: !!d.datasetId,
+        });
+      }
+      edges.push([sid, modelId]);
+      edges.push([modelId, reportNode.id]);
+    }
+    // If no dataset nesting, still link source → report
+    if (!(s.datasets || []).length) {
+      edges.push([sid, reportNode.id]);
+    }
+  }
+
+  const wsNodes = wid
+    ? [
+        {
+          id: `ws:${wid}`,
+          kind: "workspace",
+          kindLabel: "Workspace",
+          name: wname || wid,
+          sub: wid,
+          workspaceId: wid,
+          workspaceName: wname,
+        },
+      ]
+    : [];
+  if (wid) edges.push([reportNode.id, `ws:${wid}`]);
+
+  return {
+    columns: [
+      { title: "Source", nodes: sources },
+      { title: "Semantic model", nodes: models.slice(0, LINEAGE_MAX_MODELS) },
+      { title: "Report", nodes: [reportNode] },
+      { title: "Workspace", nodes: wsNodes },
+    ],
+    edges,
+    meta: `${rname} · ${sources.length} source(s) · ${models.length} model(s)`,
+  };
+}
+
+function renderLineageGraph(graph) {
+  const empty = $("#lineageEmpty");
+  const wrap = $("#lineageCanvasWrap");
+  const cols = $("#lineageColumns");
+  if (!graph || !cols) return;
+  if (empty) empty.classList.add("hidden");
+  if (wrap) wrap.classList.remove("hidden");
+
+  cols.innerHTML = graph.columns
+    .map((col) => {
+      const nodes = col.nodes || [];
+      const body =
+        nodes.map(lineageNodeHtml).join("") ||
+        `<div class="muted small" style="padding:8px 4px">None in this lane</div>`;
+      return `<div class="lineage-col"><div class="lineage-col-title">${escapeHtml(col.title)}</div>${body}</div>`;
+    })
+    .join("");
+
+  if ($("#lineageMeta")) $("#lineageMeta").textContent = graph.meta || "";
+  state._lineageEdges = graph.edges || [];
+
+  // Edges after layout
+  requestAnimationFrame(() => {
+    drawLineageEdges(state._lineageEdges);
+    // second pass after fonts/scroll
+    setTimeout(() => drawLineageEdges(state._lineageEdges || []), 50);
+  });
+
+  cols.querySelectorAll(".lineage-node.is-clickable").forEach((el) => {
+    el.addEventListener("click", () => {
+      const kind = el.getAttribute("data-kind");
+      if (kind === "source") {
+        const key = el.getAttribute("data-table-key");
+        if (key) openDrawer(key);
+      } else if (kind === "model") {
+        openModelModal({
+          datasetId: el.getAttribute("data-dataset-id"),
+          workspaceId: el.getAttribute("data-workspace-id"),
+          datasetName: el.getAttribute("data-dataset-name"),
+          workspaceName: el.getAttribute("data-workspace-name"),
+          modelTableName: el.getAttribute("data-model-table"),
+          reportName: "",
+          reportId: "",
+        });
+      } else if (kind === "report") {
+        const rid = el.getAttribute("data-report-id");
+        if (rid && typeof openReportSourcesDrawer === "function") {
+          openReportSourcesDrawer(rid);
+        }
+      }
+    });
+  });
+}
+
+async function runLineageMap() {
+  const mode = $("#lineageStartMode")?.value || "table";
+  const pick = $("#lineagePick")?.value || "";
+  const meta = $("#lineageMeta");
+  if (!pick) {
+    if (meta) meta.textContent = "Select a table or report first.";
+    return;
+  }
+  if (meta) meta.textContent = "Building map…";
+  try {
+    const graph =
+      mode === "report"
+        ? await buildLineageFromReport(pick)
+        : await buildLineageFromTable(pick);
+    renderLineageGraph(graph);
+  } catch (e) {
+    console.warn("lineage map failed", e);
+    if (meta) meta.textContent = `Could not build map: ${e.message || e}`;
+    clearLineageMap();
+    if (meta) meta.textContent = `Could not build map: ${e.message || e}`;
+  }
+}
+
 function setView(name) {
-  // Table impact | Report sources | Impact lookup
-  const allowed = new Set(["tables", "reports", "lookup"]);
+  // Table impact | Report sources | Impact lookup | Lineage map
+  const allowed = new Set(["tables", "reports", "lookup", "lineage"]);
   if (!allowed.has(name)) name = "tables";
 
   document.querySelectorAll(".nav-item, .section-tab").forEach((b) => {
@@ -2076,6 +2507,7 @@ function setView(name) {
     tables: ["Table impact", "Search every source table → reports / datasets / workspaces"],
     reports: ["Report sources", "Pick a report → every SQL / Excel / file / model table it uses"],
     lookup: ["Impact lookup", "If we change table X, which reports are affected?"],
+    lineage: ["Lineage map", "Service-style path: source → semantic model → report → workspace"],
   };
   const pair = titles[name] || titles.tables;
   if ($("#viewTitle") && !$("#viewTitle").classList.contains("hidden")) {
@@ -2098,6 +2530,9 @@ function setView(name) {
           tb.innerHTML = `<tr><td colspan="6" class="muted">Failed to load reports: ${escapeHtml(e.message || String(e))}</td></tr>`;
         }
       });
+  }
+  if (name === "lineage") {
+    ensureLineagePickData().catch(() => populateLineagePick());
   }
 }
 
@@ -2156,6 +2591,23 @@ function wire() {
     if (!el) return;
     el.addEventListener("input", applyReportFilters);
     el.addEventListener("change", applyReportFilters);
+  });
+
+  // Lineage map tab
+  $("#lineageStartMode")?.addEventListener("change", () => {
+    ensureLineagePickData().catch(() => populateLineagePick());
+  });
+  $("#lineageDrawBtn")?.addEventListener("click", () => runLineageMap());
+  $("#lineageClearBtn")?.addEventListener("click", () => clearLineageMap());
+  $("#lineagePick")?.addEventListener("change", () => {
+    /* user can press Show map; optional auto-draw on change is intentional off */
+  });
+  window.addEventListener("resize", () => {
+    if (!$("#view-lineage") || $("#view-lineage").classList.contains("hidden")) return;
+    const wrap = $("#lineageCanvasWrap");
+    if (wrap && !wrap.classList.contains("hidden") && state._lineageEdges) {
+      drawLineageEdges(state._lineageEdges);
+    }
   });
   $("#clearReportFilters")?.addEventListener("click", () => {
     if ($("#reportSearchInput")) $("#reportSearchInput").value = "";
