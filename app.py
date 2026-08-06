@@ -163,8 +163,11 @@ workspaces_cache = {}  # Key: user_id, Value: {'data': [], 'timestamp': 0}
 reports_cache = {}  # Key: {workspace_id}_{user_id}, Value: {'data': [], 'timestamp': 0}
 scanner_cache = {}  # Key: workspace_id, Value: {'data': {...}, 'timestamp': 0}
 usage_cache = {}  # Key: workspace_id, Value: {'data': {...}, 'timestamp': datetime}
+# Workspace folder tree (Fabric API) — shared across users, short TTL
+workspace_folders_cache = {}  # Key: workspace_id, Value: {'folders': [], 'timestamp': float}
 CACHE_DURATION = 300  # 5 minutes
 SCANNER_CACHE_DURATION = 600  # 10 minutes for scanner results (expensive operation)
+WORKSPACE_FOLDERS_CACHE_DURATION = 600  # 10 minutes — folder names change rarely
 
 # Progress tracking for document generation
 generation_progress = {}  # Key: job_id, Value: {'progress': 0-100, 'status': 'message', 'file_path': 'path/to/file.docx', 'complete': False, 'error': None}
@@ -192,11 +195,12 @@ def clear_user_cache(user_id):
 
 def clear_all_caches():
     """Clear all cached data - used on server startup or manual refresh"""
-    global workspaces_cache, reports_cache, scanner_cache
+    global workspaces_cache, reports_cache, scanner_cache, workspace_folders_cache
     workspaces_cache = {}
     reports_cache = {}
     scanner_cache = {}
-    print("🗑️ Cleared ALL workspace, report, and scanner caches")
+    workspace_folders_cache = {}
+    print("🗑️ Cleared ALL workspace, report, scanner, and folder caches")
 
 
 def _session_expired() -> bool:
@@ -866,12 +870,13 @@ def api_catalog_refresh():
             except Exception as exc:
                 print(f"⚠️ thin home/report-directory pack rebuild after refresh: {exc}")
 
-        # Drop in-process /api/reports shells so next load uses freshly pulled catalog
+        # Drop in-process /api/reports shells + folder tree so next load is fresh
         cleared_reports = 0
         try:
-            global reports_cache
+            global reports_cache, workspace_folders_cache
             cleared_reports = len(reports_cache)
             reports_cache = {}
+            workspace_folders_cache = {}
         except Exception:
             pass
 
@@ -5594,6 +5599,181 @@ def get_all_child_folders_recursive(folder_id, folder_map):
     return child_ids
 
 
+def _build_folder_display_path(folder_id, folder_map):
+    """Hierarchical path like 'Parent / Child' for dropdown labels."""
+    if not folder_id or folder_id not in folder_map:
+        return None
+    path_parts = []
+    current_id = folder_id
+    visited = set()
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        info = folder_map.get(current_id) or {}
+        name = info.get('name') or info.get('displayName') or ''
+        if name:
+            path_parts.insert(0, name)
+        current_id = info.get('parentFolderId')
+    return ' / '.join(path_parts) if path_parts else None
+
+
+def _fetch_workspace_folders_list(workspace_id, timeout=12):
+    """
+    Fetch Power BI / Fabric workspace folders for the Report Catalog dropdown.
+
+    Catalog fast-path used to return folders=[] so the UI only showed "All Folders"
+    even when the workspace has nested folders in the service.
+
+    Tries (in order):
+      1) Fabric folders API with user Fabric token (correct audience)
+      2) Fabric folders API with user Power BI token (sometimes accepted)
+      3) Fabric folders API with service-principal token
+      4) Scanner workspace.folders (name + id when present)
+
+    Returns list of {id, name, parentFolderId, report_count, hasChildren}.
+    Cached per workspace for WORKSPACE_FOLDERS_CACHE_DURATION seconds.
+    """
+    import time as _time
+    import requests as _requests
+
+    if not workspace_id:
+        return []
+
+    cached = workspace_folders_cache.get(workspace_id)
+    if cached and (_time.time() - float(cached.get('timestamp') or 0)) < WORKSPACE_FOLDERS_CACHE_DURATION:
+        return list(cached.get('folders') or [])
+
+    folder_names_map = {}
+
+    def _ingest_folder_rows(rows):
+        for folder in rows or []:
+            fid = folder.get('id')
+            if not fid:
+                continue
+            fname = (
+                folder.get('displayName')
+                or folder.get('name')
+                or f'Folder {str(fid)[:8]}'
+            )
+            folder_names_map[fid] = {
+                'id': fid,
+                'name': fname,
+                'parentFolderId': folder.get('parentFolderId'),
+            }
+
+    def _try_fabric(token, label):
+        if not token:
+            return False
+        try:
+            url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/folders?recursive=true"
+            resp = _requests.get(
+                url,
+                headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+                timeout=timeout,
+            )
+            if resp.status_code == 200:
+                _ingest_folder_rows(resp.json().get('value', []))
+                print(f"   📁 Folders via Fabric ({label}): {len(folder_names_map)}")
+                return True
+            print(f"   ⚠️ Fabric folders ({label}) HTTP {resp.status_code}")
+        except Exception as ex:
+            print(f"   ⚠️ Fabric folders ({label}) error: {ex}")
+        return False
+
+    # 1) User Fabric audience token
+    try:
+        _try_fabric(get_user_fabric_token(), 'user-fabric')
+    except Exception as ex:
+        print(f"   ⚠️ get_user_fabric_token failed: {ex}")
+
+    # 2) User Power BI token (legacy path — sometimes works on shared endpoints)
+    if not folder_names_map:
+        try:
+            pbi_token = get_user_powerbi_token()
+            _try_fabric(pbi_token, 'user-pbi')
+        except Exception as ex:
+            print(f"   ⚠️ user-pbi fabric folders failed: {ex}")
+
+    # 3) Service principal (app has workspace access for scanner / admin)
+    if not folder_names_map:
+        try:
+            from scanner_connector import PowerBIScanner
+            sp = PowerBIScanner()
+            # Prefer Fabric-scoped app token when connector supports it
+            sp_token = None
+            if hasattr(sp, 'get_access_token'):
+                try:
+                    # Some builds accept audience/scope kw; fall back to default
+                    try:
+                        sp_token = sp.get_access_token(scope='https://api.fabric.microsoft.com/.default')
+                    except TypeError:
+                        sp_token = sp.get_access_token()
+                except Exception:
+                    sp_token = None
+            _try_fabric(sp_token, 'service-principal')
+        except Exception as ex:
+            print(f"   ⚠️ SP fabric folders failed: {ex}")
+
+    # 4) Scanner fallback — folder metadata on workspace when API includes it
+    if not folder_names_map:
+        try:
+            from scanner_connector import PowerBIScanner
+            scanner = PowerBIScanner()
+            scanner.access_token = scanner.get_access_token()
+            scan_data = scanner.run_scan(workspace_id=workspace_id)
+            if scan_data and scan_data.get('workspaces'):
+                for ws in scan_data['workspaces']:
+                    if ws.get('id') != workspace_id:
+                        continue
+                    _ingest_folder_rows(ws.get('folders') or [])
+                    # Also derive parent IDs from reports if only folderId is present
+                    for rep in ws.get('reports') or []:
+                        rid = rep.get('folderObjectId') or rep.get('folderId')
+                        if not rid or rid in folder_names_map:
+                            continue
+                        folder_names_map[rid] = {
+                            'id': rid,
+                            'name': rep.get('folderName') or f'Folder {str(rid)[:8]}',
+                            'parentFolderId': None,
+                        }
+                    if folder_names_map:
+                        print(f"   📁 Folders via Scanner fallback: {len(folder_names_map)}")
+                    break
+        except Exception as ex:
+            print(f"   ⚠️ Scanner folder fallback failed: {ex}")
+
+    folders_list = []
+    for fid, finfo in folder_names_map.items():
+        # Keep leaf name for hierarchy joins; UI builds indent tree from parentFolderId.
+        leaf = finfo.get('name') or fid
+        parent_id = finfo.get('parentFolderId')
+        folders_list.append({
+            'id': fid,
+            'name': leaf,
+            'parentFolderId': parent_id,
+            'report_count': 0,  # unknown on catalog path; UI still lists names
+            'hasChildren': False,
+        })
+
+    # Mark parents that have children (for hierarchy UX)
+    by_id = {f['id']: f for f in folders_list}
+    for f in folders_list:
+        pid = f.get('parentFolderId')
+        if pid and pid in by_id:
+            by_id[pid]['hasChildren'] = True
+
+    def _sort_key(folder):
+        return (folder.get('name') or '').lower()
+
+    folders_list = sorted(folders_list, key=_sort_key)
+
+    workspace_folders_cache[workspace_id] = {
+        'folders': folders_list,
+        'timestamp': _time.time(),
+    }
+    print(f"   ✅ Workspace folders ready: {len(folders_list)} for {workspace_id[:8]}…")
+    return list(folders_list)
+
+
 def _catalog_reports_shell(catalog_reports):
     """
     Instant catalog rows. Prefer precomputed ops fields (refresh + views)
@@ -5995,10 +6175,19 @@ def get_reports():
                                 report_list, status_filter
                             )
 
+                        # Folder dropdown: catalog inventory does not store folders.
+                        # Fetch live from Fabric (cached) so UI shows real folder names.
+                        folders_list = []
+                        try:
+                            folders_list = _fetch_workspace_folders_list(workspace_id)
+                        except Exception as folders_exc:
+                            print(f"   ⚠️ Folder list on catalog path failed: {folders_exc}")
+                            folders_list = []
+
                         # Cache instant/ops responses (safe — no per-click live fan-out)
                         reports_cache[cache_key] = {
                             'data': report_list,
-                            'folders': [],
+                            'folders': folders_list,
                             'timestamp': current_time,
                             'source': source_label,
                             'catalogGeneratedAt': catalog_payload.get('generatedAt'),
@@ -6007,7 +6196,7 @@ def get_reports():
                         return jsonify({
                             'success': True,
                             'reports': report_list,
-                            'folders': [],
+                            'folders': folders_list,
                             'source': source_label,
                             'refreshIncluded': refresh_included,
                             'opsFromCatalog': catalog_has_ops,
@@ -6081,73 +6270,29 @@ def get_reports():
                 else:
                     raise
 
-        # Fetch folder names from Fabric API (NEW endpoint that supports folders)
+        # Fetch folder names via shared helper (Fabric token + SP + Scanner fallbacks)
         folder_names_map = {}
         fabric_folders_list = []  # Store full folder hierarchy
 
         try:
-            print("\n📁 Fetching folder names from Fabric API...")
-            headers = get_user_powerbi_headers()
-
-            # Try Fabric API first (newer, supports folders with recursive listing)
-            folders_url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/folders?recursive=true"
-            folders_response = requests.get(folders_url, headers=headers)
-
-            if folders_response.status_code == 200:
-                folders_data = folders_response.json().get('value', [])
-                for folder in folders_data:
-                    current_folder_id = folder.get('id')
-                    current_folder_name = folder.get('displayName', f'Folder {current_folder_id[:8]}')
-                    current_parent_folder_id = folder.get('parentFolderId')
-
-                    if current_folder_id:
-                        folder_names_map[current_folder_id] = {
-                            'id': current_folder_id,
-                            'name': current_folder_name,
-                            'parentFolderId': current_parent_folder_id,
-                            'workspaceId': folder.get('workspaceId')
-                        }
-                        fabric_folders_list.append({
-                            'id': current_folder_id,
-                            'name': current_folder_name,
-                            'parentFolderId': current_parent_folder_id
-                        })
-
-                print(f"   ✅ Found {len(folder_names_map)} folders with names from Fabric API")
-
-                # Debug: Print folder structure
-                if folder_names_map:
-                    print(f"\n   📂 Fabric API Folder Structure:")
-                    for fid, finfo in list(folder_names_map.items())[:10]:  # Show first 10
-                        parent_info = f" (parent: {finfo['parentFolderId'][:8]}...)" if finfo.get('parentFolderId') else " (root)"
-                        print(f"      - {finfo['name']} [ID: {fid}]{parent_info}")
-            else:
-                print(f"   ⚠️ Fabric API returned HTTP {folders_response.status_code}")
-                print(f"   Trying fallback to Admin Scanner API...")
-
-                # Fallback: Check if Scanner API already has folder info
-                if scan_data and "workspaces" in scan_data:
-                    for ws in scan_data["workspaces"]:
-                        if ws.get("id") == workspace_id:
-                            # Some Scanner API versions include folders
-                            ws_folders = ws.get("folders", [])
-                            if ws_folders:
-                                for folder in ws_folders:
-                                    current_folder_id = folder.get('id')
-                                    current_folder_name = folder.get('displayName') or folder.get('name', f'Folder {current_folder_id[:8]}')
-                                    current_parent_folder_id = folder.get('parentFolderId')
-
-                                    if current_folder_id:
-                                        folder_names_map[current_folder_id] = {
-                                            'id': current_folder_id,
-                                            'name': current_folder_name,
-                                            'parentFolderId': current_parent_folder_id
-                                        }
-                                print(f"   ✅ Found {len(folder_names_map)} folders from Scanner API")
-                            break
-
-                if not folder_names_map:
-                    print(f"   ⚠️ Could not fetch folders, will use folder IDs as names")
+            print("\n📁 Fetching folder names for live /api/reports path...")
+            shared_folders = _fetch_workspace_folders_list(workspace_id)
+            for f in shared_folders or []:
+                fid = f.get('id')
+                if not fid or fid == '__ROOT__':
+                    continue
+                # Prefer leaf displayName if path was already built into name
+                folder_names_map[fid] = {
+                    'id': fid,
+                    'name': f.get('name') or fid,
+                    'parentFolderId': f.get('parentFolderId'),
+                }
+                fabric_folders_list.append({
+                    'id': fid,
+                    'name': f.get('name') or fid,
+                    'parentFolderId': f.get('parentFolderId'),
+                })
+            print(f"   ✅ Folder map size: {len(folder_names_map)}")
         except Exception as e:
             print(f"   ⚠️ Error fetching folders: {e}, using folder IDs as names")
 

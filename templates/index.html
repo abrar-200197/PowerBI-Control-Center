@@ -1056,12 +1056,11 @@
         const isUserSwitch = !!(oldWorkspaceId && oldWorkspaceId !== currentWorkspaceId)
             && !navigatingFromFindReport;
 
-        // Always reset folder when workspace changes
+        // Always reset folder when workspace changes (do NOT trigger change —
+        // that would call onFolderChange → loadReports before workspace load).
         currentFolderId = null;
         folders = [];
-        document.getElementById('folderSelect').value = '';
-        $('#folderSelect').val('').trigger('change');
-        document.getElementById('folderSelect').style.display = 'none';
+        resetFolderSelectUi();
 
         if (isUserSwitch) {
             // Drop report deep-link — it belonged to the previous workspace
@@ -1393,21 +1392,25 @@
                     filterHeader.classList.remove('show');
                 }
 
-                // Handle folders if returned (only on first load when no folder is selected)
-                if (result.folders && result.folders.length > 0) {
-                    // Only populate folder dropdown once (check if it's already populated)
-                    const folderSelect = document.getElementById('folderSelect');
-                    const needsPopulation = folderSelect.options.length <= 1; // Only has default option
-
-                    if (needsPopulation) {
-                        console.log('📁 First load - populating folder dropdown');
+                // Folders dropdown — always refresh names for this workspace response
+                // (catalog path used to return [] forever; keep UI in sync when API improves)
+                if (!currentFolderId) {
+                    if (result.folders && result.folders.length > 0) {
+                        console.log(`📁 Populating folder dropdown (${result.folders.length} folders)`);
                         folders = result.folders;
-                        populateFolderSelect(folders);
+                        populateFolderSelect(folders, { preserveSelection: false });
+                        showFolderSelect();
                     } else {
-                        console.log('📁 Folders already loaded - skipping repopulation');
+                        console.log('📁 No folders returned for this workspace');
+                        folders = [];
+                        // Keep control visible with All Folders so user knows filter exists
+                        resetFolderSelectUi({ keepVisible: true });
                     }
-
-                    document.getElementById('folderSelect').style.display = 'inline-block';
+                } else if (result.folders && result.folders.length > 0 && folders.length === 0) {
+                    // Folder filter active but map empty (e.g. hard refresh mid-filter)
+                    folders = result.folders;
+                    populateFolderSelect(folders, { preserveSelection: true, selectedId: currentFolderId });
+                    showFolderSelect();
                 }
 
                 renderReportsTable(reports);
@@ -1480,18 +1483,56 @@
         }
     }
 
-    function populateFolderSelect(foldersList) {
+    function showFolderSelect() {
+        const el = document.getElementById('folderSelect');
+        if (!el) return;
+        el.style.display = 'inline-block';
+        if (window.jQuery && $('#folderSelect').data('select2')) {
+            $('#folderSelect').next('.select2-container').show();
+        }
+    }
+
+    function resetFolderSelectUi(opts) {
+        const keepVisible = !!(opts && opts.keepVisible);
+        const el = document.getElementById('folderSelect');
+        if (!el) return;
+
+        if (window.jQuery && $('#folderSelect').length) {
+            const $fs = $('#folderSelect');
+            // Rebuild options without firing change → loadReports
+            $fs.empty();
+            $fs.append(new Option('📂 All Folders', '', true, true));
+            $fs.val('');
+            try { $fs.trigger('change.select2'); } catch (e) { /* ignore */ }
+            if (!keepVisible) {
+                el.style.display = 'none';
+                $fs.next('.select2-container').hide();
+            } else {
+                showFolderSelect();
+            }
+        } else {
+            el.innerHTML = '<option value="">📂 All Folders</option>';
+            el.value = '';
+            el.style.display = keepVisible ? 'inline-block' : 'none';
+        }
+    }
+
+    function populateFolderSelect(foldersList, opts) {
+        opts = opts || {};
+        const preserveSelection = !!opts.preserveSelection;
+        const selectedId = opts.selectedId || currentFolderId || '';
         const folderSelect = $('#folderSelect');
 
-        console.log(`📁 Building folder dropdown with ${foldersList.length} folders...`);
+        console.log(`📁 Building folder dropdown with ${(foldersList || []).length} folders...`);
 
-        // Clear and rebuild
+        // Clear and rebuild — do NOT fire full change (avoids recursive loadReports)
         folderSelect.empty();
-        folderSelect.append(new Option('📂 All Folders', '', true, true));
+        folderSelect.append(new Option('📂 All Folders', '', false, false));
 
-        if (foldersList.length === 0) {
+        if (!foldersList || foldersList.length === 0) {
             console.log('   ℹ️ No folders in this workspace');
-            folderSelect.trigger('change');
+            folderSelect.val('');
+            try { folderSelect.trigger('change.select2'); } catch (e) { /* ignore */ }
             return;
         }
 
@@ -1501,6 +1542,7 @@
 
         // First pass: Create folder objects
         foldersList.forEach(folder => {
+            if (!folder || !folder.id) return;
             folderMap[folder.id] = {
                 ...folder,
                 children: [],
@@ -1510,38 +1552,49 @@
 
         // Second pass: Build parent-child relationships
         foldersList.forEach(folder => {
+            if (!folder || !folder.id || !folderMap[folder.id]) return;
             if (folder.parentFolderId && folderMap[folder.parentFolderId]) {
                 folderMap[folder.parentFolderId].children.push(folderMap[folder.id]);
                 folderMap[folder.parentFolderId].hasChildren = true;
             } else {
-                // Root folder (no parent)
+                // Root folder (no parent or parent not in list)
                 rootFolders.push(folderMap[folder.id]);
             }
         });
 
         // Recursive function to add folders with visual hierarchy
         function addFolderOptions(folderNode, level = 0) {
-            const indent = '  '.repeat(level);
-            const icon = folderNode.hasChildren ? '📁' : '📂';
-            const optionText = `${indent}${icon} ${folderNode.name} (${folderNode.report_count})`;
+            const indent = '\u00A0\u00A0'.repeat(level); // nbsp indent for Select2
+            const icon = folderNode.hasChildren || (folderNode.children && folderNode.children.length) ? '📁' : '📂';
+            const count = folderNode.report_count;
+            const countLabel = (typeof count === 'number' && count > 0) ? ` (${count})` : '';
+            const optionText = `${indent}${icon} ${folderNode.name}${countLabel}`;
 
             const option = new Option(optionText, folderNode.id, false, false);
             option.setAttribute('data-level', level);
             folderSelect.append(option);
 
             // Add children recursively (sorted alphabetically)
-            if (folderNode.children.length > 0) {
-                folderNode.children.sort((a, b) => a.name.localeCompare(b.name));
+            if (folderNode.children && folderNode.children.length > 0) {
+                folderNode.children.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
                 folderNode.children.forEach(child => addFolderOptions(child, level + 1));
             }
         }
 
         // Add root folders (sorted alphabetically)
-        rootFolders.sort((a, b) => a.name.localeCompare(b.name));
+        rootFolders.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
         rootFolders.forEach(folder => addFolderOptions(folder, 0));
 
+        // Restore selection if needed, without full change event
+        if (preserveSelection && selectedId) {
+            folderSelect.val(selectedId);
+        } else {
+            folderSelect.val('');
+        }
+        try { folderSelect.trigger('change.select2'); } catch (e) { /* ignore */ }
+
         console.log(`✅ Added ${foldersList.length} folders to dropdown`);
-        folderSelect.trigger('change');
+        showFolderSelect();
     }
 
     async function loadMetadata() {
