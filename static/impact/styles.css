@@ -182,6 +182,70 @@ button { cursor: pointer; }
 }
 
 .filters { margin-bottom: 14px; }
+
+/* Level-1: Enterprise | Non-Enterprise */
+.data-class-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  margin-bottom: 10px;
+  border: 1px solid rgba(91, 140, 255, 0.28);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(15, 20, 30, 0.35);
+}
+.data-class-tab {
+  flex: 1 1 50%;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  padding: 10px 14px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.data-class-tab + .data-class-tab {
+  border-left: 1px solid rgba(91, 140, 255, 0.22);
+}
+.data-class-tab:hover { color: var(--text); background: rgba(91, 140, 255, 0.08); }
+.data-class-tab.active {
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(91, 140, 255, 0.28), rgba(91, 140, 255, 0.12));
+  box-shadow: inset 0 -2px 0 #5b8cff;
+}
+
+/* Level-2: EDW | Fabric (Enterprise only) */
+.enterprise-kind-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(91, 140, 255, 0.06);
+  border: 1px solid rgba(91, 140, 255, 0.16);
+}
+.enterprise-kind-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.enterprise-kind-tab:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+.enterprise-kind-tab.active {
+  color: var(--text);
+  background: rgba(91, 140, 255, 0.2);
+  border-color: rgba(91, 140, 255, 0.35);
+}
+
 .filter-row {
   display: grid;
   grid-template-columns: 2fr 1fr 0.7fr 1fr;
@@ -743,6 +807,35 @@ body:has(.app.embedded) {
   padding: 2px 7px;
 }
 .app.embedded .filters { margin-bottom: 8px; padding: 8px 10px; }
+.app.embedded .data-class-tabs {
+  border-color: #CBD5E0;
+  background: #EDF2F7;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+.app.embedded .data-class-tab {
+  color: #4A5568;
+  font-size: 13px;
+}
+.app.embedded .data-class-tab + .data-class-tab { border-left-color: #CBD5E0; }
+.app.embedded .data-class-tab:hover { background: #E2E8F0; color: #1A202C; }
+.app.embedded .data-class-tab.active {
+  background: #EBF8FF;
+  color: #2B6CB0;
+  box-shadow: inset 0 -2px 0 #3182CE;
+}
+.app.embedded .enterprise-kind-tabs {
+  background: #F7FAFC;
+  border-color: #E2E8F0;
+  margin-bottom: 8px;
+}
+.app.embedded .enterprise-kind-tab { color: #4A5568; }
+.app.embedded .enterprise-kind-tab:hover { background: #EDF2F7; color: #1A202C; }
+.app.embedded .enterprise-kind-tab.active {
+  background: #EBF8FF;
+  color: #2B6CB0;
+  border-color: #BEE3F8;
+}
 .app.embedded .filters-one-line .filter-row.one-line {
   display: flex;
   flex-wrap: nowrap;
@@ -996,6 +1089,35 @@ html[data-theme="dark"] .app.embedded.no-sidebar .main {
 html[data-theme="dark"] .app.embedded .section-tabs {
   background: #1A2332 !important;
   border-color: #2D3A4D !important;
+}
+html[data-theme="dark"] .app.embedded .data-class-tabs {
+  background: #151C27 !important;
+  border-color: #2D3A4D !important;
+}
+html[data-theme="dark"] .app.embedded .data-class-tab { color: #94A3B8 !important; }
+html[data-theme="dark"] .app.embedded .data-class-tab + .data-class-tab { border-left-color: #2D3A4D !important; }
+html[data-theme="dark"] .app.embedded .data-class-tab:hover {
+  background: #1F2A3A !important;
+  color: #E2E8F0 !important;
+}
+html[data-theme="dark"] .app.embedded .data-class-tab.active {
+  background: #0c2a43 !important;
+  color: #90CDF4 !important;
+  box-shadow: inset 0 -2px 0 #3182CE !important;
+}
+html[data-theme="dark"] .app.embedded .enterprise-kind-tabs {
+  background: #151C27 !important;
+  border-color: #2D3A4D !important;
+}
+html[data-theme="dark"] .app.embedded .enterprise-kind-tab { color: #94A3B8 !important; }
+html[data-theme="dark"] .app.embedded .enterprise-kind-tab:hover {
+  background: #1F2A3A !important;
+  color: #E2E8F0 !important;
+}
+html[data-theme="dark"] .app.embedded .enterprise-kind-tab.active {
+  background: #0c2a43 !important;
+  color: #90CDF4 !important;
+  border-color: #2B6CB0 !important;
 }
 html[data-theme="dark"] .app.embedded .section-tab { color: #94A3B8; }
 html[data-theme="dark"] .app.embedded .section-tab:hover {

@@ -180,13 +180,47 @@ function ensureRowClass(row) {
   return row;
 }
 
+/** Level-1 / level-2 filter tabs (Table impact). Default: Enterprise → EDW */
+function getDataClassFilter() {
+  const btn = document.querySelector(".data-class-tab.active");
+  return (btn && btn.getAttribute("data-data-class")) || "enterprise";
+}
+
+function getEnterpriseKindFilter() {
+  if (getDataClassFilter() !== "enterprise") return "";
+  const btn = document.querySelector(".enterprise-kind-tab.active");
+  return (btn && btn.getAttribute("data-enterprise-kind")) || "edw";
+}
+
+function setDataClassTab(value) {
+  const v = value === "non_enterprise" ? "non_enterprise" : "enterprise";
+  document.querySelectorAll(".data-class-tab").forEach((b) => {
+    const on = b.getAttribute("data-data-class") === v;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  syncEnterpriseKindVisibility();
+}
+
+function setEnterpriseKindTab(value) {
+  const v = value === "fabric" ? "fabric" : "edw";
+  document.querySelectorAll(".enterprise-kind-tab").forEach((b) => {
+    const on = b.getAttribute("data-enterprise-kind") === v;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+}
+
 function syncEnterpriseKindVisibility() {
-  const wrap = $("#enterpriseKindWrap");
-  const dc = $("#dataClassFilter")?.value || "";
-  if (!wrap) return;
-  const show = dc === "enterprise";
-  wrap.hidden = !show;
-  if (!show && $("#enterpriseKindFilter")) $("#enterpriseKindFilter").value = "";
+  const bar = $("#enterpriseKindTabs");
+  if (!bar) return;
+  const show = getDataClassFilter() === "enterprise";
+  bar.hidden = !show;
+  bar.style.display = show ? "" : "none";
+  // When switching to Enterprise, ensure a kind is selected (default EDW)
+  if (show && !document.querySelector(".enterprise-kind-tab.active")) {
+    setEnterpriseKindTab("edw");
+  }
 }
 
 /** Human label for a physical/source object (EDW table, SSAS, etc.) */
@@ -523,8 +557,8 @@ function applyFilters() {
   const src = $("#sourceFilter")?.value || "";
   const minR = Number($("#minReports")?.value || 0);
   const res = $("#resolutionFilter")?.value || "";
-  const dataClass = $("#dataClassFilter")?.value || "";
-  const entKind = $("#enterpriseKindFilter")?.value || "";
+  const dataClass = getDataClassFilter(); // enterprise | non_enterprise
+  const entKind = getEnterpriseKindFilter(); // edw | fabric | "" when non-enterprise
   syncEnterpriseKindVisibility();
 
   state.filtered = state.rows.filter((r) => {
@@ -534,9 +568,16 @@ function applyFilters() {
     if (r.reportCount < minR) return false;
     if (res === "physical" && !isPhysical(r)) return false;
     if (res === "model" && isPhysical(r)) return false;
-    if (dataClass === "enterprise" && r._dataClass !== "enterprise") return false;
-    if (dataClass === "non_enterprise" && r._dataClass !== "non_enterprise") return false;
-    if (dataClass === "enterprise" && entKind && r._enterpriseKind !== entKind) return false;
+
+    // Level 1 tabs — always one of Enterprise / Non-Enterprise (no "All")
+    if (dataClass === "enterprise") {
+      if (r._dataClass !== "enterprise") return false;
+      // Level 2: EDW or Fabric only
+      if (entKind && r._enterpriseKind !== entKind) return false;
+    } else {
+      // Non-Enterprise = everything that is not EDW/Fabric enterprise
+      if (r._dataClass !== "non_enterprise") return false;
+    }
     return true;
   });
 
@@ -2021,23 +2062,39 @@ function wire() {
   }
 
   document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
-  ["searchInput", "sourceFilter", "minReports", "resolutionFilter", "dataClassFilter", "enterpriseKindFilter"].forEach((id) => {
+  ["searchInput", "sourceFilter", "minReports", "resolutionFilter"].forEach((id) => {
     const el = $(`#${id}`);
     if (!el) return;
     el.addEventListener("input", applyFilters);
     el.addEventListener("change", applyFilters);
   });
-  $("#dataClassFilter")?.addEventListener("change", () => {
-    syncEnterpriseKindVisibility();
-    applyFilters();
+
+  // Level-1 / level-2 data class tabs
+  document.querySelectorAll(".data-class-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setDataClassTab(btn.getAttribute("data-data-class") || "enterprise");
+      if (getDataClassFilter() === "enterprise") setEnterpriseKindTab(getEnterpriseKindFilter() || "edw");
+      applyFilters();
+    });
   });
+  document.querySelectorAll(".enterprise-kind-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setEnterpriseKindTab(btn.getAttribute("data-enterprise-kind") || "edw");
+      applyFilters();
+    });
+  });
+  // Defaults on first paint
+  setDataClassTab("enterprise");
+  setEnterpriseKindTab("edw");
+  syncEnterpriseKindVisibility();
+
   $("#clearFilters")?.addEventListener("click", () => {
     if ($("#searchInput")) $("#searchInput").value = "";
     if ($("#sourceFilter")) $("#sourceFilter").value = "";
     if ($("#minReports")) $("#minReports").value = "1";
     if ($("#resolutionFilter")) $("#resolutionFilter").value = "";
-    if ($("#dataClassFilter")) $("#dataClassFilter").value = "";
-    if ($("#enterpriseKindFilter")) $("#enterpriseKindFilter").value = "";
+    setDataClassTab("enterprise");
+    setEnterpriseKindTab("edw");
     syncEnterpriseKindVisibility();
     applyFilters();
   });

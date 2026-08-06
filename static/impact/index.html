@@ -71,26 +71,20 @@
         <!-- TABLES -->
         <section id="view-tables" class="view">
           <div class="filters card filters-one-line">
+            <!-- Level 1: Enterprise vs Non-Enterprise only -->
+            <div class="data-class-tabs" role="tablist" aria-label="Data class">
+              <button type="button" class="data-class-tab active" role="tab" data-data-class="enterprise" aria-selected="true">Enterprise Data</button>
+              <button type="button" class="data-class-tab" role="tab" data-data-class="non_enterprise" aria-selected="false">Non-Enterprise Data</button>
+            </div>
+            <!-- Level 2: only when Enterprise is selected -->
+            <div class="enterprise-kind-tabs" id="enterpriseKindTabs" role="tablist" aria-label="Enterprise source">
+              <button type="button" class="enterprise-kind-tab active" role="tab" data-enterprise-kind="edw" aria-selected="true">EDW</button>
+              <button type="button" class="enterprise-kind-tab" role="tab" data-enterprise-kind="fabric" aria-selected="false">Fabric</button>
+            </div>
             <div class="filter-row one-line">
               <label class="field grow">
                 <span class="sr-only">Search</span>
                 <input id="searchInput" type="search" placeholder="Search table / server / database…" />
-              </label>
-              <label class="field field-sm">
-                <span class="sr-only">Data class</span>
-                <select id="dataClassFilter" title="Enterprise vs Non-Enterprise">
-                  <option value="">Data: All</option>
-                  <option value="enterprise">Enterprise data</option>
-                  <option value="non_enterprise">Non-Enterprise data</option>
-                </select>
-              </label>
-              <label class="field field-sm" id="enterpriseKindWrap" hidden>
-                <span class="sr-only">Enterprise kind</span>
-                <select id="enterpriseKindFilter" title="EDW or Fabric">
-                  <option value="">Enterprise: All</option>
-                  <option value="edw">EDW</option>
-                  <option value="fabric">Fabric</option>
-                </select>
               </label>
               <label class="field field-sm">
                 <span class="sr-only">Source type</span>
