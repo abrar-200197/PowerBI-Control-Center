@@ -63,120 +63,143 @@ function isPhysical(row) {
 }
 
 /**
- * Enterprise vs Non-Enterprise classification for Table impact filters.
+ * Enterprise vs Non-Enterprise for Table impact.
  *
- * Enterprise
- *   EDW    — Sql / SqlNative / Snowflake / classic warehouse hosts (EDW naming)
- *   Fabric — Microsoft Fabric / OneLake / lakehouse / warehouse endpoints
- * Non-Enterprise — SharePoint, Excel, Web, Analysis Services, OData, files, model-only, …
+ * Your definition:
+ *   Enterprise = data you QUERY from a warehouse platform (schema.table / view).
+ *     - EDW    = classic enterprise data warehouse (SQL Server/EDW hosts, Snowflake, …)
+ *     - Fabric = Microsoft Fabric Warehouse / Lakehouse SQL endpoint / OneLake SQL path
+ *   Non-Enterprise = files & apps you do not query as a warehouse
+ *     (Excel, SharePoint, Web, Expression/model-only, Analysis Services, local file, …)
+ *
+ * IMPORTANT: Do NOT use free-text searchText / model aliases to decide Fabric.
+ * A bare substring "fabric" in a table name caused Excel/Expression to be mis-tagged.
+ * Fabric is decided only from connection host (server) + connector type.
  */
 function classifyEnterprise(row) {
   const st = String(row?.sourceType || "").toLowerCase().trim();
-  const blob = [
-    st,
-    row?.server,
-    row?.database,
-    row?.schema,
-    row?.table,
-    row?.tableKey,
-    row?.searchText,
-  ]
-    .map((x) => String(x || "").toLowerCase())
-    .join(" | ");
+  const server = String(row?.server || "").toLowerCase().trim();
+  const database = String(row?.database || "").toLowerCase().trim();
+  const tableKey = String(row?.tableKey || "").toLowerCase().trim();
+  // Connection surface only (not report/model alias soup)
+  const conn = `${st} | ${server} | ${database} | ${tableKey}`;
 
-  const has = (hints) => hints.some((h) => blob.includes(h) || st.includes(h));
-
-  // 1) Fabric first (host/type can also look "sql-ish")
+  // --- Never enterprise: not queried warehouse platforms ---
+  const nonEntTypes = [
+    "excel",
+    "sharepoint",
+    "folder",
+    "file",
+    "csv",
+    "pdf",
+    "json",
+    "xml",
+    "web",
+    "odata",
+    "exchange",
+    "azureblob",
+    "azureblobs",
+    "expression", // calculated / M with no external warehouse
+    "modeltable",
+    "unknown",
+  ];
+  if (!st || nonEntTypes.some((t) => st === t || st.includes(t))) {
+    return { dataClass: "non_enterprise", enterpriseKind: "" };
+  }
+  // Local file / internal model markers on server
   if (
-    has([
-      "fabric",
-      "onelake",
-      "lakehouse",
-      "dfs.fabric.microsoft.com",
-      "fabric.microsoft.com",
-      "msit-onelake",
-      "datawarehouse.fabric",
-      "warehouse.fabric",
-    ]) ||
-    st.includes("fabric") ||
-    st.includes("lakehouse")
+    !server ||
+    server === "—" ||
+    server === "-" ||
+    server.includes("local file") ||
+    server.includes("internal model") ||
+    server.includes("localhost")
   ) {
+    // Allow exception: pure type still could be Sql with empty server → not fabric/edw
+    if (!(st === "sql" || st === "sqlnative" || st.includes("sql"))) {
+      return { dataClass: "non_enterprise", enterpriseKind: "" };
+    }
+    if (!server || server.includes("local") || server.includes("internal")) {
+      return { dataClass: "non_enterprise", enterpriseKind: "" };
+    }
+  }
+  // Analysis Services / live Power BI XMLA — not EDW/Fabric warehouse query
+  if (
+    st.includes("analysis") ||
+    server.includes("asazure") ||
+    server.includes("powerbi://") ||
+    server.includes("pbiazure") ||
+    server.includes("analysis.windows.net")
+  ) {
+    return { dataClass: "non_enterprise", enterpriseKind: "" };
+  }
+
+  // --- Fabric: only real Fabric SQL / OneLake warehouse endpoints ---
+  // Docs: connection host looks like
+  //   <id>.datawarehouse.fabric.microsoft.com
+  //   *.zcf.datawarehouse.fabric.microsoft.com
+  // Power BI often surfaces these as sourceType Sql + that server.
+  const fabricHost =
+    server.includes("datawarehouse.fabric.microsoft.com") ||
+    server.includes("onelake.dfs.fabric.microsoft.com") ||
+    server.includes("dfs.fabric.microsoft.com") ||
+    server.includes("msit-onelake") ||
+    (server.includes("fabric.microsoft.com") &&
+      (server.includes("datawarehouse") ||
+        server.includes("lakehouse") ||
+        server.includes("onelake") ||
+        server.includes("warehouse")));
+
+  const fabricType =
+    st.includes("fabric") ||
+    st.includes("lakehouse") ||
+    st.includes("onelake");
+
+  if (fabricHost || (fabricType && (st === "sql" || st.includes("sql") || st.includes("warehouse")))) {
+    // Still reject if connector is clearly a file (should not happen)
+    if (st.includes("excel") || st.includes("sharepoint") || st.includes("expression")) {
+      return { dataClass: "non_enterprise", enterpriseKind: "" };
+    }
     return { dataClass: "enterprise", enterpriseKind: "fabric" };
   }
 
-  // 2) Clear non-enterprise connectors
-  if (
-    has([
-      "sharepoint",
-      "excel",
-      "odata",
-      "folder",
-      "web.contents",
-      "web content",
-      "csv",
-      "pdf",
-      "azureblobs",
-      "azureblob",
-      "exchange",
-    ]) ||
-    st === "web" ||
-    st.includes("sharepoint") ||
-    st.includes("excel") ||
-    st.includes("odata") ||
-    st.includes("folder") ||
-    st.includes("file")
-  ) {
-    return { dataClass: "non_enterprise", enterpriseKind: "" };
-  }
-
-  // Analysis Services / AAS / XMLA live → non-enterprise for this split
-  if (
-    st.includes("analysis") ||
-    has(["analysis services", "asazure", "powerbi://", "pbiazure", "xmla"])
-  ) {
-    return { dataClass: "non_enterprise", enterpriseKind: "" };
-  }
-
-  // Model-only / unknown physical mapping
-  if (!st || st === "modeltable" || st === "unknown") {
-    return { dataClass: "non_enterprise", enterpriseKind: "" };
-  }
-
-  // 3) EDW / enterprise SQL platforms
-  const sqlish =
+  // --- EDW: queryable SQL warehouses that are NOT Fabric hosts ---
+  const querySql =
     st === "sql" ||
     st === "sqlnative" ||
-    st.includes("sql") ||
-    st.includes("snow") ||
+    (st.includes("sql") && !st.includes("mysql")); // mysql handled below as sqlish platform
+
+  const platformSql =
     st.includes("snowflake") ||
+    st.includes("snow") ||
     st.includes("databricks") ||
     st.includes("oracle") ||
     st.includes("teradata") ||
     st.includes("postgres") ||
     st.includes("mysql");
 
-  const edwNamed = has([
-    "edw",
-    "ashley-edw",
-    "ashley_edw",
-    "ashleyedw",
-    ".database.windows.net",
-    "sql.azuresynapse",
-    "synapse",
-  ]);
+  // Must look like a real remote endpoint to query (host present)
+  const hasRemoteHost =
+    server.length > 2 &&
+    !server.includes("local file") &&
+    !server.includes("internal model") &&
+    server !== "—" &&
+    server !== "-";
 
-  if (sqlish || edwNamed) {
+  if ((querySql || platformSql) && hasRemoteHost) {
     return { dataClass: "enterprise", enterpriseKind: "edw" };
   }
 
+  // Sql type but no usable server → cannot treat as EDW/Fabric
   return { dataClass: "non_enterprise", enterpriseKind: "" };
 }
 
-function ensureRowClass(row) {
-  if (row && row._dataClass) return row;
+function ensureRowClass(row, force) {
+  if (!force && row && row._classVersion === 2 && row._dataClass) return row;
   const c = classifyEnterprise(row || {});
   row._dataClass = c.dataClass;
   row._enterpriseKind = c.enterpriseKind;
+  row._classVersion = 2; // bump when rules change so cache does not stick wrong tags
   return row;
 }
 
