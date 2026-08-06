@@ -739,6 +739,8 @@
     let currentFolderId = null;
     let folders = [];
     let allWorkspaces = []; // Store all workspaces for filtering
+    // Central Analytics only — server also enforces on POST /api/reports/archive-to-sharepoint
+    let canArchiveReports = {{ 'true' if can_archive_reports else 'false' }};
     let statusFilter = null; // Filter for active/inactive reports
     let selectedReportId = null; // report dropdown filter
     // Deep-link from Home KPI tabs: /documentation?workspace=…&report=…
@@ -2513,6 +2515,12 @@
                                 <button class="btn btn-sm btn-warning" onclick="runCrashTest('${report.id}', '${safeName}', '${report.datasetId}', 'enhanced')" title="Deep analysis with visual detection">
                                     Crash test
                                 </button>
+                                ${canArchiveReports ? `
+                                <button class="btn btn-sm btn-primary archive-btn" data-report-id="${report.id}"
+                                    onclick="archiveReportToSharePoint('${report.id}', '${safeName}')"
+                                    title="Export PBIX/RDL and save under SharePoint Report Decommission Activity (latest batch)">
+                                    Download
+                                </button>` : ''}
                             ` : '<span style="color: #999;">No dataset</span>'}
                         </div>
                     </td>
@@ -2890,17 +2898,109 @@
         const safeName = reportName.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/ /g, '_');
 
         // Find the report to get dataset ID
-        const report = reports.find(r => r.id === reportId);
+        const report = reports.find(r => r.id === reportId)
+            || (allWorkspaceReports || []).find(r => r.id === reportId);
         const datasetId = report ? report.datasetId : '';
 
         buttonContainer.innerHTML = `
             <button class="btn btn-sm btn-success" onclick="generateAndDownloadReport('${reportId}', '${safeName}')">
-                📄 Generate
+                Generate
             </button>
             <button class="btn btn-sm btn-warning" onclick="runCrashTest('${reportId}', '${safeName}', '${datasetId}', 'enhanced')" title="Deep analysis with visual detection - detects broken visuals">
-                🔍 Crash Test
+                Crash test
             </button>
+            ${canArchiveReports ? `
+            <button class="btn btn-sm btn-primary archive-btn" data-report-id="${reportId}"
+                onclick="archiveReportToSharePoint('${reportId}', '${safeName}')"
+                title="Export PBIX/RDL to SharePoint Report Decommission Activity">
+                Download
+            </button>` : ''}
         `;
+    }
+
+    /**
+     * Export report (.pbix/.rdl) via Power BI API and upload to SharePoint:
+     *   Report Decommission Activity / <latest batch folder> / Workspace / [PBI folder] / file
+     * Only available when canArchiveReports is true (Central Analytics).
+     */
+    async function archiveReportToSharePoint(reportId, safeNameHint) {
+        if (!canArchiveReports) {
+            showAlert('error', 'You are not authorized to archive reports.');
+            return;
+        }
+        if (!currentWorkspaceId || !reportId) {
+            showAlert('warning', 'Select a workspace and report first.');
+            return;
+        }
+
+        const report = (allWorkspaceReports || reports || []).find(r => r.id === reportId)
+            || reports.find(r => r.id === reportId);
+        if (!report) {
+            showAlert('error', 'Report not found in current list.');
+            return;
+        }
+
+        const reportName = report.name || safeNameHint || 'Report';
+        const folderId = resolveReportFolderId(report);
+        let folderName = report.folderName || null;
+        if (folderId && folders && folders.length) {
+            const f = folders.find(x => x && x.id === folderId);
+            if (f && f.name) folderName = f.name;
+        }
+        // Don't send virtual root label as a folder
+        if (folderId === '__ROOT__' || !folderId) {
+            folderName = null;
+        }
+
+        const wsOpt = document.querySelector(`#workspaceSelect option[value="${currentWorkspaceId}"]`);
+        const workspaceName = (wsOpt && wsOpt.textContent)
+            ? wsOpt.textContent.trim()
+            : (currentWorkspaceId || 'Workspace');
+
+        const btn = document.querySelector(`.archive-btn[data-report-id="${reportId}"]`);
+        const prevHtml = btn ? btn.innerHTML : '';
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = 'Saving…';
+        }
+
+        showAlert('info', `Archiving "${reportName}" to SharePoint decommission folder…`);
+
+        try {
+            const res = await fetch('/api/reports/archive-to-sharepoint', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    workspace_id: currentWorkspaceId,
+                    workspace_name: workspaceName,
+                    report_id: reportId,
+                    report_name: reportName,
+                    folder_id: folderId || null,
+                    folder_name: folderName || null,
+                }),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok || !body.success) {
+                const err = body.error || `HTTP ${res.status}`;
+                showAlert('error', `Archive failed: ${err}`);
+                console.warn('archive-to-sharepoint', body);
+                return;
+            }
+            const pathHint = body.remotePath || body.batchPath || 'SharePoint';
+            showAlert(
+                'success',
+                `Archived "${reportName}" to batch "${body.batchFolder || 'latest'}": ${pathHint}`
+            );
+            console.log('📦 Archive OK', body);
+        } catch (e) {
+            showAlert('error', 'Archive failed: ' + (e.message || e));
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = prevHtml || 'Download';
+            }
+        }
     }
 
     function updateProgressUI(container, progress, status) {

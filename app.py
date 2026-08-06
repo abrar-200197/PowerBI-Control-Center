@@ -739,7 +739,14 @@ def index():
 @login_required
 def documentation():
     """Documentation page - Report documentation generation"""
-    return render_template('index.html')
+    can_archive = False
+    try:
+        from features.report_archive_service import user_can_archive
+        email = session.get('user', {}).get('preferred_username') or ''
+        can_archive = user_can_archive(email)
+    except Exception:
+        can_archive = False
+    return render_template('index.html', can_archive_reports=can_archive)
 
 
 @app.route('/semantic-models')
@@ -9167,6 +9174,120 @@ def get_workspace_summary(workspace_id):
             'total_reports': 0,
             'inactive_reports': 'N/A'
         }), 500
+
+
+@app.route('/api/me/capabilities')
+@login_required
+def api_me_capabilities():
+    """UI feature flags for the signed-in user (e.g. archive download button)."""
+    try:
+        from features.report_archive_service import user_can_archive
+        email = session.get('user', {}).get('preferred_username') or ''
+        return jsonify({
+            'success': True,
+            'canArchiveReports': user_can_archive(email),
+            'email': email,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'canArchiveReports': False, 'error': str(e)}), 500
+
+
+@app.route('/api/reports/archive-to-sharepoint', methods=['POST'])
+@login_required
+def api_archive_report_to_sharepoint():
+    """
+    Export a Power BI report (.pbix/.rdl) and upload to SharePoint
+    Report Decommission Activity / <latest dated folder> / Workspace / [Folder] /.
+
+    Restricted to Central Analytics team UPNs (see report_archive_service).
+    Does not alter catalog fast-path, crash test, or generate flows.
+    """
+    try:
+        from features.report_archive_service import (
+            archive_report_to_sharepoint,
+            user_can_archive,
+        )
+
+        email = session.get('user', {}).get('preferred_username') or ''
+        if not user_can_archive(email):
+            return jsonify({
+                'success': False,
+                'error': 'Not authorized to archive reports to SharePoint.',
+            }), 403
+
+        data = request.get_json(silent=True) or {}
+        workspace_id = (data.get('workspace_id') or request.args.get('workspace_id') or '').strip()
+        report_id = (data.get('report_id') or request.args.get('report_id') or '').strip()
+        report_name = (data.get('report_name') or data.get('name') or 'Report').strip()
+        workspace_name = (data.get('workspace_name') or data.get('workspaceName') or '').strip()
+        folder_name = (data.get('folder_name') or data.get('folderName') or '').strip() or None
+        folder_id = (data.get('folder_id') or data.get('folderId') or '').strip() or None
+
+        if not workspace_id or not report_id:
+            return jsonify({
+                'success': False,
+                'error': 'workspace_id and report_id are required',
+            }), 400
+
+        # Resolve workspace display name if missing
+        if not workspace_name:
+            try:
+                if CATALOG_AVAILABLE and catalog_service is not None:
+                    allowed = _user_allowed_workspace_ids()
+                    pack = catalog_service.get_workspace_reports(
+                        workspace_id, allowed_workspace_ids=allowed
+                    )
+                    if pack:
+                        workspace_name = (
+                            (pack.get('workspace') or {}).get('name')
+                            or pack.get('workspace_name')
+                            or ''
+                        )
+            except Exception:
+                pass
+        if not workspace_name:
+            workspace_name = workspace_id[:8]
+
+        # Prefer user delegated token (same access as UI); fall back service principal
+        token = None
+        try:
+            token = get_user_powerbi_token()
+        except Exception:
+            token = None
+        if not token:
+            try:
+                from scanner_connector import PowerBIScanner
+                sc = PowerBIScanner()
+                token = sc.get_access_token()
+            except Exception as ex:
+                return jsonify({
+                    'success': False,
+                    'error': f'Unable to obtain Power BI token: {ex}',
+                }), 401
+
+        print(f"\n📦 ARCHIVE TO SHAREPOINT")
+        print(f"   User: {email}")
+        print(f"   Workspace: {workspace_name} ({workspace_id[:8]}…)")
+        print(f"   Report: {report_name} ({report_id[:8]}…)")
+        print(f"   PBI folder: {folder_name or '(root)'}")
+
+        result = archive_report_to_sharepoint(
+            access_token=token,
+            workspace_id=workspace_id,
+            workspace_name=workspace_name,
+            report_id=report_id,
+            report_name=report_name,
+            folder_name=folder_name,
+            folder_id=folder_id,
+        )
+        status = 200 if result.get('success') else 400
+        if result.get('status_code') == 403:
+            status = 403
+        return jsonify(result), status
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/reports/crash-test/<report_id>', methods=['GET', 'POST'])

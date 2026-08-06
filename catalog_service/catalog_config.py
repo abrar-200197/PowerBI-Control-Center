@@ -84,6 +84,18 @@ SHAREPOINT_PUBLISH_FILES = [
     "ui_report_directory.json",
 ]
 
+# Report Catalog → Archive PBIX/RDL to SharePoint (decommission activity)
+# Same site/drive as catalog metadata; different folder tree under Backup - Reports & Archives.
+# Path pattern:
+#   {SHAREPOINT_DECOMM_BASE}/<latest dated child>/
+#     <WorkspaceName>/[<PBI Folder>/]<ReportName>.pbix|.rdl
+_DEFAULT_DECOMM_BASE = (
+    "BA - Retail Offshore GCC Team/Backup - Reports & Archives/Report Decommission Activity"
+)
+SHAREPOINT_DECOMM_FOLDER_PATH = (
+    os.getenv("SHAREPOINT_DECOMM_FOLDER_PATH") or _DEFAULT_DECOMM_BASE
+).strip().strip("/")
+
 # Ops snapshot tuning (batch job)
 USAGE_LOOKBACK_DAYS = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))
 OPS_REFRESH_WORKERS = int(os.getenv("OPS_REFRESH_WORKERS", "8"))
