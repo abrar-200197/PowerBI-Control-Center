@@ -180,47 +180,53 @@ function ensureRowClass(row) {
   return row;
 }
 
-/** Level-1 / level-2 filter tabs (Table impact). Default: Enterprise → EDW */
+/** Source dropdown: Enterprise Data | Non-Enterprise Data */
 function getDataClassFilter() {
-  const btn = document.querySelector(".data-class-tab.active");
-  return (btn && btn.getAttribute("data-data-class")) || "enterprise";
+  const v = $("#dataClassFilter")?.value || "enterprise";
+  return v === "non_enterprise" ? "non_enterprise" : "enterprise";
 }
 
-function getEnterpriseKindFilter() {
-  if (getDataClassFilter() !== "enterprise") return "";
-  const btn = document.querySelector(".enterprise-kind-tab.active");
-  return (btn && btn.getAttribute("data-enterprise-kind")) || "edw";
+/**
+ * Sub source dropdown:
+ *  - Enterprise → "" | edw | fabric
+ *  - Non-Enterprise → "" | SharePoint | Excel | Web | … (from data)
+ */
+function getSubSourceFilter() {
+  return ($("#subSourceFilter")?.value || "").trim();
 }
 
-function setDataClassTab(value) {
-  const v = value === "non_enterprise" ? "non_enterprise" : "enterprise";
-  document.querySelectorAll(".data-class-tab").forEach((b) => {
-    const on = b.getAttribute("data-data-class") === v;
-    b.classList.toggle("active", on);
-    b.setAttribute("aria-selected", on ? "true" : "false");
-  });
-  syncEnterpriseKindVisibility();
-}
+function populateSubSourceFilter() {
+  const sel = $("#subSourceFilter");
+  if (!sel) return;
+  const prev = sel.value;
+  const dataClass = getDataClassFilter();
 
-function setEnterpriseKindTab(value) {
-  const v = value === "fabric" ? "fabric" : "edw";
-  document.querySelectorAll(".enterprise-kind-tab").forEach((b) => {
-    const on = b.getAttribute("data-enterprise-kind") === v;
-    b.classList.toggle("active", on);
-    b.setAttribute("aria-selected", on ? "true" : "false");
-  });
-}
-
-function syncEnterpriseKindVisibility() {
-  const bar = $("#enterpriseKindTabs");
-  if (!bar) return;
-  const show = getDataClassFilter() === "enterprise";
-  bar.hidden = !show;
-  bar.style.display = show ? "" : "none";
-  // When switching to Enterprise, ensure a kind is selected (default EDW)
-  if (show && !document.querySelector(".enterprise-kind-tab.active")) {
-    setEnterpriseKindTab("edw");
+  if (dataClass === "enterprise") {
+    sel.innerHTML = [
+      `<option value="">Sub source: All</option>`,
+      `<option value="edw">EDW</option>`,
+      `<option value="fabric">Fabric</option>`,
+    ].join("");
+    // Keep prev if still valid; default All
+    if (prev === "edw" || prev === "fabric") sel.value = prev;
+    else sel.value = "";
+    return;
   }
+
+  // Non-Enterprise: distinct connector sourceTypes from that class
+  const set = new Set();
+  for (const r of state.rows || []) {
+    ensureRowClass(r);
+    if (r._dataClass !== "non_enterprise") continue;
+    const st = (r.sourceType || "").trim();
+    if (st) set.add(st);
+  }
+  const types = [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  sel.innerHTML =
+    `<option value="">Sub source: All</option>` +
+    types.map((s) => `<option value="${escapeAttr(s)}">${escapeHtml(s)}</option>`).join("");
+  if (prev && types.includes(prev)) sel.value = prev;
+  else sel.value = "";
 }
 
 /** Human label for a physical/source object (EDW table, SSAS, etc.) */
@@ -503,7 +509,7 @@ async function loadData(forceRefresh = false) {
         (gen ? ` · ${new Date(gen).toLocaleString()}` : "");
     }
 
-    populateSourceFilter();
+    populateSubSourceFilter();
     applyFilters();
     try { renderDashboard(); } catch (_) { /* optional */ }
     try { renderInsights(); } catch (_) { /* optional */ }
@@ -541,42 +547,31 @@ async function loadData(forceRefresh = false) {
   }
 }
 
-function populateSourceFilter() {
-  const set = new Set(state.rows.map((r) => r.sourceType).filter(Boolean));
-  const sel = $("#sourceFilter");
-  if (!sel) return;
-  const cur = sel.value;
-  sel.innerHTML =
-    `<option value="">Source: All</option>` +
-    [...set].sort().map((s) => `<option value="${escapeAttr(s)}">${escapeHtml(s)}</option>`).join("");
-  sel.value = cur;
-}
+/* sourceFilter removed — use dataClassFilter + subSourceFilter */
 
 function applyFilters() {
   const q = ($("#searchInput")?.value || "").trim().toLowerCase();
-  const src = $("#sourceFilter")?.value || "";
   const minR = Number($("#minReports")?.value || 0);
   const res = $("#resolutionFilter")?.value || "";
   const dataClass = getDataClassFilter(); // enterprise | non_enterprise
-  const entKind = getEnterpriseKindFilter(); // edw | fabric | "" when non-enterprise
-  syncEnterpriseKindVisibility();
+  const sub = getSubSourceFilter(); // edw|fabric OR connector type OR ""
 
   state.filtered = state.rows.filter((r) => {
     ensureRowClass(r);
     if (q && !(r.searchText || "").includes(q)) return false;
-    if (src && r.sourceType !== src) return false;
     if (r.reportCount < minR) return false;
     if (res === "physical" && !isPhysical(r)) return false;
     if (res === "model" && isPhysical(r)) return false;
 
-    // Level 1 tabs — always one of Enterprise / Non-Enterprise (no "All")
     if (dataClass === "enterprise") {
       if (r._dataClass !== "enterprise") return false;
-      // Level 2: EDW or Fabric only
-      if (entKind && r._enterpriseKind !== entKind) return false;
+      // Sub source: All | EDW | Fabric
+      if (sub === "edw" && r._enterpriseKind !== "edw") return false;
+      if (sub === "fabric" && r._enterpriseKind !== "fabric") return false;
     } else {
-      // Non-Enterprise = everything that is not EDW/Fabric enterprise
+      // Non-Enterprise = not EDW/Fabric; sub source is connector type (SharePoint, Excel, …)
       if (r._dataClass !== "non_enterprise") return false;
+      if (sub && String(r.sourceType || "") !== sub) return false;
     }
     return true;
   });
@@ -2062,40 +2057,30 @@ function wire() {
   }
 
   document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
-  ["searchInput", "sourceFilter", "minReports", "resolutionFilter"].forEach((id) => {
+  ["searchInput", "minReports", "resolutionFilter", "dataClassFilter", "subSourceFilter"].forEach((id) => {
     const el = $(`#${id}`);
     if (!el) return;
     el.addEventListener("input", applyFilters);
     el.addEventListener("change", applyFilters);
   });
 
-  // Level-1 / level-2 data class tabs
-  document.querySelectorAll(".data-class-tab").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      setDataClassTab(btn.getAttribute("data-data-class") || "enterprise");
-      if (getDataClassFilter() === "enterprise") setEnterpriseKindTab(getEnterpriseKindFilter() || "edw");
-      applyFilters();
-    });
+  // When Source (Enterprise / Non-Enterprise) changes, rebuild Sub source options
+  $("#dataClassFilter")?.addEventListener("change", () => {
+    populateSubSourceFilter();
+    applyFilters();
   });
-  document.querySelectorAll(".enterprise-kind-tab").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      setEnterpriseKindTab(btn.getAttribute("data-enterprise-kind") || "edw");
-      applyFilters();
-    });
-  });
+
   // Defaults on first paint
-  setDataClassTab("enterprise");
-  setEnterpriseKindTab("edw");
-  syncEnterpriseKindVisibility();
+  if ($("#dataClassFilter")) $("#dataClassFilter").value = "enterprise";
+  populateSubSourceFilter();
 
   $("#clearFilters")?.addEventListener("click", () => {
     if ($("#searchInput")) $("#searchInput").value = "";
-    if ($("#sourceFilter")) $("#sourceFilter").value = "";
     if ($("#minReports")) $("#minReports").value = "1";
     if ($("#resolutionFilter")) $("#resolutionFilter").value = "";
-    setDataClassTab("enterprise");
-    setEnterpriseKindTab("edw");
-    syncEnterpriseKindVisibility();
+    if ($("#dataClassFilter")) $("#dataClassFilter").value = "enterprise";
+    populateSubSourceFilter();
+    if ($("#subSourceFilter")) $("#subSourceFilter").value = "";
     applyFilters();
   });
   $("#prevPage")?.addEventListener("click", () => { state.page--; renderTable(); });
