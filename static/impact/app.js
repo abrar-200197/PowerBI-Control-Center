@@ -2066,50 +2066,214 @@ function closeAllDrawers() {
 const LINEAGE_MAX_MODELS = 12;
 const LINEAGE_MAX_REPORTS = 24;
 const LINEAGE_MAX_SOURCES = 16;
+const LINEAGE_SEARCH_LIMIT = 80;
 
-function populateLineagePick() {
+/** Build searchable option list for lineage combobox (table or report mode). */
+function getLineageOptions() {
   const mode = $("#lineageStartMode")?.value || "table";
-  const sel = $("#lineagePick");
-  if (!sel) return;
-  const prev = sel.value;
   if (mode === "report") {
-    const rows = (state.reportRows || []).slice().sort((a, b) =>
-      String(a.reportName || "").localeCompare(String(b.reportName || ""))
-    );
-    // Cap options for usability; user can still search via native select typeahead in some browsers
-    const slice = rows.slice(0, 800);
-    sel.innerHTML =
-      `<option value="">Select a report…</option>` +
-      slice
-        .map(
-          (r) =>
-            `<option value="${escapeAttr(r.reportId)}">${escapeHtml(
-              `${r.reportName || r.reportId} · ${r.workspaceName || ""}`
-            )}</option>`
-        )
-        .join("");
-  } else {
-    const rows = (state.rows || [])
-      .slice()
-      .sort((a, b) => (b.reportCount || 0) - (a.reportCount || 0));
-    const slice = rows.slice(0, 800);
-    sel.innerHTML =
-      `<option value="">Select a source table…</option>` +
-      slice
-        .map((r) => {
-          const label = [
-            r.table || r.tableKey,
-            r.sourceType ? `(${r.sourceType})` : "",
-            r.database || r.server || "",
-          ]
-            .filter(Boolean)
-            .join(" · ");
-          return `<option value="${escapeAttr(r.tableKey)}">${escapeHtml(label)}</option>`;
-        })
-        .join("");
+    return (state.reportRows || [])
+      .map((r) => {
+        const name = r.reportName || r.reportId || "";
+        const ws = r.workspaceName || "";
+        const label = ws ? `${name} · ${ws}` : name;
+        const search = `${name} ${ws} ${r.reportId || ""} ${r.workspaceId || ""}`.toLowerCase();
+        return { id: String(r.reportId || ""), label, search, sortKey: name.toLowerCase() };
+      })
+      .filter((o) => o.id)
+      .sort((a, b) => a.sortKey.localeCompare(b.sortKey));
   }
-  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
-  else sel.value = "";
+  return (state.rows || [])
+    .map((r) => {
+      const name = r.table || r.tableKey || "";
+      const bits = [
+        name,
+        r.sourceType ? `(${r.sourceType})` : "",
+        r.database || r.server || "",
+      ].filter(Boolean);
+      const label = bits.join(" · ");
+      const search = [
+        name,
+        r.tableKey,
+        r.sourceType,
+        r.server,
+        r.database,
+        r.schema,
+        ...(r.modelTableNames || []),
+        r.searchText || "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return {
+        id: String(r.tableKey || ""),
+        label,
+        search,
+        sortKey: name.toLowerCase(),
+        reportCount: r.reportCount || 0,
+      };
+    })
+    .filter((o) => o.id)
+    .sort((a, b) => b.reportCount - a.reportCount || a.sortKey.localeCompare(b.sortKey));
+}
+
+function lineageSearchPlaceholder() {
+  const mode = $("#lineageStartMode")?.value || "table";
+  return mode === "report"
+    ? "Type report name…"
+    : "Type table / server / database…";
+}
+
+function setLineagePick(id, label) {
+  const hidden = $("#lineagePick");
+  const input = $("#lineageSearch");
+  if (hidden) hidden.value = id || "";
+  if (input) {
+    if (label != null) input.value = label;
+    else if (!id) input.value = "";
+  }
+  hideLineageSearchResults();
+}
+
+function hideLineageSearchResults() {
+  const box = $("#lineageSearchResults");
+  const input = $("#lineageSearch");
+  if (box) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+  }
+  if (input) input.setAttribute("aria-expanded", "false");
+  state._lineageActiveIdx = -1;
+}
+
+function showLineageSearchResults(items, query) {
+  const box = $("#lineageSearchResults");
+  const input = $("#lineageSearch");
+  if (!box) return;
+  if (!items.length) {
+    box.innerHTML = `<div class="lineage-search-empty">No matches${query ? ` for “${escapeHtml(query)}”` : ""}</div>`;
+    box.classList.remove("hidden");
+    if (input) input.setAttribute("aria-expanded", "true");
+    return;
+  }
+  box.innerHTML = items
+    .map(
+      (o, i) =>
+        `<button type="button" class="lineage-search-item" role="option" data-idx="${i}" data-id="${escapeAttr(o.id)}" data-label="${escapeAttr(o.label)}">
+          <span class="lsi-label">${escapeHtml(o.label)}</span>
+        </button>`
+    )
+    .join("");
+  box.classList.remove("hidden");
+  if (input) input.setAttribute("aria-expanded", "true");
+  state._lineageResultItems = items;
+  state._lineageActiveIdx = -1;
+
+  box.querySelectorAll(".lineage-search-item").forEach((btn) => {
+    btn.addEventListener("mousedown", (e) => {
+      // mousedown before blur so selection sticks
+      e.preventDefault();
+      setLineagePick(btn.getAttribute("data-id"), btn.getAttribute("data-label"));
+    });
+  });
+}
+
+function filterLineageOptions(q) {
+  const all = state._lineageOptions || getLineageOptions();
+  state._lineageOptions = all;
+  const query = (q || "").trim().toLowerCase();
+  if (!query) {
+    // No query: show top items alphabetically / by impact so list isn't empty on focus
+    return all.slice(0, LINEAGE_SEARCH_LIMIT);
+  }
+  const words = query.split(/\s+/).filter(Boolean);
+  const scored = [];
+  for (const o of all) {
+    let ok = true;
+    for (const w of words) {
+      if (!o.search.includes(w)) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
+    // Prefer prefix matches on the display name
+    const prefix = o.sortKey.startsWith(words[0]) ? 0 : 1;
+    scored.push({ o, prefix });
+    if (scored.length >= 400) break; // safety
+  }
+  scored.sort((a, b) => a.prefix - b.prefix || a.o.sortKey.localeCompare(b.o.sortKey));
+  return scored.slice(0, LINEAGE_SEARCH_LIMIT).map((x) => x.o);
+}
+
+function onLineageSearchInput() {
+  const input = $("#lineageSearch");
+  if (!input) return;
+  // Typing invalidates previous selection until user picks again
+  const hidden = $("#lineagePick");
+  if (hidden && hidden.value) {
+    // Keep id only if label still matches selection
+    const cur = (state._lineageOptions || []).find((o) => o.id === hidden.value);
+    if (!cur || cur.label !== input.value) hidden.value = "";
+  }
+  const items = filterLineageOptions(input.value);
+  showLineageSearchResults(items, input.value);
+}
+
+function onLineageSearchKeydown(e) {
+  const box = $("#lineageSearchResults");
+  if (!box || box.classList.contains("hidden")) {
+    if (e.key === "ArrowDown") {
+      onLineageSearchInput();
+      e.preventDefault();
+    }
+    return;
+  }
+  const items = box.querySelectorAll(".lineage-search-item");
+  if (!items.length) return;
+  let idx = state._lineageActiveIdx ?? -1;
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    idx = Math.min(items.length - 1, idx + 1);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    idx = Math.max(0, idx - 1);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (idx >= 0 && items[idx]) {
+      items[idx].dispatchEvent(new Event("mousedown", { bubbles: true }));
+    } else if (items[0]) {
+      items[0].dispatchEvent(new Event("mousedown", { bubbles: true }));
+    }
+    return;
+  } else if (e.key === "Escape") {
+    hideLineageSearchResults();
+    return;
+  } else {
+    return;
+  }
+  state._lineageActiveIdx = idx;
+  items.forEach((el, i) => el.classList.toggle("is-active", i === idx));
+  items[idx]?.scrollIntoView({ block: "nearest" });
+}
+
+function resetLineageSearchUi() {
+  const mode = $("#lineageStartMode")?.value || "table";
+  const input = $("#lineageSearch");
+  if (input) {
+    input.value = "";
+    input.placeholder = lineageSearchPlaceholder();
+  }
+  setLineagePick("", null);
+  hideLineageSearchResults();
+  state._lineageOptions = null; // rebuild on next search
+  // Warm option cache for snappy first keystroke
+  state._lineageOptions = getLineageOptions();
+  if ($("#lineageMeta")) {
+    $("#lineageMeta").textContent =
+      mode === "report"
+        ? "Type a report name to search, then Show map"
+        : "Type a table name to search, then Show map";
+  }
 }
 
 async function ensureLineagePickData() {
@@ -2121,7 +2285,7 @@ async function ensureLineagePickData() {
       console.warn("lineage report list", e);
     }
   }
-  populateLineagePick();
+  resetLineageSearchUi();
 }
 
 function lineageNodeHtml(n) {
@@ -2154,10 +2318,8 @@ function clearLineageMap() {
   if (wrap) wrap.classList.add("hidden");
   if (cols) cols.innerHTML = "";
   if (svg) svg.innerHTML = "";
-  if ($("#lineageMeta")) {
-    $("#lineageMeta").textContent = "Pick a source table or report to draw end-to-end lineage";
-  }
-  if ($("#lineagePick")) $("#lineagePick").value = "";
+  state._lineageEdges = null;
+  resetLineageSearchUi();
 }
 
 function drawLineageEdges(edgePairs) {
@@ -2532,7 +2694,7 @@ function setView(name) {
       });
   }
   if (name === "lineage") {
-    ensureLineagePickData().catch(() => populateLineagePick());
+    ensureLineagePickData().catch(() => resetLineageSearchUi());
   }
 }
 
@@ -2593,15 +2755,29 @@ function wire() {
     el.addEventListener("change", applyReportFilters);
   });
 
-  // Lineage map tab
+  // Lineage map tab — type-to-search combobox
   $("#lineageStartMode")?.addEventListener("change", () => {
-    ensureLineagePickData().catch(() => populateLineagePick());
+    ensureLineagePickData().catch(() => resetLineageSearchUi());
   });
   $("#lineageDrawBtn")?.addEventListener("click", () => runLineageMap());
   $("#lineageClearBtn")?.addEventListener("click", () => clearLineageMap());
-  $("#lineagePick")?.addEventListener("change", () => {
-    /* user can press Show map; optional auto-draw on change is intentional off */
+
+  const lineageSearch = $("#lineageSearch");
+  if (lineageSearch) {
+    lineageSearch.addEventListener("input", () => onLineageSearchInput());
+    lineageSearch.addEventListener("focus", () => onLineageSearchInput());
+    lineageSearch.addEventListener("keydown", (e) => onLineageSearchKeydown(e));
+    lineageSearch.addEventListener("blur", () => {
+      // delay so mousedown on result can fire first
+      setTimeout(() => hideLineageSearchResults(), 150);
+    });
+  }
+  document.addEventListener("click", (e) => {
+    const box = $("#lineageCombobox");
+    if (!box) return;
+    if (!box.contains(e.target)) hideLineageSearchResults();
   });
+
   window.addEventListener("resize", () => {
     if (!$("#view-lineage") || $("#view-lineage").classList.contains("hidden")) return;
     const wrap = $("#lineageCanvasWrap");
