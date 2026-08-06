@@ -193,6 +193,54 @@ class SharePointClient:
                 # conflictBehavior fail may 409; try rename ignore
                 logger.warning("ensure_folder %s: %s %s", current, resp.status_code, resp.text[:200])
 
+    def list_children(self, folder_path: str = "") -> List[Dict[str, Any]]:
+        """
+        List drive items directly under folder_path (relative to drive root).
+        Returns list of Graph driveItem dicts (files + folders).
+        """
+        if self._drive_id is None:
+            self.resolve_site_and_drive()
+        folder_path = (folder_path or "").replace("\\", "/").strip("/")
+        items: List[Dict[str, Any]] = []
+        if folder_path:
+            url = f"{GRAPH}/drives/{self._drive_id}/root:/{quote(folder_path)}:/children"
+        else:
+            url = f"{GRAPH}/drives/{self._drive_id}/root/children"
+        # Graph pages @odata.nextLink
+        while url:
+            resp = self._request("GET", url, params={"$top": "200"})
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"list_children failed {resp.status_code} path={folder_path!r}: {resp.text[:400]}"
+                )
+            body = resp.json() or {}
+            items.extend(body.get("value") or [])
+            url = body.get("@odata.nextLink")
+        return items
+
+    def list_folders(self, folder_path: str = "") -> List[Dict[str, Any]]:
+        """Return only child folders under folder_path."""
+        return [i for i in self.list_children(folder_path) if i.get("folder") is not None]
+
+    def latest_child_folder(self, folder_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Pick the newest child folder under folder_path by createdDateTime
+        (fallback lastModifiedDateTime, then name).
+        """
+        folders = self.list_folders(folder_path)
+        if not folders:
+            return None
+
+        def _key(item: Dict[str, Any]):
+            return (
+                item.get("createdDateTime")
+                or item.get("lastModifiedDateTime")
+                or item.get("name")
+                or ""
+            )
+
+        return max(folders, key=_key)
+
     def upload_file(self, local_path: Path, remote_relative: str) -> Dict[str, Any]:
         """
         Upload local file to drive path remote_relative (e.g. 'PowerBI Reports MetaData/latest/impact_index.json').
