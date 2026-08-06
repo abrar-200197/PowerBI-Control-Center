@@ -859,7 +859,13 @@ async function openDrawer(tableKey) {
   $("#drawer").setAttribute("aria-hidden", "false");
 
   // Detail blast radius — one object from server (never full index in browser)
+  const gridRc = Number(row.reportCount) || 0;
+  const gridDc = Number(row.datasetCount) || 0;
+  const gridWc = Number(row.workspaceCount) || 0;
   let datasets = row.datasets || [];
+  let aclApplied = false;
+  let tenantSummary = null;
+  let detailOk = false;
   try {
     const res = await fetchJsonNoCache(
       `/api/catalog/impact/table?key=${encodeURIComponent(tableKey)}`,
@@ -868,12 +874,43 @@ async function openDrawer(tableKey) {
     if (res.ok) {
       const body = await res.json();
       if (body.success && body.table) {
+        detailOk = true;
         datasets = body.table.datasets || [];
         row.datasets = datasets;
+        aclApplied = !!body.table.aclApplied;
+        tenantSummary = body.table.tenantImpactSummary || null;
         const s = body.table.impactSummary || {};
-        if (s.reportCount != null) row.reportCount = s.reportCount;
-        if (s.datasetCount != null) row.datasetCount = s.datasetCount;
-        if (s.workspaceCount != null) row.workspaceCount = s.workspaceCount;
+        // Unique report count from nested lists (matches list builder)
+        const uniqReps = new Set();
+        const uniqWs = new Set();
+        for (const d of datasets) {
+          if (d.workspaceId) uniqWs.add(d.workspaceId);
+          for (const r of d.reports || []) {
+            if (r.reportId) uniqReps.add(r.reportId);
+            if (r.workspaceId) uniqWs.add(r.workspaceId);
+          }
+        }
+        const aclRc = uniqReps.size || (s.reportCount != null ? Number(s.reportCount) : 0);
+        const aclDc = datasets.length || (s.datasetCount != null ? Number(s.datasetCount) : 0);
+        const aclWc = uniqWs.size || (s.workspaceCount != null ? Number(s.workspaceCount) : 0);
+
+        // Prefer ACL-scoped numbers when user can see at least one edge.
+        // If ACL wiped everything but the grid had counts, keep tenant KPIs visible
+        // and explain below (avoids "grid=1 / drawer=0" look).
+        if (aclRc > 0 || aclDc > 0 || !aclApplied) {
+          row.reportCount = aclRc;
+          row.datasetCount = aclDc;
+          row.workspaceCount = aclWc;
+        } else if (tenantSummary) {
+          row.reportCount = Number(tenantSummary.reportCount) || gridRc;
+          row.datasetCount = Number(tenantSummary.datasetCount) || gridDc;
+          row.workspaceCount = Number(tenantSummary.workspaceCount) || gridWc;
+        } else {
+          row.reportCount = gridRc;
+          row.datasetCount = gridDc;
+          row.workspaceCount = gridWc;
+        }
+
         if (body.table.modelTableNames) row.modelTableNames = body.table.modelTableNames;
         $("#drawerKpis").innerHTML = [
           kpi("Reports affected", row.reportCount),
@@ -885,6 +922,8 @@ async function openDrawer(tableKey) {
           ? al.slice(0, 100).map((n) => `<span class="chip">${escapeHtml(n)}</span>`).join("")
           : `<span class="muted small">No alternate Power BI names recorded</span>`;
       }
+    } else {
+      console.warn("impact table detail HTTP", res.status);
     }
   } catch (e) {
     console.warn("impact table detail failed", e);
@@ -894,6 +933,7 @@ async function openDrawer(tableKey) {
   for (const ds of datasets) {
     for (const rep of ds.reports || []) {
       const id = rep.reportId || rep.reportName;
+      if (!id) continue;
       if (!map.has(id)) {
         map.set(id, {
           ...rep,
@@ -913,44 +953,72 @@ async function openDrawer(tableKey) {
   if ($("#drawerReportFilter")) $("#drawerReportFilter").value = "";
   renderDrawerReports();
 
-  $("#drawerDatasets").innerHTML = datasets
-    .slice()
-    .sort((a, b) => (b.reports?.length || 0) - (a.reports?.length || 0))
-    .map((d) => `<div class="list-item list-item-clickable" data-ds-open="1"
-        data-dataset-id="${escapeAttr(d.datasetId || "")}"
-        data-workspace-id="${escapeAttr(d.workspaceId || "")}"
-        data-dataset-name="${escapeAttr(d.datasetName || "")}"
-        data-workspace-name="${escapeAttr(d.workspaceName || "")}"
-        data-model-table="${escapeAttr(d.modelTableName || "")}">
-      <div class="list-item-main">
-        <button type="button" class="linkish ds-open">${escapeHtml(d.datasetName || d.datasetId)}</button>
-        <div class="sub">${escapeHtml(d.workspaceName || "")}<br/>
-          Power BI table name in this model: <strong>${escapeHtml(d.modelTableName || "—")}</strong>
-          ${physical ? `<br/>Source object: <strong>${escapeHtml(row.table || "—")}</strong>` : ""}
-          · ${(d.reports || []).length} reports</div>
-      </div>
-      <button type="button" class="btn ghost sm ds-open">View model</button>
-    </div>`)
-    .join("") || `<div class="muted">No datasets</div>`;
+  // Explain empty list when KPIs > 0 (ACL or missing nested reports)
+  if (state.drawerReports.length === 0) {
+    const tenantRc = Number(tenantSummary?.reportCount) || gridRc;
+    let msg = "No reports";
+    if (!detailOk) {
+      msg = "Could not load report list from catalog detail API. Grid counts still come from the thin index.";
+    } else if (aclApplied && tenantRc > 0) {
+      msg =
+        `Catalog knows ${tenantRc} report(s) use this source, but none are in workspaces you can open. ` +
+        `KPIs above show tenant-wide blast radius; open access to the hosting workspace to see names.`;
+    } else if (tenantRc > 0) {
+      msg =
+        `Index summary lists ${tenantRc} report(s), but nested report links are empty for this table key. ` +
+        `Re-run catalog extract / publish impact_index if this persists.`;
+    }
+    $("#drawerReports").innerHTML = `<div class="muted small" style="padding:8px 2px;line-height:1.45">${escapeHtml(msg)}</div>`;
+  }
+  if (datasets.length === 0) {
+    const tenantDc = Number(tenantSummary?.datasetCount) || gridDc;
+    let msg = "No datasets";
+    if (!detailOk) {
+      msg = "Could not load dataset list from catalog detail API.";
+    } else if (aclApplied && tenantDc > 0) {
+      msg =
+        `Catalog knows ${tenantDc} dataset(s) use this source outside your workspace access.`;
+    }
+    $("#drawerDatasets").innerHTML = `<div class="muted small" style="padding:8px 2px;line-height:1.45">${escapeHtml(msg)}</div>`;
+  } else {
+    $("#drawerDatasets").innerHTML = datasets
+      .slice()
+      .sort((a, b) => (b.reports?.length || 0) - (a.reports?.length || 0))
+      .map((d) => `<div class="list-item list-item-clickable" data-ds-open="1"
+          data-dataset-id="${escapeAttr(d.datasetId || "")}"
+          data-workspace-id="${escapeAttr(d.workspaceId || "")}"
+          data-dataset-name="${escapeAttr(d.datasetName || "")}"
+          data-workspace-name="${escapeAttr(d.workspaceName || "")}"
+          data-model-table="${escapeAttr(d.modelTableName || "")}">
+        <div class="list-item-main">
+          <button type="button" class="linkish ds-open">${escapeHtml(d.datasetName || d.datasetId)}</button>
+          <div class="sub">${escapeHtml(d.workspaceName || "")}<br/>
+            Power BI table name in this model: <strong>${escapeHtml(d.modelTableName || "—")}</strong>
+            ${physical ? `<br/>Source object: <strong>${escapeHtml(row.table || "—")}</strong>` : ""}
+            · ${(d.reports || []).length} reports</div>
+        </div>
+        <button type="button" class="btn ghost sm ds-open">View model</button>
+      </div>`)
+      .join("") || `<div class="muted">No datasets</div>`;
 
-  $("#drawerDatasets").querySelectorAll("[data-ds-open]").forEach((root) => {
-    const open = (ev) => {
-      if (ev) ev.stopPropagation();
-      openModelModal({
-        datasetId: root.getAttribute("data-dataset-id"),
-        workspaceId: root.getAttribute("data-workspace-id"),
-        datasetName: root.getAttribute("data-dataset-name"),
-        workspaceName: root.getAttribute("data-workspace-name"),
-        modelTableName: root.getAttribute("data-model-table"),
-        reportName: "",
-        reportId: "",
+    $("#drawerDatasets").querySelectorAll("[data-ds-open]").forEach((root) => {
+      const open = (ev) => {
+        if (ev) ev.stopPropagation();
+        openModelModal({
+          datasetId: root.getAttribute("data-dataset-id"),
+          workspaceId: root.getAttribute("data-workspace-id"),
+          datasetName: root.getAttribute("data-dataset-name"),
+          workspaceName: root.getAttribute("data-workspace-name"),
+          modelTableName: root.getAttribute("data-model-table"),
+          reportName: "",
+          reportId: "",
+        });
+      };
+      root.addEventListener("click", (ev) => {
+        open(ev);
       });
-    };
-    root.addEventListener("click", (ev) => {
-      // Single open path for row or inner button
-      open(ev);
     });
-  });
+  }
 }
 
 function renderDrawerReports() {
