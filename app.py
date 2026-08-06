@@ -1810,7 +1810,7 @@ def get_dataset_lineage():
 @app.route('/orphaned-reports')
 @login_required
 def orphaned_reports_page():
-    """Orphaned Reports page - View reports with no active owner"""
+    """Unowned Reports page — reports with no active owner signal."""
     return render_template('orphaned_reports.html')
 
 
@@ -7838,13 +7838,13 @@ def get_orphaned_reports(workspace_id):
             },
             "catalog_meta": catalog_meta,
             "note": (
-                "True orphan = no creator, modifier, or dataset owner. "
+                "Unowned = no creator, modifier, or dataset owner signal. "
                 "Table also lists ownership gaps (missing creator/modifier)."
             ),
         })
 
     except Exception as e:
-        print(f"❌ Error detecting orphaned reports: {str(e)}")
+        print(f"Error detecting unowned reports: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({
