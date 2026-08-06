@@ -731,8 +731,10 @@
 
 <script>
     let reports = [];
-    // Full workspace report list (unfiltered by folder). Folder filter applies client-side when possible.
+    // Full workspace report list (unfiltered by folder). Folder filter applies client-side — never live Scanner.
     let allWorkspaceReports = [];
+    // reportId → folderId (from Fabric membership). Independent of row stamp so filter works even if stamp missed.
+    let reportFolderMap = {};
     let currentWorkspaceId = null;
     let currentFolderId = null;
     let folders = [];
@@ -1078,6 +1080,7 @@
         currentFolderId = null;
         folders = [];
         allWorkspaceReports = [];
+        reportFolderMap = {};
         resetFolderSelectUi();
 
         if (isUserSwitch) {
@@ -1270,40 +1273,57 @@
         return ids;
     }
 
+    function resolveReportFolderId(r) {
+        if (!r) return null;
+        const rid = String(r.id || '');
+        if (rid && Object.prototype.hasOwnProperty.call(reportFolderMap, rid)) {
+            return reportFolderMap[rid] || null;
+        }
+        return r.folderId || r.folderObjectId || null;
+    }
+
     /**
-     * Client-side folder filter when we already have full workspace rows with folderId
-     * stamped from catalog+Fabric membership. Avoids slow live Scanner round-trip.
+     * Client-side folder filter from cached workspace rows + reportFolderMap.
+     * NEVER falls back to live Scanner — keeps catalog ops (schedule/refresh/views).
      */
     function applyFolderFilterClientSide(folderId) {
         const base = allWorkspaceReports && allWorkspaceReports.length
             ? allWorkspaceReports
-            : null;
-        if (!base) return false;
+            : (reports && reports.length ? reports : null);
+        if (!base || !base.length) return false;
 
-        // Need at least some folder membership data to filter correctly
-        const anyMapped = base.some((r) => r.folderId || r.folderObjectId);
-        if (!anyMapped && folderId && folderId !== '__ROOT__') {
-            // Membership missing — fall back to server
-            return false;
-        }
+        const mapSize = Object.keys(reportFolderMap || {}).length;
+        const anyMapped = mapSize > 0 || base.some((r) => r.folderId || r.folderObjectId);
 
         let filtered;
         if (!folderId) {
             filtered = base.slice();
+        } else if (!anyMapped) {
+            // Membership not loaded yet — show all with a quiet notice; do NOT call live API
+            console.warn('📂 Folder membership not ready — showing all reports (catalog). Retry after refresh.');
+            filtered = base.slice();
         } else if (folderId === '__ROOT__') {
-            filtered = base.filter((r) => !(r.folderId || r.folderObjectId));
+            filtered = base.filter((r) => !resolveReportFolderId(r));
         } else {
             const allowed = getFolderSubtreeIds(folderId);
             filtered = base.filter((r) => {
-                const fid = r.folderId || r.folderObjectId;
-                return fid && allowed.has(fid);
+                const fid = resolveReportFolderId(r);
+                return fid && allowed.has(String(fid));
             });
         }
 
-        reports = filtered;
+        // Preserve enriched fields already on rows (metadata/ops/views)
+        reports = filtered.map((r) => {
+            const fid = resolveReportFolderId(r);
+            return {
+                ...r,
+                folderId: fid || r.folderId || null,
+                folderObjectId: fid || r.folderObjectId || null,
+            };
+        });
         console.log(
             `📂 Client folder filter → ${reports.length} of ${base.length} reports ` +
-            `(folder=${folderId || 'all'})`
+            `(folder=${folderId || 'all'}, map=${mapSize})`
         );
         renderReportsTable(reports);
         populateReportSelect(reports);
@@ -1328,11 +1348,11 @@
 
         if (!currentWorkspaceId) return;
 
-        // Prefer instant client filter from catalog payload (has folderId + ops)
+        // Always filter client-side from catalog rows — never loadReports(folder_id) live path
         if (applyFolderFilterClientSide(currentFolderId)) {
             return;
         }
-        // Fallback: server filter (catalog path now supports folder without Scanner)
+        // No rows yet: load workspace once WITHOUT folder_id (catalog fast path)
         loadReports();
     }
 
@@ -1403,7 +1423,8 @@
 
         // Deduplicate: ignore re-entry while a load for same filter is in flight.
         // Sequence id drops stale responses if user switches workspace mid-flight.
-        const reqKey = `${currentWorkspaceId}|${currentFolderId || ''}|${statusFilter || ''}`;
+        // IMPORTANT: do NOT key on folder — folder is client-side only (catalog cache).
+        const reqKey = `${currentWorkspaceId}|${statusFilter || ''}`;
         if (loadingReports && window._loadReportsKey === reqKey) {
             console.log('⏭️ loadReports skipped (duplicate in-flight request)');
             return;
@@ -1416,13 +1437,11 @@
         tableDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Loading reports...</p></div>';
 
         try {
-            // STEP 1: Load basic report info with optional folder filter and status filter
-            console.log(`📥 Loading reports (workspace: ${currentWorkspaceId}, folder: ${currentFolderId || 'all'}, status: ${statusFilter || 'all'})...`);
+            // Always fetch FULL workspace from catalog (no folder_id).
+            // Folder filter is applied client-side so we keep ops/refresh details.
+            console.log(`📥 Loading reports (workspace: ${currentWorkspaceId}, status: ${statusFilter || 'all'})...`);
 
             let url = `/api/reports?workspace_id=${currentWorkspaceId}`;
-            if (currentFolderId) {
-                url += `&folder_id=${currentFolderId}`;
-            }
             // Add status filter to API request (server-side filtering is more accurate)
             if (statusFilter) {
                 url += `&status=${statusFilter}`;
@@ -1440,6 +1459,13 @@
 
             if (result.success) {
                 const opsFromCatalog = !!result.opsFromCatalog;
+
+                // Membership map from Fabric (reportId → folderId|null)
+                if (result.reportFolderMap && typeof result.reportFolderMap === 'object') {
+                    reportFolderMap = { ...result.reportFolderMap };
+                    console.log(`📁 reportFolderMap size=${Object.keys(reportFolderMap).length}`);
+                }
+
                 // Keep owner strings if catalog seeded them, but do NOT mark per-row
                 // metadata_loaded from partial people — all rows spin together
                 // until /api/reports-metadata batch returns (original UX).
@@ -1448,8 +1474,14 @@
                     const hasCatalogRefresh = !!(
                         r.last_refreshed || r.last_refresh_status || r.refresh_schedule || r.refresh_type
                     );
+                    const rid = String(r.id || '');
+                    const mappedFolder = (rid && Object.prototype.hasOwnProperty.call(reportFolderMap, rid))
+                        ? (reportFolderMap[rid] || null)
+                        : (r.folderId || r.folderObjectId || null);
                     return {
                         ...r,
+                        folderId: mappedFolder,
+                        folderObjectId: mappedFolder,
                         metadata_loaded: false,
                         details_loaded: false,
                         // Keep catalog views; only spinner when truly missing
@@ -1459,16 +1491,20 @@
                         ops_from_catalog: r.ops_from_catalog || opsFromCatalog,
                     };
                 });
-                reports = mapped;
-                // Keep full unfiltered set for instant client-side folder filtering
-                if (!currentFolderId) {
-                    allWorkspaceReports = mapped.slice();
-                } else if (!allWorkspaceReports.length) {
-                    // Loaded with a folder already selected — still seed what we have
-                    allWorkspaceReports = mapped.slice();
+
+                // Always keep full unfiltered catalog set for folder filter
+                allWorkspaceReports = mapped.slice();
+                // Apply active folder filter client-side (keeps details)
+                if (currentFolderId) {
+                    applyFolderFilterClientSide(currentFolderId);
+                } else {
+                    reports = mapped;
                 }
                 metadataBatchLoading = reports.length > 0;
-                console.log(`✅ Received ${reports.length} reports from server`);
+                console.log(
+                    `✅ Received ${allWorkspaceReports.length} reports from server ` +
+                    `(showing ${reports.length}, source=${result.source || 'unknown'})`
+                );
 
                 // Show/hide filter header based on statusFilter
                 const filterHeader = document.getElementById('filterStatusHeader');
@@ -1507,29 +1543,28 @@
                     filterHeader.classList.remove('show');
                 }
 
-                // Folders dropdown — always refresh names for this workspace response
-                // (catalog path used to return [] forever; keep UI in sync when API improves)
-                if (!currentFolderId) {
-                    if (result.folders && result.folders.length > 0) {
-                        console.log(`📁 Populating folder dropdown (${result.folders.length} folders)`);
-                        folders = result.folders;
-                        populateFolderSelect(folders, { preserveSelection: false });
-                        showFolderSelect();
-                    } else {
-                        console.log('📁 No folders returned for this workspace');
-                        folders = [];
-                        // Keep control visible with All Folders so user knows filter exists
-                        resetFolderSelectUi({ keepVisible: true });
-                    }
-                } else if (result.folders && result.folders.length > 0 && folders.length === 0) {
-                    // Folder filter active but map empty (e.g. hard refresh mid-filter)
+                // Folders dropdown + membership — always refresh from workspace catalog response
+                if (result.folders && result.folders.length > 0) {
+                    console.log(`📁 Populating folder dropdown (${result.folders.length} folders)`);
                     folders = result.folders;
-                    populateFolderSelect(folders, { preserveSelection: true, selectedId: currentFolderId });
+                    populateFolderSelect(folders, {
+                        preserveSelection: !!currentFolderId,
+                        selectedId: currentFolderId || '',
+                    });
                     showFolderSelect();
+                } else if (!folders.length) {
+                    console.log('📁 No folders returned for this workspace');
+                    folders = [];
+                    resetFolderSelectUi({ keepVisible: true });
                 }
 
-                renderReportsTable(reports);
-                populateReportSelect(reports);
+                // Re-apply folder filter now that membership + folder tree are ready
+                if (currentFolderId) {
+                    applyFolderFilterClientSide(currentFolderId);
+                } else {
+                    renderReportsTable(reports);
+                    populateReportSelect(reports);
+                }
 
                 console.log(
                     `✅ Loaded ${reports.length} reports (source=${result.source || 'unknown'}, ` +
@@ -1542,16 +1577,16 @@
                     console.log(`   ⏱ Ops snapshot as of: ${result.opsEnrichedAt}`);
                 }
 
-                // Dual-source refresh: merge live API + catalog/SharePoint ops, show LATEST.
-                // Run when catalog has no ops, OR when some rows lack last_refreshed
-                // (catalog may be incomplete while SharePoint/live has history).
-                const missingRefresh = reports.filter(r => !r.last_refreshed).length;
+                // Live refresh overlay only when catalog ops are weak (handler also gates).
+                // Never schedule just because a folder is selected — catalog has the details.
+                const poolForMissing = allWorkspaceReports.length ? allWorkspaceReports : reports;
+                const missingRefresh = poolForMissing.filter(r => !r.last_refreshed).length;
                 if (
-                    reports.length > 0 &&
+                    poolForMissing.length > 0 &&
                     result.refreshIncluded === false &&
-                    (!opsFromCatalog || missingRefresh > 0) &&
-                    !statusFilter &&
-                    !currentFolderId
+                    !opsFromCatalog &&
+                    missingRefresh > Math.max(3, Math.floor(poolForMissing.length * 0.5)) &&
+                    !statusFilter
                 ) {
                     console.log(
                         `⚡ Scheduling dual refresh merge (ops=${opsFromCatalog}, missingTs=${missingRefresh})…`
@@ -1809,18 +1844,23 @@
         if (!currentWorkspaceId || !reports || reports.length === 0) {
             return;
         }
-        // Always try live overlay so we can pick LATEST between catalog ops and live history.
-        // (Previously we skipped when catalog already had some refresh — that missed newer live
-        // rows AND left blank UI when catalog was empty but SharePoint later had data.)
-        const missingMany = reports.filter(r => !r.last_refreshed).length >= Math.max(1, Math.floor(reports.length * 0.3));
-        const alwaysMerge = true;
-        if (!alwaysMerge && !missingMany) {
+        // Prefer catalog/ops. Only call live include_refresh when MOST rows lack refresh
+        // data — never on every folder click (that path used to fan out 39 dataset histories).
+        const pool = (allWorkspaceReports && allWorkspaceReports.length)
+            ? allWorkspaceReports
+            : reports;
+        const missing = pool.filter(r => !r.last_refreshed && !(r.refresh_type || '').toLowerCase().includes('direct')).length;
+        const threshold = Math.max(3, Math.floor(pool.length * 0.5));
+        if (missing < threshold) {
+            console.log(
+                `⏭️ Skip live refresh overlay (catalog ops present; missing=${missing}/${pool.length})`
+            );
             return;
         }
         try {
             console.log('⚡ Background: fetching live refresh (include_refresh=1) for dual-source merge…');
-            let url = `/api/reports?workspace_id=${currentWorkspaceId}&include_refresh=1`;
-            if (currentFolderId) url += `&folder_id=${currentFolderId}`;
+            // NEVER pass folder_id — always full workspace catalog+optional live merge
+            const url = `/api/reports?workspace_id=${currentWorkspaceId}&include_refresh=1`;
             const response = await fetch(url);
             const result = await response.json();
             if (!result.success || !result.reports) {
@@ -1830,10 +1870,9 @@
             const byId = {};
             result.reports.forEach(r => { if (r.id) byId[r.id] = r; });
             let merged = 0;
-            reports = reports.map(r => {
+            const mergeRow = (r) => {
                 const live = byId[r.id];
                 if (!live) {
-                    // Still recompute days-since from existing catalog timestamp
                     if (r.last_refreshed && r.days_since_refresh == null) {
                         return { ...r, days_since_refresh: daysSinceRefreshClient(r.last_refreshed), refresh_pending: false };
                     }
@@ -1841,14 +1880,20 @@
                 }
                 merged++;
                 const fields = mergeRefreshFields(r, live);
-                return {
-                    ...r,
-                    ...fields,
-                    refresh_pending: false,
-                };
-            });
+                return { ...r, ...fields, refresh_pending: false };
+            };
+            allWorkspaceReports = (allWorkspaceReports || []).map(mergeRow);
+            // Re-apply folder/report filter from enriched cache
+            if (currentFolderId) {
+                applyFolderFilterClientSide(currentFolderId);
+            } else {
+                reports = (allWorkspaceReports.length ? allWorkspaceReports : reports).map(mergeRow);
+                rerenderReportsTable();
+            }
+            if (selectedReportId) {
+                applyReportFilter(selectedReportId, { fromUrl: false, syncSelect: false });
+            }
             console.log(`✅ Background refresh dual-merged for ${merged} reports`);
-            rerenderReportsTable();
         } catch (e) {
             console.warn('Background refresh enrichment error', e);
         }
@@ -1881,25 +1926,45 @@
                     `in ${((performance.now() - t0) / 1000).toFixed(1)}s`
                 );
 
-                result.reports.forEach(metadata => {
-                    const reportIndex = reports.findIndex(r => r.id === metadata.report_id);
-                    if (reportIndex !== -1) {
-                        const prev = reports[reportIndex];
-                        const pick = (incoming, existing) => {
-                            if (incoming !== undefined && incoming !== null && String(incoming).trim() !== '' && String(incoming).toUpperCase() !== 'N/A') {
-                                return incoming;
-                            }
-                            return existing;
-                        };
-                        reports[reportIndex] = {
-                            ...prev,
-                            created_by: pick(metadata.created_by, prev.created_by),
-                            modified_by: pick(metadata.modified_by, prev.modified_by),
-                            modified_date_time: pick(metadata.modified_date_time, prev.modified_date_time),
-                            created_date_time: pick(metadata.created_date_time, prev.created_date_time),
-                        };
+                const pick = (incoming, existing) => {
+                    if (incoming !== undefined && incoming !== null && String(incoming).trim() !== '' && String(incoming).toUpperCase() !== 'N/A') {
+                        return incoming;
                     }
+                    return existing;
+                };
+                const byId = {};
+                result.reports.forEach((m) => {
+                    if (m && m.report_id) byId[m.report_id] = m;
                 });
+                const applyMeta = (row) => {
+                    const metadata = byId[row.id];
+                    if (!metadata) return { ...row, metadata_loaded: true };
+                    return {
+                        ...row,
+                        created_by: pick(metadata.created_by, row.created_by),
+                        modified_by: pick(metadata.modified_by, row.modified_by),
+                        modified_date_time: pick(metadata.modified_date_time, row.modified_date_time),
+                        created_date_time: pick(metadata.created_date_time, row.created_date_time),
+                        metadata_loaded: true,
+                    };
+                };
+                // Update full workspace cache so folder filter keeps owners
+                if (allWorkspaceReports && allWorkspaceReports.length) {
+                    allWorkspaceReports = allWorkspaceReports.map(applyMeta);
+                }
+                reports = (allWorkspaceReports && allWorkspaceReports.length
+                    ? (currentFolderId
+                        ? allWorkspaceReports.filter((r) => {
+                            if (currentFolderId === '__ROOT__') return !resolveReportFolderId(r);
+                            const allowed = getFolderSubtreeIds(currentFolderId);
+                            const fid = resolveReportFolderId(r);
+                            return fid && allowed.has(String(fid));
+                        })
+                        : allWorkspaceReports.slice())
+                    : reports.map(applyMeta));
+                if (selectedReportId) {
+                    applyReportFilter(selectedReportId, { fromUrl: false, syncSelect: false });
+                }
             } else {
                 console.warn('Metadata response not successful', result && result.error);
             }
@@ -1915,8 +1980,17 @@
             if (timer) clearTimeout(timer);
             // One flip for the whole table (no partial per-row finish)
             metadataBatchLoading = false;
+            if (allWorkspaceReports && allWorkspaceReports.length) {
+                allWorkspaceReports = allWorkspaceReports.map(r => ({ ...r, metadata_loaded: true }));
+            }
             reports = reports.map(r => ({ ...r, metadata_loaded: true }));
-            rerenderReportsTable();
+            if (selectedReportId) {
+                applyReportFilter(selectedReportId, { fromUrl: false, syncSelect: false });
+            } else if (currentFolderId) {
+                applyFolderFilterClientSide(currentFolderId);
+            } else {
+                rerenderReportsTable();
+            }
             const mb = document.getElementById('metadataBtn');
             if (mb) mb.style.display = 'none';
         }
@@ -2139,12 +2213,17 @@
             }
 
             if (!selectedReportId) {
-                renderReportsTable(reports);
+                // Restore folder-scoped list (or full) without re-fetch
+                applyFolderFilterClientSide(currentFolderId);
                 updateMultiFilterBar();
                 return false;
             }
 
-            const filteredReports = reports.filter(
+            // Search full workspace cache first so folder filter doesn't hide the hit
+            const pool = (allWorkspaceReports && allWorkspaceReports.length)
+                ? allWorkspaceReports
+                : reports;
+            const filteredReports = pool.filter(
                 (report) => String(report.id) === String(selectedReportId)
             );
             if (filteredReports.length === 0) {
@@ -2152,6 +2231,24 @@
                 renderReportsTable(reports);
                 updateMultiFilterBar();
                 return false;
+            }
+
+            // Sync folder dropdown to the report's actual folder (if known)
+            const hit = filteredReports[0];
+            const hitFolder = resolveReportFolderId(hit);
+            if (hitFolder && folders && folders.length) {
+                const prevSuppress = suppressFolderChange;
+                suppressFolderChange = true;
+                try {
+                    currentFolderId = hitFolder;
+                    if (window.jQuery) {
+                        $('#folderSelect').val(hitFolder).trigger('change.select2');
+                    }
+                    const fs = document.getElementById('folderSelect');
+                    if (fs) fs.value = hitFolder;
+                } finally {
+                    setTimeout(() => { suppressFolderChange = prevSuppress; }, 0);
+                }
             }
 
             renderReportsTable(filteredReports);

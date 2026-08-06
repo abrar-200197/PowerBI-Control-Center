@@ -5683,53 +5683,109 @@ def _fetch_workspace_folder_meta(workspace_id, timeout=12):
             print(f"   ⚠️ Fabric folders ({label}) error: {ex}")
         return False
 
+    def _paginate_fabric_items(token, params_base, label):
+        """Yield items from Fabric workspace items API with continuation."""
+        url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/items"
+        headers = _auth_headers(token)
+        continuation = None
+        pages = 0
+        while pages < 30:
+            pages += 1
+            params = dict(params_base or {})
+            if continuation:
+                params['continuationToken'] = continuation
+            resp = _requests.get(url, headers=headers, params=params, timeout=timeout)
+            if resp.status_code != 200:
+                print(f"   ⚠️ Fabric items ({label}) HTTP {resp.status_code} params={params_base}")
+                return
+            body = resp.json() or {}
+            for item in body.get('value') or []:
+                yield item
+            continuation = body.get('continuationToken')
+            if not continuation:
+                break
+
+    def _is_report_item(item):
+        itype = (item.get('type') or '').replace(' ', '').lower()
+        return itype in (
+            'report',
+            'paginatedreport',
+            'pagedreport',
+            'powerbireport',
+            'rdl',
+        )
+
+    def _item_folder_id(item):
+        return (
+            item.get('folderId')
+            or item.get('parentFolderId')
+            or item.get('folderObjectId')
+            or None
+        )
+
     def _try_fabric_items_membership(token, label):
-        """Map report item id → parent folder (Fabric Items API)."""
+        """
+        Map report id → parent folder via Fabric Items API.
+
+        Preferred strategy (reliable):
+          For each known folder, GET items?rootFolderId={folder}&recursive=true
+          → every returned report belongs under that folder tree; use item.folderId
+            when present, else rootFolderId.
+
+        Fallback: list all workspace items and read folderId when the API returns it.
+        """
         nonlocal report_folder_map
         if not token:
             return False
         try:
-            # Paginate items — workspace can be large
-            url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/items"
-            headers = _auth_headers(token)
-            mapped = 0
-            continuation = None
-            pages = 0
-            while pages < 20:
-                pages += 1
-                params = {}
-                if continuation:
-                    params['continuationToken'] = continuation
-                resp = _requests.get(url, headers=headers, params=params, timeout=timeout)
-                if resp.status_code != 200:
-                    print(f"   ⚠️ Fabric items ({label}) HTTP {resp.status_code}")
-                    return mapped > 0
-                body = resp.json() or {}
-                for item in body.get('value') or []:
-                    itype = (item.get('type') or '').lower()
-                    # Reports + paginated reports live under folders in the service
-                    if itype not in ('report', 'paginatedreport', 'pagedreport'):
-                        continue
-                    rid = item.get('id')
-                    if not rid:
-                        continue
-                    parent = (
-                        item.get('folderId')
-                        or item.get('parentFolderId')
-                        or item.get('folderObjectId')
-                    )
-                    if parent:
-                        report_folder_map[str(rid)] = str(parent)
-                        mapped += 1
-                    else:
-                        # Explicit root
-                        report_folder_map[str(rid)] = None
-                continuation = body.get('continuationToken')
-                if not continuation:
-                    break
-            if mapped or report_folder_map:
-                print(f"   📁 Report→folder map via Fabric items ({label}): {len(report_folder_map)} reports")
-                return True
+            mapped_in_folder = 0
+
+            # --- Strategy A: per-folder listing (works even if folderId omitted on item) ---
+            if folder_names_map:
+                for fid in list(folder_names_map.keys()):
+                    try:
+                        for item in _paginate_fabric_items(
+                            token,
+                            {
+                                'rootFolderId': fid,
+                                'recursive': 'true',
+                            },
+                            f"{label}/folder:{str(fid)[:8]}",
+                        ):
+                            if not _is_report_item(item):
+                                continue
+                            rid = item.get('id')
+                            if not rid:
+                                continue
+                            parent = _item_folder_id(item) or fid
+                            report_folder_map[str(rid)] = str(parent)
+                            mapped_in_folder += 1
+                    except Exception as folder_ex:
+                        print(f"   ⚠️ items for folder {str(fid)[:8]} ({label}): {folder_ex}")
+
+            # --- Strategy B: full workspace list (catch root-level + any missed) ---
+            rootish = 0
+            for item in _paginate_fabric_items(token, {}, f"{label}/workspace-root"):
+                if not _is_report_item(item):
+                    continue
+                rid = item.get('id')
+                if not rid:
+                    continue
+                rid_s = str(rid)
+                parent = _item_folder_id(item)
+                if parent:
+                    report_folder_map[rid_s] = str(parent)
+                    mapped_in_folder += 1
+                elif rid_s not in report_folder_map:
+                    report_folder_map[rid_s] = None
+                    rootish += 1
+
+            in_folder = sum(1 for v in report_folder_map.values() if v)
+            print(
+                f"   📁 Report→folder map via Fabric items ({label}): "
+                f"total={len(report_folder_map)} in_folder={in_folder} rootish≈{rootish}"
+            )
+            return in_folder > 0 or len(report_folder_map) > 0
         except Exception as ex:
             print(f"   ⚠️ Fabric items membership ({label}) error: {ex}")
         return False
@@ -6267,8 +6323,12 @@ def get_reports():
                     'success': True,
                     'reports': cache_entry['data'],
                     'folders': cache_entry.get('folders', []),
+                    'reportFolderMap': cache_entry.get('reportFolderMap') or {},
                     'source': cache_entry.get('source', 'cache'),
                     'catalogGeneratedAt': cache_entry.get('catalogGeneratedAt'),
+                    'opsFromCatalog': cache_entry.get('opsFromCatalog'),
+                    'refreshIncluded': cache_entry.get('refreshIncluded'),
+                    'opsEnrichedAt': cache_entry.get('opsEnrichedAt'),
                 })
 
         # =====================================================================
@@ -6362,19 +6422,24 @@ def get_reports():
                             )
                             source_label = f"{source_label}+folder"
 
+                        report_folder_map_out = folder_meta.get('report_folder_map') or {}
                         # Cache instant/ops responses (safe — no per-click live fan-out)
                         reports_cache[cache_key] = {
                             'data': report_list,
                             'folders': folders_list,
+                            'reportFolderMap': report_folder_map_out,
                             'timestamp': current_time,
                             'source': source_label,
                             'catalogGeneratedAt': catalog_payload.get('generatedAt'),
                             'opsEnrichedAt': catalog_payload.get('opsEnrichedAt'),
+                            'opsFromCatalog': catalog_has_ops,
+                            'refreshIncluded': refresh_included,
                         }
                         return jsonify({
                             'success': True,
                             'reports': report_list,
                             'folders': folders_list,
+                            'reportFolderMap': report_folder_map_out,
                             'source': source_label,
                             'refreshIncluded': refresh_included,
                             'opsFromCatalog': catalog_has_ops,
@@ -6908,11 +6973,20 @@ def get_reports():
 
         folders_list = sorted(folders_map.values(), key=get_folder_sort_key)
 
+        # Build report→folder map for client-side filtering
+        live_report_folder_map = {}
+        for r in report_list or []:
+            rid = r.get('id')
+            if not rid:
+                continue
+            live_report_folder_map[str(rid)] = r.get('folderId') or r.get('folderObjectId')
+
         # Update cache (per-user, per-workspace, per-folder)
         reports_cache[cache_key] = {
             'data': report_list,
             'folders': folders_list,
-            'timestamp': current_time
+            'reportFolderMap': live_report_folder_map,
+            'timestamp': current_time,
         }
 
         print(f"✅ Returning {len(report_list)} reports, {len(folders_list)} folders")
@@ -6928,7 +7002,8 @@ def get_reports():
         return jsonify({
             'success': True,
             'reports': report_list,
-            'folders': folders_list  # NEW: Include folder list for dropdown
+            'folders': folders_list,
+            'reportFolderMap': live_report_folder_map,
         })
 
     except Exception as e:
