@@ -731,6 +731,8 @@
 
 <script>
     let reports = [];
+    // Full workspace report list (unfiltered by folder). Folder filter applies client-side when possible.
+    let allWorkspaceReports = [];
     let currentWorkspaceId = null;
     let currentFolderId = null;
     let folders = [];
@@ -1075,6 +1077,7 @@
         // that would call onFolderChange → loadReports before workspace load).
         currentFolderId = null;
         folders = [];
+        allWorkspaceReports = [];
         resetFolderSelectUi();
 
         if (isUserSwitch) {
@@ -1250,6 +1253,64 @@
         }
     }
 
+    /** Build set of folder id + nested children for hierarchical filter. */
+    function getFolderSubtreeIds(folderId) {
+        const ids = new Set([folderId]);
+        if (!folders || !folders.length) return ids;
+        let changed = true;
+        while (changed) {
+            changed = false;
+            folders.forEach((f) => {
+                if (f && f.parentFolderId && ids.has(f.parentFolderId) && !ids.has(f.id)) {
+                    ids.add(f.id);
+                    changed = true;
+                }
+            });
+        }
+        return ids;
+    }
+
+    /**
+     * Client-side folder filter when we already have full workspace rows with folderId
+     * stamped from catalog+Fabric membership. Avoids slow live Scanner round-trip.
+     */
+    function applyFolderFilterClientSide(folderId) {
+        const base = allWorkspaceReports && allWorkspaceReports.length
+            ? allWorkspaceReports
+            : null;
+        if (!base) return false;
+
+        // Need at least some folder membership data to filter correctly
+        const anyMapped = base.some((r) => r.folderId || r.folderObjectId);
+        if (!anyMapped && folderId && folderId !== '__ROOT__') {
+            // Membership missing — fall back to server
+            return false;
+        }
+
+        let filtered;
+        if (!folderId) {
+            filtered = base.slice();
+        } else if (folderId === '__ROOT__') {
+            filtered = base.filter((r) => !(r.folderId || r.folderObjectId));
+        } else {
+            const allowed = getFolderSubtreeIds(folderId);
+            filtered = base.filter((r) => {
+                const fid = r.folderId || r.folderObjectId;
+                return fid && allowed.has(fid);
+            });
+        }
+
+        reports = filtered;
+        console.log(
+            `📂 Client folder filter → ${reports.length} of ${base.length} reports ` +
+            `(folder=${folderId || 'all'})`
+        );
+        renderReportsTable(reports);
+        populateReportSelect(reports);
+        updateMultiFilterBar();
+        return true;
+    }
+
     function onFolderChange() {
         if (suppressFolderChange) return;
 
@@ -1265,9 +1326,14 @@
         console.log(`📁 Folder changed to: ${currentFolderId || 'All Folders'}`);
         updateMultiFilterBar();
 
-        if (currentWorkspaceId) {
-            loadReports();
+        if (!currentWorkspaceId) return;
+
+        // Prefer instant client filter from catalog payload (has folderId + ops)
+        if (applyFolderFilterClientSide(currentFolderId)) {
+            return;
         }
+        // Fallback: server filter (catalog path now supports folder without Scanner)
+        loadReports();
     }
 
     // Pull fresh catalog from SharePoint (ops/refresh fields) + clear report shells
@@ -1377,7 +1443,7 @@
                 // Keep owner strings if catalog seeded them, but do NOT mark per-row
                 // metadata_loaded from partial people — all rows spin together
                 // until /api/reports-metadata batch returns (original UX).
-                reports = result.reports.map(r => {
+                const mapped = result.reports.map(r => {
                     const hasCatalogViews = r.view_count !== undefined && r.view_count !== null;
                     const hasCatalogRefresh = !!(
                         r.last_refreshed || r.last_refresh_status || r.refresh_schedule || r.refresh_type
@@ -1393,6 +1459,14 @@
                         ops_from_catalog: r.ops_from_catalog || opsFromCatalog,
                     };
                 });
+                reports = mapped;
+                // Keep full unfiltered set for instant client-side folder filtering
+                if (!currentFolderId) {
+                    allWorkspaceReports = mapped.slice();
+                } else if (!allWorkspaceReports.length) {
+                    // Loaded with a folder already selected — still seed what we have
+                    allWorkspaceReports = mapped.slice();
+                }
                 metadataBatchLoading = reports.length > 0;
                 console.log(`✅ Received ${reports.length} reports from server`);
 
