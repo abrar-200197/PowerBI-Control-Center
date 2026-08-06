@@ -207,12 +207,22 @@
                   <option value="report">Start: Report</option>
                 </select>
               </label>
-              <label class="field grow">
-                <span class="sr-only">Pick item</span>
-                <select id="lineagePick" title="Table or report">
-                  <option value="">Select…</option>
-                </select>
-              </label>
+              <div class="field grow lineage-combobox" id="lineageCombobox">
+                <span class="sr-only">Search table or report</span>
+                <input
+                  id="lineageSearch"
+                  type="search"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Type to search table or report…"
+                  title="Type a name to filter — no need to scroll"
+                  aria-autocomplete="list"
+                  aria-controls="lineageSearchResults"
+                  aria-expanded="false"
+                />
+                <input type="hidden" id="lineagePick" value="" />
+                <div id="lineageSearchResults" class="lineage-search-results hidden" role="listbox"></div>
+              </div>
               <button id="lineageDrawBtn" class="btn primary sm" type="button">Show map</button>
               <button id="lineageClearBtn" class="btn ghost sm" type="button">Clear</button>
             </div>

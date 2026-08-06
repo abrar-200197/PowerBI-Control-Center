@@ -1222,6 +1222,73 @@ html[data-theme="dark"] .app.embedded .is-focus-row {
   background: #1F2A3A !important;
 }
 
+/* Lineage combobox (type-to-search) */
+.lineage-combobox {
+  position: relative;
+  min-width: 0;
+}
+.lineage-combobox input[type="search"] {
+  width: 100%;
+}
+.lineage-search-results {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  max-height: min(340px, 50vh);
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #CBD5E0;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.14);
+  padding: 4px;
+}
+.lineage-search-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  color: #1A202C;
+}
+.lineage-search-item:hover,
+.lineage-search-item.is-active {
+  background: #EBF8FF;
+  color: #2B6CB0;
+}
+.lineage-search-item .lsi-label {
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.lineage-search-empty {
+  padding: 12px 10px;
+  font-size: 12.5px;
+  color: #718096;
+}
+html[data-theme="dark"] .app.embedded .lineage-search-results {
+  background: #1A2332 !important;
+  border-color: #2D3A4D !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45) !important;
+}
+html[data-theme="dark"] .app.embedded .lineage-search-item {
+  color: #E2E8F0 !important;
+}
+html[data-theme="dark"] .app.embedded .lineage-search-item:hover,
+html[data-theme="dark"] .app.embedded .lineage-search-item.is-active {
+  background: #0c2a43 !important;
+  color: #90CDF4 !important;
+}
+html[data-theme="dark"] .app.embedded .lineage-search-empty {
+  color: #94A3B8 !important;
+}
+
 /* ── Lineage map (Service-style left → right) ── */
 .lineage-map-card {
   padding: 12px 14px 16px;
