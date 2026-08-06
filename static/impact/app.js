@@ -49,13 +49,26 @@ const cssEsc = (s) => {
 
 function sourceClass(t) {
   const x = (t || "").toLowerCase();
-  if (x === "sql" || x === "sqlnative") return "sql";
-  if (x === "modeltable") return "model";
+  if (x === "sql" || x === "sqlnative" || x === "edw" || x === "fabric") return "sql";
+  if (x === "modeltable" || x === "pbi only" || x === "model") return "model";
   if (x.includes("analysis")) return "as";
-  if (x.includes("odata")) return "odata";
+  if (x.includes("odata") || x.includes("sharepoint") || x.includes("excel") || x.includes("web")) return "odata";
   if (x.includes("snow")) return "snow";
-  if (x.includes("fabric") || x.includes("lakehouse") || x.includes("warehouse")) return "sql";
+  if (x.includes("fabric") || x.includes("lakehouse") || x.includes("warehouse") || x.includes("edw")) return "sql";
   return "";
+}
+
+/** Single user-facing Source label (no dual Sql+Fabric pills). */
+function displaySourceLabel(row) {
+  ensureRowClass(row);
+  if (row._dataClass === "enterprise") {
+    if (row._enterpriseKind === "fabric") return "Fabric";
+    return "EDW";
+  }
+  const st = String(row.sourceType || "").trim();
+  if (!st || st === "ModelTable" || st === "Unknown") return "PBI only";
+  // Keep connector name for non-enterprise (Excel, SharePoint, …)
+  return st;
 }
 
 function isPhysical(row) {
@@ -640,23 +653,28 @@ function renderTable() {
   tb.innerHTML = slice.map((r) => {
     ensureRowClass(r);
     const aliases = (r.modelTableNames || []).filter((n) => n && n.toLowerCase() !== (r.table || "").toLowerCase());
-    const aliasLine = aliases.length
+    let aliasLine = aliases.length
       ? `In Power BI also as: ${aliases.slice(0, 3).join(", ")}${aliases.length > 3 ? "…" : ""}`
-      : (isPhysical(r) ? "Mapped from EDW/source" : "Power BI name only");
-    const classPill =
+      : "";
+    if (!aliasLine) {
+      if (r._enterpriseKind === "fabric") aliasLine = "Fabric warehouse / SQL endpoint";
+      else if (r._enterpriseKind === "edw") aliasLine = "Enterprise data warehouse";
+      else if (isPhysical(r)) aliasLine = "Mapped source";
+      else aliasLine = "Power BI name only";
+    }
+    const label = displaySourceLabel(r);
+    const title =
       r._dataClass === "enterprise"
         ? (r._enterpriseKind === "fabric"
-          ? `<span class="pill sql" title="Enterprise · Fabric">Fabric</span>`
-          : `<span class="pill sql" title="Enterprise · EDW">EDW</span>`)
-        : `<span class="pill" title="Non-Enterprise">Non-Ent</span>`;
-    const typeLabel = isPhysical(r) ? (r.sourceType || "Source") : "PBI only";
+          ? "Microsoft Fabric (query endpoint)"
+          : "Enterprise Data Warehouse (query)")
+        : `Connector: ${r.sourceType || "unknown"}`;
     return `
     <tr>
       <td><button class="linkish" data-open="${escapeAttr(r.tableKey)}">${escapeHtml(r.table)}</button>
         <div class="muted small">${escapeHtml(aliasLine)}</div></td>
       <td>
-        <span class="pill ${sourceClass(r.sourceType)}">${escapeHtml(typeLabel)}</span>
-        ${classPill}
+        <span class="pill ${sourceClass(label)}" title="${escapeAttr(title)}">${escapeHtml(label)}</span>
       </td>
       <td class="mono small">${escapeHtml(r.server || "—")}</td>
       <td class="mono small">${escapeHtml(r.database || "—")}</td>
