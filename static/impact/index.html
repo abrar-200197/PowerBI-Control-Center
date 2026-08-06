@@ -77,6 +77,22 @@
                 <input id="searchInput" type="search" placeholder="Search table / server / database…" />
               </label>
               <label class="field field-sm">
+                <span class="sr-only">Data class</span>
+                <select id="dataClassFilter" title="Enterprise vs Non-Enterprise">
+                  <option value="">Data: All</option>
+                  <option value="enterprise">Enterprise data</option>
+                  <option value="non_enterprise">Non-Enterprise data</option>
+                </select>
+              </label>
+              <label class="field field-sm" id="enterpriseKindWrap" hidden>
+                <span class="sr-only">Enterprise kind</span>
+                <select id="enterpriseKindFilter" title="EDW or Fabric">
+                  <option value="">Enterprise: All</option>
+                  <option value="edw">EDW</option>
+                  <option value="fabric">Fabric</option>
+                </select>
+              </label>
+              <label class="field field-sm">
                 <span class="sr-only">Source type</span>
                 <select id="sourceFilter" title="Source type"><option value="">Source: All</option></select>
               </label>

@@ -54,11 +54,139 @@ function sourceClass(t) {
   if (x.includes("analysis")) return "as";
   if (x.includes("odata")) return "odata";
   if (x.includes("snow")) return "snow";
+  if (x.includes("fabric") || x.includes("lakehouse") || x.includes("warehouse")) return "sql";
   return "";
 }
 
 function isPhysical(row) {
   return row.sourceType && row.sourceType !== "ModelTable";
+}
+
+/**
+ * Enterprise vs Non-Enterprise classification for Table impact filters.
+ *
+ * Enterprise
+ *   EDW    — Sql / SqlNative / Snowflake / classic warehouse hosts (EDW naming)
+ *   Fabric — Microsoft Fabric / OneLake / lakehouse / warehouse endpoints
+ * Non-Enterprise — SharePoint, Excel, Web, Analysis Services, OData, files, model-only, …
+ */
+function classifyEnterprise(row) {
+  const st = String(row?.sourceType || "").toLowerCase().trim();
+  const blob = [
+    st,
+    row?.server,
+    row?.database,
+    row?.schema,
+    row?.table,
+    row?.tableKey,
+    row?.searchText,
+  ]
+    .map((x) => String(x || "").toLowerCase())
+    .join(" | ");
+
+  const has = (hints) => hints.some((h) => blob.includes(h) || st.includes(h));
+
+  // 1) Fabric first (host/type can also look "sql-ish")
+  if (
+    has([
+      "fabric",
+      "onelake",
+      "lakehouse",
+      "dfs.fabric.microsoft.com",
+      "fabric.microsoft.com",
+      "msit-onelake",
+      "datawarehouse.fabric",
+      "warehouse.fabric",
+    ]) ||
+    st.includes("fabric") ||
+    st.includes("lakehouse")
+  ) {
+    return { dataClass: "enterprise", enterpriseKind: "fabric" };
+  }
+
+  // 2) Clear non-enterprise connectors
+  if (
+    has([
+      "sharepoint",
+      "excel",
+      "odata",
+      "folder",
+      "web.contents",
+      "web content",
+      "csv",
+      "pdf",
+      "azureblobs",
+      "azureblob",
+      "exchange",
+    ]) ||
+    st === "web" ||
+    st.includes("sharepoint") ||
+    st.includes("excel") ||
+    st.includes("odata") ||
+    st.includes("folder") ||
+    st.includes("file")
+  ) {
+    return { dataClass: "non_enterprise", enterpriseKind: "" };
+  }
+
+  // Analysis Services / AAS / XMLA live → non-enterprise for this split
+  if (
+    st.includes("analysis") ||
+    has(["analysis services", "asazure", "powerbi://", "pbiazure", "xmla"])
+  ) {
+    return { dataClass: "non_enterprise", enterpriseKind: "" };
+  }
+
+  // Model-only / unknown physical mapping
+  if (!st || st === "modeltable" || st === "unknown") {
+    return { dataClass: "non_enterprise", enterpriseKind: "" };
+  }
+
+  // 3) EDW / enterprise SQL platforms
+  const sqlish =
+    st === "sql" ||
+    st === "sqlnative" ||
+    st.includes("sql") ||
+    st.includes("snow") ||
+    st.includes("snowflake") ||
+    st.includes("databricks") ||
+    st.includes("oracle") ||
+    st.includes("teradata") ||
+    st.includes("postgres") ||
+    st.includes("mysql");
+
+  const edwNamed = has([
+    "edw",
+    "ashley-edw",
+    "ashley_edw",
+    "ashleyedw",
+    ".database.windows.net",
+    "sql.azuresynapse",
+    "synapse",
+  ]);
+
+  if (sqlish || edwNamed) {
+    return { dataClass: "enterprise", enterpriseKind: "edw" };
+  }
+
+  return { dataClass: "non_enterprise", enterpriseKind: "" };
+}
+
+function ensureRowClass(row) {
+  if (row && row._dataClass) return row;
+  const c = classifyEnterprise(row || {});
+  row._dataClass = c.dataClass;
+  row._enterpriseKind = c.enterpriseKind;
+  return row;
+}
+
+function syncEnterpriseKindVisibility() {
+  const wrap = $("#enterpriseKindWrap");
+  const dc = $("#dataClassFilter")?.value || "";
+  if (!wrap) return;
+  const show = dc === "enterprise";
+  wrap.hidden = !show;
+  if (!show && $("#enterpriseKindFilter")) $("#enterpriseKindFilter").value = "";
 }
 
 /** Human label for a physical/source object (EDW table, SSAS, etc.) */
@@ -395,13 +523,20 @@ function applyFilters() {
   const src = $("#sourceFilter")?.value || "";
   const minR = Number($("#minReports")?.value || 0);
   const res = $("#resolutionFilter")?.value || "";
+  const dataClass = $("#dataClassFilter")?.value || "";
+  const entKind = $("#enterpriseKindFilter")?.value || "";
+  syncEnterpriseKindVisibility();
 
   state.filtered = state.rows.filter((r) => {
-    if (q && !r.searchText.includes(q)) return false;
+    ensureRowClass(r);
+    if (q && !(r.searchText || "").includes(q)) return false;
     if (src && r.sourceType !== src) return false;
     if (r.reportCount < minR) return false;
     if (res === "physical" && !isPhysical(r)) return false;
     if (res === "model" && isPhysical(r)) return false;
+    if (dataClass === "enterprise" && r._dataClass !== "enterprise") return false;
+    if (dataClass === "non_enterprise" && r._dataClass !== "non_enterprise") return false;
+    if (dataClass === "enterprise" && entKind && r._enterpriseKind !== entKind) return false;
     return true;
   });
 
@@ -433,15 +568,26 @@ function renderTable() {
 
   const tb = $("#impactTable tbody");
   tb.innerHTML = slice.map((r) => {
+    ensureRowClass(r);
     const aliases = (r.modelTableNames || []).filter((n) => n && n.toLowerCase() !== (r.table || "").toLowerCase());
     const aliasLine = aliases.length
       ? `In Power BI also as: ${aliases.slice(0, 3).join(", ")}${aliases.length > 3 ? "…" : ""}`
       : (isPhysical(r) ? "Mapped from EDW/source" : "Power BI name only");
+    const classPill =
+      r._dataClass === "enterprise"
+        ? (r._enterpriseKind === "fabric"
+          ? `<span class="pill sql" title="Enterprise · Fabric">Fabric</span>`
+          : `<span class="pill sql" title="Enterprise · EDW">EDW</span>`)
+        : `<span class="pill" title="Non-Enterprise">Non-Ent</span>`;
+    const typeLabel = isPhysical(r) ? (r.sourceType || "Source") : "PBI only";
     return `
     <tr>
       <td><button class="linkish" data-open="${escapeAttr(r.tableKey)}">${escapeHtml(r.table)}</button>
         <div class="muted small">${escapeHtml(aliasLine)}</div></td>
-      <td><span class="pill ${sourceClass(r.sourceType)}">${escapeHtml(isPhysical(r) ? (r.sourceType || "Source") : "PBI only")}</span></td>
+      <td>
+        <span class="pill ${sourceClass(r.sourceType)}">${escapeHtml(typeLabel)}</span>
+        ${classPill}
+      </td>
       <td class="mono small">${escapeHtml(r.server || "—")}</td>
       <td class="mono small">${escapeHtml(r.database || "—")}</td>
       <td class="num"><strong>${fmt(r.reportCount)}</strong></td>
@@ -1875,17 +2021,24 @@ function wire() {
   }
 
   document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
-  ["searchInput", "sourceFilter", "minReports", "resolutionFilter"].forEach((id) => {
+  ["searchInput", "sourceFilter", "minReports", "resolutionFilter", "dataClassFilter", "enterpriseKindFilter"].forEach((id) => {
     const el = $(`#${id}`);
     if (!el) return;
     el.addEventListener("input", applyFilters);
     el.addEventListener("change", applyFilters);
+  });
+  $("#dataClassFilter")?.addEventListener("change", () => {
+    syncEnterpriseKindVisibility();
+    applyFilters();
   });
   $("#clearFilters")?.addEventListener("click", () => {
     if ($("#searchInput")) $("#searchInput").value = "";
     if ($("#sourceFilter")) $("#sourceFilter").value = "";
     if ($("#minReports")) $("#minReports").value = "1";
     if ($("#resolutionFilter")) $("#resolutionFilter").value = "";
+    if ($("#dataClassFilter")) $("#dataClassFilter").value = "";
+    if ($("#enterpriseKindFilter")) $("#enterpriseKindFilter").value = "";
+    syncEnterpriseKindVisibility();
     applyFilters();
   });
   $("#prevPage")?.addEventListener("click", () => { state.page--; renderTable(); });
