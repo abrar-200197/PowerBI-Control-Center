@@ -80,24 +80,26 @@
               <label class="field field-sm">
                 <span class="sr-only">Source</span>
                 <select id="dataClassFilter" title="Source">
-                  <option value="enterprise">Source: Enterprise Data</option>
-                  <option value="non_enterprise">Source: Non-Enterprise Data</option>
+                  <option value="" selected>Source: Select…</option>
+                  <option value="enterprise">Enterprise Data</option>
+                  <option value="non_enterprise">Non-Enterprise Data</option>
                 </select>
               </label>
               <label class="field field-sm">
                 <span class="sr-only">Sub source</span>
                 <select id="subSourceFilter" title="Sub source">
-                  <option value="">Sub source: All</option>
+                  <option value="" selected>Sub source: Select…</option>
                 </select>
               </label>
               <label class="field field-xs">
                 <span class="sr-only">Min reports</span>
-                <input id="minReports" type="number" min="0" value="1" title="Min reports" placeholder="Min" />
+                <input id="minReports" type="number" min="0" value="" title="Min reports" placeholder="Min" />
               </label>
               <label class="field field-sm">
                 <span class="sr-only">Resolution</span>
                 <select id="resolutionFilter" title="Resolution">
-                  <option value="">Resolution: All</option>
+                  <option value="" selected>Resolution: Select…</option>
+                  <option value="all">All</option>
                   <option value="physical">Physical source</option>
                   <option value="model">Model-only</option>
                 </select>

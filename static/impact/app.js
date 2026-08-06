@@ -180,16 +180,18 @@ function ensureRowClass(row) {
   return row;
 }
 
-/** Source dropdown: Enterprise Data | Non-Enterprise Data */
+/** Source dropdown: empty | enterprise | non_enterprise (empty = no class filter) */
 function getDataClassFilter() {
-  const v = $("#dataClassFilter")?.value || "enterprise";
-  return v === "non_enterprise" ? "non_enterprise" : "enterprise";
+  const v = ($("#dataClassFilter")?.value || "").trim();
+  if (v === "enterprise" || v === "non_enterprise") return v;
+  return "";
 }
 
 /**
- * Sub source dropdown:
- *  - Enterprise → "" | edw | fabric
- *  - Non-Enterprise → "" | SharePoint | Excel | Web | … (from data)
+ * Sub source dropdown (empty = no sub filter):
+ *  - Source empty → placeholder only (user must pick Source first)
+ *  - Enterprise → All | EDW | Fabric
+ *  - Non-Enterprise → All | SharePoint | Excel | Web | … (from data)
  */
 function getSubSourceFilter() {
   return ($("#subSourceFilter")?.value || "").trim();
@@ -201,14 +203,22 @@ function populateSubSourceFilter() {
   const prev = sel.value;
   const dataClass = getDataClassFilter();
 
+  if (!dataClass) {
+    sel.innerHTML = `<option value="" selected>Sub source: Select…</option>`;
+    sel.value = "";
+    sel.disabled = true;
+    return;
+  }
+
+  sel.disabled = false;
+
   if (dataClass === "enterprise") {
     sel.innerHTML = [
       `<option value="">Sub source: All</option>`,
       `<option value="edw">EDW</option>`,
       `<option value="fabric">Fabric</option>`,
     ].join("");
-    // Keep prev if still valid; default All
-    if (prev === "edw" || prev === "fabric") sel.value = prev;
+    if (prev === "edw" || prev === "fabric" || prev === "") sel.value = prev;
     else sel.value = "";
     return;
   }
@@ -551,25 +561,26 @@ async function loadData(forceRefresh = false) {
 
 function applyFilters() {
   const q = ($("#searchInput")?.value || "").trim().toLowerCase();
-  const minR = Number($("#minReports")?.value || 0);
-  const res = $("#resolutionFilter")?.value || "";
-  const dataClass = getDataClassFilter(); // enterprise | non_enterprise
-  const sub = getSubSourceFilter(); // edw|fabric OR connector type OR ""
+  const minRaw = ($("#minReports")?.value ?? "").toString().trim();
+  const minR = minRaw === "" ? null : Number(minRaw);
+  const res = ($("#resolutionFilter")?.value || "").trim(); // "" | all | physical | model
+  const dataClass = getDataClassFilter(); // "" | enterprise | non_enterprise
+  const sub = getSubSourceFilter(); // "" | edw|fabric OR connector type
 
   state.filtered = state.rows.filter((r) => {
     ensureRowClass(r);
     if (q && !(r.searchText || "").includes(q)) return false;
-    if (r.reportCount < minR) return false;
+    if (minR != null && !Number.isNaN(minR) && r.reportCount < minR) return false;
     if (res === "physical" && !isPhysical(r)) return false;
     if (res === "model" && isPhysical(r)) return false;
+    // res === "" or "all" → no resolution filter
 
+    // Source empty → show all classes (user has not selected)
     if (dataClass === "enterprise") {
       if (r._dataClass !== "enterprise") return false;
-      // Sub source: All | EDW | Fabric
       if (sub === "edw" && r._enterpriseKind !== "edw") return false;
       if (sub === "fabric" && r._enterpriseKind !== "fabric") return false;
-    } else {
-      // Non-Enterprise = not EDW/Fabric; sub source is connector type (SharePoint, Excel, …)
+    } else if (dataClass === "non_enterprise") {
       if (r._dataClass !== "non_enterprise") return false;
       if (sub && String(r.sourceType || "") !== sub) return false;
     }
@@ -2070,15 +2081,18 @@ function wire() {
     applyFilters();
   });
 
-  // Defaults on first paint
-  if ($("#dataClassFilter")) $("#dataClassFilter").value = "enterprise";
+  // Initial landing: all filter controls empty / unselected
+  if ($("#searchInput")) $("#searchInput").value = "";
+  if ($("#dataClassFilter")) $("#dataClassFilter").value = "";
+  if ($("#minReports")) $("#minReports").value = "";
+  if ($("#resolutionFilter")) $("#resolutionFilter").value = "";
   populateSubSourceFilter();
 
   $("#clearFilters")?.addEventListener("click", () => {
     if ($("#searchInput")) $("#searchInput").value = "";
-    if ($("#minReports")) $("#minReports").value = "1";
+    if ($("#minReports")) $("#minReports").value = "";
     if ($("#resolutionFilter")) $("#resolutionFilter").value = "";
-    if ($("#dataClassFilter")) $("#dataClassFilter").value = "enterprise";
+    if ($("#dataClassFilter")) $("#dataClassFilter").value = "";
     populateSubSourceFilter();
     if ($("#subSourceFilter")) $("#subSourceFilter").value = "";
     applyFilters();
