@@ -61,18 +61,22 @@ def resolve_usage_exclude_users(auth: Optional[OpsAuth] = None) -> Set[str]:
     UPNs / emails / keys to exclude from view counts.
 
     Sources:
-      - USAGE_EXCLUDE_USER_UPNS (explicit list)
+      - USAGE_EXCLUDE_USER_UPNS (explicit roster + env extras; primary path)
       - Members of Azure AD groups named in USAGE_EXCLUDE_GROUP_NAMES
-        (default: Sg_GCC_CentralAnalytics_Unv)
+        (default: Sg_GCC_CentralAnalytics_Unv) — UPN only if Graph returns it
 
-    Requires app permission GroupMember.Read.All or Directory.Read.All on Graph.
-    Failures are non-fatal (returns only explicit UPNs) so ops never blocks.
+    Graph needs GroupMember.Read.All; full UPN on members also needs User.Read.All.
+    Failures are non-fatal (returns explicit UPNs) so ops never blocks.
     """
     exclude: Set[str] = set()
     for u in getattr(cfg, "USAGE_EXCLUDE_USER_UPNS", None) or []:
         k = _norm_user_key(str(u))
-        if k:
-            exclude.add(k)
+        if not k:
+            continue
+        exclude.add(k)
+        # Activity sometimes logs bare alias without domain
+        if "@" in k:
+            exclude.add(k.split("@", 1)[0])
 
     group_names = list(getattr(cfg, "USAGE_EXCLUDE_GROUP_NAMES", None) or [])
     if not group_names:

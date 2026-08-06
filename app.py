@@ -1012,19 +1012,55 @@ def api_catalog_impact_table_detail():
         entry = catalog_service.impact_table_detail(key)
         if not entry:
             return jsonify({'success': False, 'error': f'No impact entry for {key}'}), 404
-        # Optional ACL filter on datasets
+
+        # Snapshot tenant-wide summary before ACL (grid uses this; drawer may be smaller)
+        entry = dict(entry)
+        tenant_summary = dict(entry.get('impactSummary') or {})
+        entry['tenantImpactSummary'] = tenant_summary
+
         allowed = _user_allowed_workspace_ids()
+        acl_applied = False
         if allowed is not None and len(allowed) > 0:
-            datasets = [d for d in (entry.get('datasets') or []) if d.get('workspaceId') in allowed]
-            entry = dict(entry)
-            entry['datasets'] = datasets
-            s = entry.get('impactSummary') or {}
+            acl_applied = True
+            filtered_datasets = []
+            for d in entry.get('datasets') or []:
+                if not isinstance(d, dict):
+                    continue
+                d2 = dict(d)
+                # Keep reports in workspaces the user can open
+                reps = []
+                for r in d2.get('reports') or []:
+                    if not isinstance(r, dict):
+                        continue
+                    rid_ws = r.get('workspaceId') or d2.get('workspaceId') or ''
+                    if rid_ws in allowed:
+                        reps.append(r)
+                d2['reports'] = reps
+                # Keep dataset if its home workspace is allowed OR any remaining report is
+                ds_ws = d2.get('workspaceId') or ''
+                if ds_ws in allowed or reps:
+                    # If dataset home is outside ACL but reports inside, still show
+                    filtered_datasets.append(d2)
+            entry['datasets'] = filtered_datasets
+
+            report_ids = set()
+            workspace_ids = set()
+            for d in filtered_datasets:
+                if d.get('workspaceId'):
+                    workspace_ids.add(d['workspaceId'])
+                for r in d.get('reports') or []:
+                    if r.get('reportId'):
+                        report_ids.add(r['reportId'])
+                    if r.get('workspaceId'):
+                        workspace_ids.add(r['workspaceId'])
             entry['impactSummary'] = {
-                **s,
-                'datasetCount': len(datasets),
-                'reportCount': sum(len(d.get('reports') or []) for d in datasets),
-                'workspaceCount': len({d.get('workspaceId') for d in datasets if d.get('workspaceId')}),
+                **tenant_summary,
+                'datasetCount': len(filtered_datasets),
+                'reportCount': len(report_ids),
+                'workspaceCount': len(workspace_ids),
             }
+
+        entry['aclApplied'] = acl_applied
         return jsonify({'success': True, 'table': entry})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
