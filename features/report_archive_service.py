@@ -23,19 +23,24 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# Central Analytics roster — same default as usage exclude (also @ashleyfurniture.com)
-_DEFAULT_ARCHIVE_UPNS = (
-    "mahmed@ashleyfurnitureindia.com,"
-    "pshivanandam@ashleyfurnitureindia.com,"
-    "aramalingam@ashleyfurnitureindia.com,"
-    "mthanapathi@ashleyfurnitureindia.com,"
-    "ksambasivam@ashleyfurnitureindia.com,"
-    "danandkumar@ashleyfurnitureindia.com,"
-    "jravikumar@ashleyfurnitureindia.com,"
-    "kviswanathan@ashleyfurnitureindia.com,"
-    "ychandran@ashleyfurnitureindia.com,"
-    "nkathiresan@ashleyfurnitureindia.com,"
-    "mahmed@ashleyfurniture.com"
+# Central Analytics team (Download / archive button).
+# SSO may present either @ashleyfurnitureindia.com or @ashleyfurniture.com —
+# we allow both domains for every alias below.
+_ARCHIVE_LOCAL_PARTS = (
+    "mahmed",
+    "pshivanandam",
+    "aramalingam",
+    "mthanapathi",
+    "ksambasivam",
+    "danandkumar",
+    "jravikumar",
+    "kviswanathan",
+    "ychandran",
+    "nkathiresan",
+)
+_ARCHIVE_DOMAINS = (
+    "ashleyfurnitureindia.com",
+    "ashleyfurniture.com",
 )
 
 
@@ -43,27 +48,65 @@ def _norm_upn(s: str) -> str:
     return (s or "").strip().lower()
 
 
+def _expand_aliases(local: str) -> Set[str]:
+    local = _norm_upn(local).split("@")[0]
+    if not local:
+        return set()
+    return {f"{local}@{d}" for d in _ARCHIVE_DOMAINS}
+
+
 def archive_allowed_upns() -> Set[str]:
-    """UPNs allowed to see/use Archive Download button."""
-    base = {_norm_upn(u) for u in _DEFAULT_ARCHIVE_UPNS.split(",") if u.strip()}
+    """UPNs allowed to see/use Archive Download button (both company domains)."""
+    base: Set[str] = set()
+    for local in _ARCHIVE_LOCAL_PARTS:
+        base |= _expand_aliases(local)
+
+    # Env override / extras: comma-separated full UPNs or local parts
     extra = os.getenv("REPORT_ARCHIVE_ALLOWED_UPNS") or ""
     for u in extra.split(","):
-        if u.strip():
+        u = u.strip()
+        if not u:
+            continue
+        if "@" in u:
             base.add(_norm_upn(u))
-    # Also merge usage-exclude defaults if catalog_config available
+            # also twin domain for same local part
+            base |= _expand_aliases(u)
+        else:
+            base |= _expand_aliases(u)
+
+    # Merge usage-exclude roster (covers both domains if listed there)
     try:
         from catalog_service import catalog_config as cfg
         for u in getattr(cfg, "USAGE_EXCLUDE_USER_UPNS", []) or []:
-            base.add(_norm_upn(u))
+            nu = _norm_upn(u)
+            if not nu:
+                continue
+            base.add(nu)
+            base |= _expand_aliases(nu)
     except Exception:
         pass
     return base
 
 
 def user_can_archive(email_or_upn: Optional[str]) -> bool:
+    """
+    True if signed-in UPN is on the Central Analytics archive allow-list.
+    Matches case-insensitively; accepts either ashleyfurniture.com or
+    ashleyfurnitureindia.com for the same local part.
+    """
     if not email_or_upn:
         return False
-    return _norm_upn(email_or_upn) in archive_allowed_upns()
+    upn = _norm_upn(email_or_upn)
+    allowed = archive_allowed_upns()
+    if upn in allowed:
+        return True
+    # Local-part fallback (handles rare tenant suffix variants)
+    local = upn.split("@")[0] if "@" in upn else upn
+    if local and any(a.split("@")[0] == local for a in allowed):
+        # Only trust local-part match for known Ashley domains
+        if upn.endswith("@ashleyfurniture.com") or upn.endswith("@ashleyfurnitureindia.com"):
+            return True
+    return False
 
 
 def _safe_segment(name: str, fallback: str = "Item") -> str:

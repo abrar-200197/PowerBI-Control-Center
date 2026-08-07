@@ -937,6 +937,20 @@
         // Reverse search: report name → workspace (catalog thin API)
         initFindReportSelect();
 
+        // Confirm archive permission from server (covers domain twin / stale HTML)
+        fetch('/api/me/capabilities', { credentials: 'include' })
+            .then((r) => r.json())
+            .then((body) => {
+                if (body && body.success && typeof body.canArchiveReports === 'boolean') {
+                    const prev = canArchiveReports;
+                    canArchiveReports = !!body.canArchiveReports;
+                    if (canArchiveReports !== prev && typeof reports !== 'undefined' && reports.length) {
+                        try { rerenderReportsTable(); } catch (e) { /* ignore */ }
+                    }
+                }
+            })
+            .catch(() => { /* keep template flag */ });
+
         const clearAll = document.getElementById('clearAllFiltersBtn');
         if (clearAll) clearAll.addEventListener('click', clearAllFilters);
         const clearToolbar = document.getElementById('clearFiltersToolbarBtn');
