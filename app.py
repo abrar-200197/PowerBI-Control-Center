@@ -9280,14 +9280,25 @@ def api_archive_report_to_sharepoint():
             folder_name=folder_name,
             folder_id=folder_id,
         )
-        status = 200 if result.get('success') else 400
-        if result.get('status_code') == 403:
-            status = 403
+        if result.get('success'):
+            print(f"   ✅ ARCHIVE OK → {result.get('remotePath')}")
+            return jsonify(result), 200
+
+        err = result.get('error') or 'Archive failed'
+        stage = result.get('stage') or 'unknown'
+        print(f"   ❌ ARCHIVE FAILED stage={stage}: {err}")
+        status = 400
+        sc = result.get('status_code')
+        if sc in (401, 403):
+            status = int(sc)
+        elif sc == 404:
+            status = 404
         return jsonify(result), status
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        print(f"   ❌ ARCHIVE EXCEPTION: {e}")
+        return jsonify({'success': False, 'error': str(e), 'stage': 'exception'}), 500
 
 
 @app.route('/api/reports/crash-test/<report_id>', methods=['GET', 'POST'])

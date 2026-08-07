@@ -2983,8 +2983,10 @@
             const body = await res.json().catch(() => ({}));
             if (!res.ok || !body.success) {
                 const err = body.error || `HTTP ${res.status}`;
-                showAlert('error', `Archive failed: ${err}`);
-                console.warn('archive-to-sharepoint', body);
+                const stage = body.stage ? ` [${body.stage}]` : '';
+                const hint = body.hint ? ` — ${body.hint}` : '';
+                showAlert('error', `Archive failed${stage}: ${err}${hint}`);
+                console.warn('archive-to-sharepoint', res.status, body);
                 return;
             }
             const pathHint = body.remotePath || body.batchPath || 'SharePoint';
@@ -2995,6 +2997,7 @@
             console.log('📦 Archive OK', body);
         } catch (e) {
             showAlert('error', 'Archive failed: ' + (e.message || e));
+            console.error('archive-to-sharepoint exception', e);
         } finally {
             if (btn) {
                 btn.disabled = false;
@@ -3030,6 +3033,10 @@
 
     function showAlert(type, message) {
         const container = document.getElementById('alertContainer');
+        if (!container) {
+            console.log(`[alert ${type}]`, message);
+            return;
+        }
         const alertClass = type === 'success' ? 'alert-success' :
                           type === 'error' ? 'alert-error' :
                           type === 'warning' ? 'alert-warning' : 'alert-info';
@@ -3037,12 +3044,14 @@
         const alert = document.createElement('div');
         alert.className = `alert ${alertClass}`;
         alert.textContent = message;
+        // Long errors (archive) need more reading time
+        const ms = type === 'error' ? 20000 : type === 'success' ? 10000 : 5000;
 
         container.appendChild(alert);
 
         setTimeout(() => {
             alert.remove();
-        }, 5000);
+        }, ms);
     }
 
     function escapeHtml(text) {
