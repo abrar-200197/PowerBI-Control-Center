@@ -1534,14 +1534,49 @@ class CatalogService:
     def _write_disk_mirror(
         self, name: str, raw: bytes, *, sp_size: int, sp_modified: str
     ) -> None:
+        """
+        Best-effort atomic write of SharePoint blob to local cache.
+        Never raises — catalog serving must work even if disk is read-only.
+        """
+        import tempfile
+        import uuid
+
+        cache_dir = Path(cfg.CATALOG_CACHE_DIR)
         try:
-            cfg.CATALOG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            path = self._disk_path(name)
-            tmp = path.with_suffix(path.suffix + ".tmp")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as mk_exc:
+            # Fall back to process temp if configured cache is not writable
+            alt = Path(tempfile.gettempdir()) / "pbi_catalog_cache" / "latest"
+            try:
+                alt.mkdir(parents=True, exist_ok=True)
+                cache_dir = alt
+                cfg.CATALOG_CACHE_DIR = alt  # type: ignore[misc]
+                logger.warning(
+                    "CATALOG_CACHE_DIR not writable (%s); using %s", mk_exc, alt
+                )
+            except Exception as alt_exc:
+                logger.warning(
+                    "Could not create catalog cache dir (%s / %s) — skip mirror %s",
+                    mk_exc,
+                    alt_exc,
+                    name,
+                )
+                return
+
+        path = cache_dir / Path(name).name
+        # Unique tmp avoids collisions under multi-worker gunicorn
+        tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+        meta_path = cache_dir / f".{Path(name).name}.meta.json"
+        meta_tmp = path.parent / f".{meta_path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+
+        try:
             with open(tmp, "wb") as f:
                 f.write(raw)
                 f.flush()
-                os.fsync(f.fileno())
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
             os.replace(tmp, path)
             side = {
                 "name": name,
@@ -1549,12 +1584,16 @@ class CatalogService:
                 "lastModifiedDateTime": sp_modified,
                 "cachedAt": datetime.now(timezone.utc).isoformat(),
             }
-            meta_path = self._meta_path(name)
-            meta_tmp = meta_path.with_suffix(".tmp")
             meta_tmp.write_text(json.dumps(side), encoding="utf-8")
             os.replace(meta_tmp, meta_path)
         except Exception as exc:
             logger.warning("Could not write disk mirror for %s: %s", name, exc)
+            for leftover in (tmp, meta_tmp):
+                try:
+                    if leftover.is_file():
+                        leftover.unlink()
+                except Exception:
+                    pass
 
 
 # Process-wide singleton

@@ -71,6 +71,13 @@ RUN mkdir -p /ms-playwright \
 # Application source
 COPY . .
 
+# Local catalog mirror dirs (runtime also prefers /home/data on App Service).
+# Ensure path exists even before first Graph download so os.replace never fails
+# with "No such file or directory" on the tmp→final rename.
+RUN mkdir -p /app/data/catalog_cache/latest \
+    && mkdir -p /app/data/catalog_output/latest \
+    && chmod -R a+rwX /app/data || true
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000
