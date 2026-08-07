@@ -150,9 +150,43 @@ CATALOG_LOCAL_DIR = Path(
 # Durable server-side mirror of SharePoint latest/ (NOT source of truth).
 # After a verified download, subsequent app starts load from here when meta
 # (size + lastModified) still matches Graph — browser never downloads these files.
-CATALOG_CACHE_DIR = Path(
-    os.getenv("CATALOG_CACHE_DIR", PROJECT_ROOT / "data" / "catalog_cache" / "latest")
-)
+#
+# Azure App Service Linux: /app is often ephemeral/not reliably writable.
+# Prefer /home/data (App Service home mount) when available, else project data, else /tmp.
+def _default_catalog_cache_dir() -> Path:
+    env = (os.getenv("CATALOG_CACHE_DIR") or "").strip()
+    if env:
+        p = Path(env)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return p
+
+    candidates = []
+    if os.getenv("WEBSITE_SITE_NAME") or os.path.isdir("/home"):
+        candidates.append(Path("/home/data/catalog_cache/latest"))
+    candidates.append(PROJECT_ROOT / "data" / "catalog_cache" / "latest")
+    candidates.append(
+        Path(os.getenv("TMPDIR") or os.getenv("TEMP") or "/tmp")
+        / "pbi_catalog_cache"
+        / "latest"
+    )
+
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            probe = cand / ".write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return cand
+        except Exception:
+            continue
+    # Last resort — even if not writable yet; writer will re-mkdir
+    return candidates[-1]
+
+
+CATALOG_CACHE_DIR = _default_catalog_cache_dir()
 CATALOG_CACHE_TTL_SEC = int(os.getenv("CATALOG_CACHE_TTL_SEC", "3600"))
 # How often to re-check SharePoint item meta (size/mtime) against the disk mirror.
 CATALOG_DISK_REVALIDATE_SEC = int(os.getenv("CATALOG_DISK_REVALIDATE_SEC", "300"))
