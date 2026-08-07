@@ -453,122 +453,109 @@ def _save_cache(cache):
         session["token_cache"] = cache.serialize()
 
 
+def _jwt_seconds_left(token):
+    """Return seconds until JWT exp, or None if unreadable."""
+    try:
+        import base64
+        import json
+        import time as _t
+        parts = (token or "").split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        data = json.loads(base64.b64decode(payload))
+        exp = float(data.get("exp") or 0)
+        return exp - _t.time()
+    except Exception:
+        return None
+
+
 def get_user_powerbi_token():
-    """Get the user's Power BI access token from session or refresh it if needed"""
-    # Load token cache from session
+    """Get the user's Power BI access token from session or refresh it if needed.
+
+    Prefer the in-session JWT when it still has >5 minutes left so workspace
+    loads do not hit MSAL/AAD on every folder-meta request.
+    """
+    # 1) Reuse valid session token (fast path — no AAD round-trip)
+    if "access_token" in session:
+        left = _jwt_seconds_left(session["access_token"])
+        if left is not None and left > 300:
+            # Quiet reuse — avoid log spam on every workspace select
+            return session["access_token"]
+        if left is not None and left <= 300:
+            print(f"⚠️ Session Power BI token expiring in {int(left)}s — refreshing…")
+            session.pop("access_token", None)
+
+    # 2) MSAL silent refresh only when needed
     cache = _load_cache()
     accounts = msal_app.get_accounts(username=session.get('user', {}).get('preferred_username'))
-
-    # If no accounts in cache, try getting from session user info
     if not accounts:
         accounts = msal_app.get_accounts()
 
     if accounts:
-        # ALWAYS try to get token silently first - MSAL will refresh if needed
-        print("🔄 Attempting to refresh token silently...")
-        result = msal_app.acquire_token_silent(
-            SCOPE,
-            account=accounts[0]
-        )
+        print("🔄 Acquiring Power BI token silently (MSAL)…")
+        result = msal_app.acquire_token_silent(SCOPE, account=accounts[0])
+        if result and "access_token" in result and "error" not in result:
+            print("✅ Power BI token acquired/refreshed")
+            session["access_token"] = result["access_token"]
+            _save_cache(cache)
+            return result["access_token"]
+        if result and "error" in result:
+            print(f"⚠️ Token refresh error: {result.get('error_description', result.get('error'))}")
 
-        if result and "access_token" in result:
-            # Check if we got a new token or if there was an error
-            if "error" in result:
-                print(f"⚠️ Token refresh error: {result.get('error_description', result.get('error'))}")
-            else:
-                print("✅ Token refreshed successfully")
-                session["access_token"] = result["access_token"]
-                _save_cache(cache)
-                return result["access_token"]
-
-    # If we have a token in session, check if it's still valid
-    if "access_token" in session:
-        try:
-            import base64
-            import json
-            import time
-
-            token = session["access_token"]
-            parts = token.split('.')
-            if len(parts) == 3:
-                payload = parts[1]
-                payload += '=' * (4 - len(payload) % 4)
-                decoded = base64.b64decode(payload)
-                token_data = json.loads(decoded)
-
-                exp = token_data.get('exp', 0)
-                current_time = time.time()
-
-                # Check if token expires within the next 5 minutes
-                if exp > current_time + 300:
-                    print(f"✅ Session token is still valid (expires in {int((exp - current_time) / 60)} minutes)")
-                    return token
-                else:
-                    print(f"⚠️ Session token is expired or expiring soon")
-                    # Clear the expired token
-                    session.pop("access_token", None)
-        except Exception as e:
-            print(f"⚠️ Could not check token expiration: {e}")
-
-    # If we can't get a token, user needs to re-authenticate
-    print("❌ No valid token available - user needs to re-authenticate")
+    print("❌ No valid Power BI token — user needs to re-authenticate")
     return None
 
 
 def get_user_fabric_token():
     """
-    Get a Fabric API token by exchanging the existing Power BI token
-    using the On-Behalf-Of (OBO) flow, or by acquiring silently with Fabric scope.
+    Fabric API token (audience api.fabric.microsoft.com).
 
-    The Fabric API (api.fabric.microsoft.com) requires a different audience/scope
-    than the Power BI API (analysis.windows.net/powerbi/api).
+    Reuse session JWT when still valid (>5 min) so Report Catalog workspace
+    loads do not call MSAL on every request.
     """
-    # First try: acquire silently with Fabric scope from cached tokens
+    # 1) Reuse valid Fabric token in session
+    if "fabric_access_token" in session:
+        left = _jwt_seconds_left(session["fabric_access_token"])
+        if left is not None and left > 300:
+            return session["fabric_access_token"]
+        if left is not None and left <= 300:
+            session.pop("fabric_access_token", None)
+
+    # 2) Silent acquire with Fabric scope
     cache = _load_cache()
     accounts = msal_app.get_accounts(username=session.get('user', {}).get('preferred_username'))
     if not accounts:
         accounts = msal_app.get_accounts()
 
     if accounts:
-        print("🔄 Attempting to acquire Fabric token silently...")
-        result = msal_app.acquire_token_silent(
-            FABRIC_SCOPE,
-            account=accounts[0]
-        )
-
+        result = msal_app.acquire_token_silent(FABRIC_SCOPE, account=accounts[0])
         if result and "access_token" in result and "error" not in result:
-            print("✅ Fabric token acquired silently")
+            print("✅ Fabric token acquired (silent)")
             session["fabric_access_token"] = result["access_token"]
             _save_cache(cache)
             return result["access_token"]
 
-    # Second try: use OBO flow - exchange Power BI token for Fabric token
+    # 3) OBO from Power BI token (often fails if assertion audience mismatch — keep as fallback)
     pbi_token = get_user_powerbi_token()
     if pbi_token:
-        print("🔄 Attempting OBO exchange for Fabric token...")
         try:
             result = msal_app.acquire_token_on_behalf_of(
                 user_assertion=pbi_token,
                 scopes=FABRIC_SCOPE
             )
-
             if result and "access_token" in result and "error" not in result:
-                print("✅ Fabric token acquired via OBO")
+                print("✅ Fabric token acquired (OBO)")
                 session["fabric_access_token"] = result["access_token"]
                 return result["access_token"]
             else:
                 error = result.get('error', 'unknown') if result else 'no result'
                 error_desc = result.get('error_description', '') if result else ''
-                print(f"⚠️ OBO exchange failed: {error} - {error_desc}")
+                print(f"⚠️ Fabric OBO failed: {error} - {str(error_desc)[:120]}")
         except Exception as e:
-            print(f"⚠️ OBO exchange error: {e}")
+            print(f"⚠️ Fabric OBO error: {e}")
 
-    # Fallback: return cached Fabric token from session if available
-    if "fabric_access_token" in session:
-        print("ℹ️ Using cached Fabric token from session")
-        return session["fabric_access_token"]
-
-    print("⚠️ Could not acquire Fabric API token - getDefinition will be skipped")
+    print("⚠️ Could not acquire Fabric API token")
     return None
 
 
@@ -5732,47 +5719,16 @@ def _fetch_workspace_folder_meta(workspace_id, timeout=12):
 
     def _try_fabric_items_membership(token, label):
         """
-        Map report id → parent folder via Fabric Items API.
-
-        Preferred strategy (reliable):
-          For each known folder, GET items?rootFolderId={folder}&recursive=true
-          → every returned report belongs under that folder tree; use item.folderId
-            when present, else rootFolderId.
-
-        Fallback: list all workspace items and read folderId when the API returns it.
+        ONE workspace items list (paginated) → reportId → folderId.
+        Avoids N+1 per-folder calls that made workspace select slow.
         """
         nonlocal report_folder_map
         if not token:
             return False
         try:
-            mapped_in_folder = 0
-
-            # --- Strategy A: per-folder listing (works even if folderId omitted on item) ---
-            if folder_names_map:
-                for fid in list(folder_names_map.keys()):
-                    try:
-                        for item in _paginate_fabric_items(
-                            token,
-                            {
-                                'rootFolderId': fid,
-                                'recursive': 'true',
-                            },
-                            f"{label}/folder:{str(fid)[:8]}",
-                        ):
-                            if not _is_report_item(item):
-                                continue
-                            rid = item.get('id')
-                            if not rid:
-                                continue
-                            parent = _item_folder_id(item) or fid
-                            report_folder_map[str(rid)] = str(parent)
-                            mapped_in_folder += 1
-                    except Exception as folder_ex:
-                        print(f"   ⚠️ items for folder {str(fid)[:8]} ({label}): {folder_ex}")
-
-            # --- Strategy B: full workspace list (catch root-level + any missed) ---
             rootish = 0
-            for item in _paginate_fabric_items(token, {}, f"{label}/workspace-root"):
+            in_folder = 0
+            for item in _paginate_fabric_items(token, {'recursive': 'true'}, f"{label}/items"):
                 if not _is_report_item(item):
                     continue
                 rid = item.get('id')
@@ -5782,67 +5738,71 @@ def _fetch_workspace_folder_meta(workspace_id, timeout=12):
                 parent = _item_folder_id(item)
                 if parent:
                     report_folder_map[rid_s] = str(parent)
-                    mapped_in_folder += 1
-                elif rid_s not in report_folder_map:
+                    in_folder += 1
+                else:
                     report_folder_map[rid_s] = None
                     rootish += 1
 
-            in_folder = sum(1 for v in report_folder_map.values() if v)
             print(
-                f"   📁 Report→folder map via Fabric items ({label}): "
-                f"total={len(report_folder_map)} in_folder={in_folder} rootish≈{rootish}"
+                f"   📁 Report→folder map ({label}): "
+                f"total={len(report_folder_map)} in_folder={in_folder} root={rootish}"
             )
-            return in_folder > 0 or len(report_folder_map) > 0
+            return len(report_folder_map) > 0
         except Exception as ex:
             print(f"   ⚠️ Fabric items membership ({label}) error: {ex}")
         return False
 
-    tokens_to_try = []
+    # Tokens: try Fabric user token FIRST only. Do not fan-out PBI+SP+Scanner
+    # unless Fabric fails — that was forcing new tokens every workspace select.
+    tok = None
+    label = 'user-fabric'
     try:
-        tokens_to_try.append(('user-fabric', get_user_fabric_token()))
+        tok = get_user_fabric_token()
     except Exception as ex:
         print(f"   ⚠️ get_user_fabric_token failed: {ex}")
-    try:
-        tokens_to_try.append(('user-pbi', get_user_powerbi_token()))
-    except Exception as ex:
-        print(f"   ⚠️ get_user_powerbi_token failed: {ex}")
-    try:
-        from scanner_connector import PowerBIScanner
-        sp = PowerBIScanner()
-        sp_token = None
-        if hasattr(sp, 'get_access_token'):
-            try:
-                try:
-                    sp_token = sp.get_access_token(scope='https://api.fabric.microsoft.com/.default')
-                except TypeError:
-                    sp_token = sp.get_access_token()
-            except Exception:
-                sp_token = None
-        tokens_to_try.append(('service-principal', sp_token))
-    except Exception as ex:
-        print(f"   ⚠️ SP token for folders failed: {ex}")
 
-    # Folders + membership via first working tokens
-    for label, tok in tokens_to_try:
-        if not tok:
-            continue
-        if not folder_names_map:
-            _try_fabric_folders(tok, label)
-        if not report_folder_map:
-            _try_fabric_items_membership(tok, label)
-        if folder_names_map and report_folder_map:
-            break
+    if tok:
+        _try_fabric_folders(tok, label)
+        _try_fabric_items_membership(tok, label)
 
-    # Scanner fallback (expensive) — only when Fabric membership missing
+    # Fallback 1: user Power BI token (sometimes accepted on Fabric endpoints)
+    if not folder_names_map or not report_folder_map:
+        try:
+            pbi_tok = get_user_powerbi_token()
+            if pbi_tok:
+                if not folder_names_map:
+                    _try_fabric_folders(pbi_tok, 'user-pbi')
+                if not report_folder_map:
+                    _try_fabric_items_membership(pbi_tok, 'user-pbi')
+        except Exception as ex:
+            print(f"   ⚠️ user-pbi folder fallback failed: {ex}")
+
+    # Fallback 2: service principal — only if still empty (slow token + possible scan)
     if not folder_names_map or not report_folder_map:
         try:
             from scanner_connector import PowerBIScanner
-            scanner = PowerBIScanner()
-            scanner.access_token = scanner.get_access_token()
-            # Prefer lightweight workspace info when available
-            scan_data = None
-            if hasattr(scanner, 'run_scan'):
-                # datasetSchema=False if supported — keep fast
+            sp = PowerBIScanner()
+            sp_token = None
+            if hasattr(sp, 'get_access_token'):
+                try:
+                    try:
+                        sp_token = sp.get_access_token(
+                            scope='https://api.fabric.microsoft.com/.default'
+                        )
+                    except TypeError:
+                        sp_token = sp.get_access_token()
+                except Exception:
+                    sp_token = None
+            if sp_token:
+                if not folder_names_map:
+                    _try_fabric_folders(sp_token, 'service-principal')
+                if not report_folder_map:
+                    _try_fabric_items_membership(sp_token, 'service-principal')
+            # Admin Scanner only as last resort (expensive)
+            if not folder_names_map or not report_folder_map:
+                print("   ⚠️ Folder meta incomplete — Admin Scanner last resort…")
+                scanner = PowerBIScanner()
+                scanner.access_token = sp_token or scanner.get_access_token()
                 try:
                     scan_data = scanner.run_scan(
                         workspace_id=workspace_id,
@@ -5852,32 +5812,32 @@ def _fetch_workspace_folder_meta(workspace_id, timeout=12):
                     )
                 except TypeError:
                     scan_data = scanner.run_scan(workspace_id=workspace_id)
-            if scan_data and scan_data.get('workspaces'):
-                for ws in scan_data['workspaces']:
-                    if ws.get('id') != workspace_id:
-                        continue
-                    if not folder_names_map:
-                        _ingest_folder_rows(ws.get('folders') or [])
-                    for rep in ws.get('reports') or []:
-                        rid = rep.get('id')
-                        if not rid:
+                if scan_data and scan_data.get('workspaces'):
+                    for ws in scan_data['workspaces']:
+                        if ws.get('id') != workspace_id:
                             continue
-                        fid = rep.get('folderObjectId') or rep.get('folderId')
-                        if rid not in report_folder_map:
-                            report_folder_map[str(rid)] = str(fid) if fid else None
-                        if fid and fid not in folder_names_map:
-                            folder_names_map[fid] = {
-                                'id': fid,
-                                'name': rep.get('folderName') or f'Folder {str(fid)[:8]}',
-                                'parentFolderId': None,
-                            }
-                    print(
-                        f"   📁 Scanner fallback folders={len(folder_names_map)} "
-                        f"membership={len(report_folder_map)}"
-                    )
-                    break
+                        if not folder_names_map:
+                            _ingest_folder_rows(ws.get('folders') or [])
+                        for rep in ws.get('reports') or []:
+                            rid = rep.get('id')
+                            if not rid:
+                                continue
+                            fid = rep.get('folderObjectId') or rep.get('folderId')
+                            if str(rid) not in report_folder_map:
+                                report_folder_map[str(rid)] = str(fid) if fid else None
+                            if fid and fid not in folder_names_map:
+                                folder_names_map[fid] = {
+                                    'id': fid,
+                                    'name': rep.get('folderName') or f'Folder {str(fid)[:8]}',
+                                    'parentFolderId': None,
+                                }
+                        print(
+                            f"   📁 Scanner fallback folders={len(folder_names_map)} "
+                            f"membership={len(report_folder_map)}"
+                        )
+                        break
         except Exception as ex:
-            print(f"   ⚠️ Scanner folder fallback failed: {ex}")
+            print(f"   ⚠️ SP/Scanner folder fallback failed: {ex}")
 
     # report_count per folder from membership
     counts = {}
@@ -9280,14 +9240,25 @@ def api_archive_report_to_sharepoint():
             folder_name=folder_name,
             folder_id=folder_id,
         )
-        status = 200 if result.get('success') else 400
-        if result.get('status_code') == 403:
-            status = 403
+        if result.get('success'):
+            print(f"   ✅ ARCHIVE OK → {result.get('remotePath')}")
+            return jsonify(result), 200
+
+        err = result.get('error') or 'Archive failed'
+        stage = result.get('stage') or 'unknown'
+        print(f"   ❌ ARCHIVE FAILED stage={stage}: {err}")
+        status = 400
+        sc = result.get('status_code')
+        if sc in (401, 403):
+            status = int(sc)
+        elif sc == 404:
+            status = 404
         return jsonify(result), status
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        print(f"   ❌ ARCHIVE EXCEPTION: {e}")
+        return jsonify({'success': False, 'error': str(e), 'stage': 'exception'}), 500
 
 
 @app.route('/api/reports/crash-test/<report_id>', methods=['GET', 'POST'])

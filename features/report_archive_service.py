@@ -107,23 +107,61 @@ def export_report_bytes(
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/zip, application/octet-stream, */*",
     }
+    print(f"   ⬇️ Export GET {url}")
     try:
-        resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
+        # connect timeout short; read can be large for PBIX
+        resp = requests.get(url, headers=headers, timeout=(30, timeout))
+    except requests.Timeout:
+        print("   ❌ Export timed out")
+        return {
+            "ok": False,
+            "error": f"Export timed out after {timeout}s. Report may be too large or API hung.",
+            "status_code": 0,
+        }
     except requests.RequestException as ex:
+        print(f"   ❌ Export request error: {ex}")
         return {"ok": False, "error": f"Export request failed: {ex}", "status_code": 0}
 
     if resp.status_code != 200:
-        detail = (resp.text or "")[:400]
+        detail = (resp.text or "")[:600]
+        # Prefer Power BI JSON error message when present
+        try:
+            j = resp.json()
+            err = j.get("error") or j
+            if isinstance(err, dict):
+                detail = err.get("message") or err.get("code") or detail
+                if err.get("pbi.error"):
+                    pe = err["pbi.error"]
+                    detail = pe.get("message") or pe.get("code") or detail
+        except Exception:
+            pass
+        print(f"   ❌ Export HTTP {resp.status_code}: {detail[:300]}")
+        hint = ""
+        if resp.status_code in (401, 403):
+            hint = " Check Report.Read.All + Dataset.Read.All and workspace access."
+        elif resp.status_code == 404:
+            hint = " Report not found or Export not supported for this item type."
+        elif resp.status_code == 400:
+            hint = (
+                " Often blocked for live/DirectQuery-only downloads, "
+                "sensitivity labels, or reports that cannot be downloaded as PBIX."
+            )
         return {
             "ok": False,
-            "error": f"Export HTTP {resp.status_code}: {detail}",
+            "error": f"Export HTTP {resp.status_code}: {detail}{hint}",
             "status_code": resp.status_code,
         }
 
     content = resp.content or b""
     if not content:
+        print("   ❌ Export empty body")
         return {"ok": False, "error": "Export returned empty body", "status_code": 200}
 
+    print(
+        f"   ✅ Export OK bytes={len(content)} "
+        f"type={resp.headers.get('Content-Type')} "
+        f"disp={(resp.headers.get('Content-Disposition') or '')[:80]}"
+    )
     return {
         "ok": True,
         "content": content,
@@ -194,12 +232,16 @@ def archive_report_to_sharepoint(
         return {"success": False, "error": "workspace_id and report_id are required"}
 
     # 1) Export binary
+    print(f"   ⬇️ Starting Power BI Export for report {report_id[:8]}…")
     exp = export_report_bytes(access_token, workspace_id, report_id)
     if not exp.get("ok"):
+        err = exp.get("error") or "Export failed"
+        print(f"   ❌ Archive aborted at export: {err}")
         return {
             "success": False,
-            "error": exp.get("error") or "Export failed",
+            "error": err,
             "status_code": exp.get("status_code"),
+            "stage": "export",
             "hint": (
                 "Export can fail for live-connected reports, sensitivity labels, "
                 "or missing Report.Read.All + Dataset.Read.All."
@@ -219,19 +261,32 @@ def archive_report_to_sharepoint(
         file_name = f"{safe_report}{ext}"
 
     # 2) Latest decomm batch folder
+    print("   📂 Resolving SharePoint decommission latest batch folder…")
     try:
         sp = SharePointClient()
         batch = resolve_decomm_latest_folder(sp)
     except Exception as ex:
         logger.exception("SharePoint resolve failed")
-        return {"success": False, "error": f"SharePoint error: {ex}"}
-
-    if not batch.get("ok"):
+        print(f"   ❌ SharePoint resolve failed: {ex}")
         return {
             "success": False,
-            "error": batch.get("error") or "Could not resolve decommission folder",
-            "base": batch.get("base"),
+            "error": f"SharePoint error: {ex}",
+            "stage": "sharepoint_resolve",
         }
+
+    if not batch.get("ok"):
+        err = batch.get("error") or "Could not resolve decommission folder"
+        print(f"   ❌ {err}")
+        return {
+            "success": False,
+            "error": err,
+            "base": batch.get("base"),
+            "stage": "sharepoint_batch",
+        }
+    print(
+        f"   ✅ Batch folder: {batch.get('batch_folder')} "
+        f"(created {batch.get('createdDateTime')})"
+    )
 
     batch_path = batch["batch_path"]
     ws_seg = _safe_segment(workspace_name or workspace_id, "Workspace")
