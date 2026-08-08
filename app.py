@@ -1813,6 +1813,75 @@ def orphaned_reports_page():
     return render_template('orphaned_reports.html')
 
 
+@app.route('/decommissioned-reports')
+@login_required
+def decommissioned_reports_page():
+    """Reports archived to SharePoint Report Decommission Activity (file inventory)."""
+    return render_template('decommissioned_reports.html')
+
+
+@app.route('/api/decommissioned-reports')
+@login_required
+def api_decommissioned_reports():
+    """
+    List decommissioned reports from SharePoint archive tree.
+    Query: workspace (optional name filter), q (search), refresh=1 to bypass cache.
+    """
+    try:
+        from features.decommission_inventory import build_decommission_inventory
+
+        force = request.args.get('refresh', '').lower() in ('1', 'true', 'yes')
+        payload = build_decommission_inventory(force_refresh=force)
+        if not payload.get('success'):
+            return jsonify(payload), 502
+
+        ws_filter = (request.args.get('workspace') or '').strip()
+        q = (request.args.get('q') or '').strip().lower()
+
+        rows = list(payload.get('rows') or [])
+        if ws_filter:
+            wsl = ws_filter.lower()
+            rows = [r for r in rows if (r.get('workspaceName') or '').lower() == wsl]
+        if q:
+            def _match(r):
+                blob = " ".join([
+                    str(r.get('reportName') or ''),
+                    str(r.get('workspaceName') or ''),
+                    str(r.get('folderName') or ''),
+                    str(r.get('batchFolder') or ''),
+                    str(r.get('fileName') or ''),
+                ]).lower()
+                return q in blob
+            rows = [r for r in rows if _match(r)]
+
+        # Rebuild workspace groups for filtered set
+        by_ws = {}
+        for r in rows:
+            wn = r.get('workspaceName') or 'Unknown'
+            by_ws.setdefault(wn, []).append(r)
+        workspaces = [
+            {
+                'workspaceName': wn,
+                'reportCount': len(rs),
+                'reports': rs,
+            }
+            for wn, rs in sorted(by_ws.items(), key=lambda x: x[0].lower())
+        ]
+
+        return jsonify({
+            **payload,
+            'rows': rows,
+            'workspaces': workspaces,
+            'totalReports': len(rows),
+            'workspaceCount': len(workspaces),
+            'filter': {'workspace': ws_filter or None, 'q': q or None},
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e), 'rows': [], 'workspaces': []}), 500
+
+
 @app.route('/similarity-analysis')
 @login_required
 def similarity_analysis_page():

@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Decommissioned Reports - Power BI Control Center{% endblock %}
+{% block page_heading %}Decommissioned Reports{% endblock %}
+{% block page_subtitle %}SharePoint archive inventory (Report Decommission Activity){% endblock %}
+{% block extra_css %}
+<style>
+.page-shell{display:flex;flex-direction:column;gap:12px}
+.stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+@media(max-width:900px){.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.stat-card{background:var(--bg-surface);padding:12px 14px;border-radius:8px;border:1px solid var(--border);box-shadow:var(--shadow-sm)}
+.stat-value{font-size:22px;font-weight:700;margin:4px 0 0;font-variant-numeric:tabular-nums;color:var(--text-strong)}
+.stat-label{color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;box-shadow:var(--shadow-sm)}
+.controls input,.controls select{height:34px;border:1px solid var(--border);border-radius:6px;padding:0 10px;background:var(--input-bg);color:var(--text);font-size:13px;min-width:160px}
+.note{font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px}
+.table-wrap{background:var(--bg-surface);border-radius:8px;border:1px solid var(--border);box-shadow:var(--shadow-sm);overflow:auto;max-height:calc(100vh - 300px)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;background:var(--bg-surface);z-index:1}
+td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:top}
+tr:hover td{background:rgba(127,127,127,.06)}
+.ws-head td{background:rgba(43,108,176,.08);font-weight:600;color:var(--text-strong)}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#EBF8FF;color:#2B6CB0}
+a.link{color:#3182CE;text-decoration:none} a.link:hover{text-decoration:underline}
+.loading,.idle{padding:48px;text-align:center;color:var(--text-muted)}
+.spinner{width:28px;height:28px;border:3px solid var(--border);border-top-color:#3182CE;border-radius:50%;animation:sp .7s linear infinite;margin:0 auto 12px}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-shell">
+  <div class="note" id="noteBar">Loading archive inventory from SharePoint…</div>
+  <div class="stats-grid" id="stats" style="display:none">
+    <div class="stat-card"><div class="stat-label">Reports</div><div class="stat-value" id="stTotal">0</div></div>
+    <div class="stat-card"><div class="stat-label">Workspaces</div><div class="stat-value" id="stWs">0</div></div>
+    <div class="stat-card"><div class="stat-label">Batch folders</div><div class="stat-value" id="stBatch">0</div></div>
+    <div class="stat-card"><div class="stat-label">Source</div><div class="stat-value" style="font-size:14px" id="stSrc">SharePoint</div></div>
+  </div>
+  <div class="controls">
+    <select id="wsFilter"><option value="">All workspaces</option></select>
+    <input type="search" id="qFilter" placeholder="Search report, folder, batch…" />
+    <button type="button" class="btn btn-secondary" id="refreshBtn" style="height:34px">Refresh</button>
+  </div>
+  <div class="table-wrap" id="tableHost">
+    <div class="loading"><div class="spinner"></div>Scanning SharePoint decommission folders…</div>
+  </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+let CACHE = null;
+const $ = (id) => document.getElementById(id);
+function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
+
+async function loadData(force){
+  $('tableHost').innerHTML='<div class="loading"><div class="spinner"></div>Scanning SharePoint…</div>';
+  try{
+    const url='/api/decommissioned-reports'+(force?'?refresh=1':'');
+    const res=await fetch(url,{credentials:'include'});
+    const data=await res.json();
+    if(!data.success) throw new Error(data.error||'Failed to load');
+    CACHE=data;
+    fillWorkspaceFilter(data);
+    render();
+  }catch(e){
+    $('noteBar').textContent='Error: '+(e.message||e);
+    $('tableHost').innerHTML='<div class="idle">❌ '+esc(e.message||e)+'</div>';
+  }
+}
+
+function fillWorkspaceFilter(data){
+  const sel=$('wsFilter');
+  const cur=sel.value;
+  sel.innerHTML='<option value="">All workspaces</option>';
+  (data.workspaces||[]).forEach(w=>{
+    const o=document.createElement('option');
+    o.value=w.workspaceName; o.textContent=w.workspaceName+' ('+w.reportCount+')';
+    sel.appendChild(o);
+  });
+  if(cur) sel.value=cur;
+}
+
+function filteredRows(){
+  if(!CACHE) return [];
+  const ws=($('wsFilter').value||'').toLowerCase();
+  const q=($('qFilter').value||'').trim().toLowerCase();
+  return (CACHE.rows||[]).filter(r=>{
+    if(ws && (r.workspaceName||'').toLowerCase()!==ws) return false;
+    if(!q) return true;
+    const blob=[r.reportName,r.workspaceName,r.folderName,r.batchFolder,r.fileName].join(' ').toLowerCase();
+    return blob.includes(q);
+  });
+}
+
+function render(){
+  if(!CACHE) return;
+  const rows=filteredRows();
+  const wsSet=new Set(rows.map(r=>r.workspaceName));
+  $('stats').style.display='grid';
+  $('stTotal').textContent=rows.length;
+  $('stWs').textContent=wsSet.size;
+  $('stBatch').textContent=CACHE.batchCount||0;
+  $('stSrc').textContent='SharePoint';
+  $('noteBar').textContent=CACHE.note||'SharePoint archive only — not live Power BI metadata.';
+  if(!rows.length){
+    $('tableHost').innerHTML='<div class="idle">No decommissioned report files found'+(CACHE.basePath?' under '+esc(CACHE.basePath):'')+'.</div>';
+    return;
+  }
+  // Group for display
+  const by={};
+  rows.forEach(r=>{const k=r.workspaceName||'Unknown';(by[k]=by[k]||[]).push(r)});
+  let html='<table><thead><tr><th>#</th><th>Report</th><th>Workspace</th><th>Folder</th><th>Type</th><th>Decommissioned</th><th>Batch</th><th>Size</th><th>File</th></tr></thead><tbody>';
+  let n=0;
+  Object.keys(by).sort((a,b)=>a.localeCompare(b)).forEach(wn=>{
+    html+=`<tr class="ws-head"><td colspan="9">${esc(wn)} · ${by[wn].length} report(s)</td></tr>`;
+    by[wn].forEach(r=>{
+      n++;
+      const open=r.webUrl
+        ?`<a class="link" href="${esc(r.webUrl)}" target="_blank" rel="noopener" title="Download archived report file">Download archive</a>`
+        :'—';
+      html+=`<tr>
+        <td>${n}</td>
+        <td><strong>${esc(r.reportName)}</strong><div style="font-size:11px;opacity:.75">${esc(r.fileName||'')}</div></td>
+        <td>${esc(r.workspaceName)}</td>
+        <td>${esc(r.folderName||'—')}</td>
+        <td><span class="pill">${esc(r.fileType||'')}</span></td>
+        <td>${esc(r.decommissionedAtDisplay||'—')}</td>
+        <td>${esc(r.batchFolder||'—')}</td>
+        <td>${esc(r.sizeDisplay||'—')}</td>
+        <td>${open}</td></tr>`;
+    });
+  });
+  html+='</tbody></table>';
+  $('tableHost').innerHTML=html;
+}
+
+$('wsFilter').addEventListener('change',render);
+$('qFilter').addEventListener('input',()=>{clearTimeout(window._dq);window._dq=setTimeout(render,200)});
+$('refreshBtn').addEventListener('click',()=>loadData(true));
+loadData(false);
+</script>
+{% endblock %}

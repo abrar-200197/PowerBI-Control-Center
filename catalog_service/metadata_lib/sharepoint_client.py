@@ -222,6 +222,41 @@ class SharePointClient:
         """Return only child folders under folder_path."""
         return [i for i in self.list_children(folder_path) if i.get("folder") is not None]
 
+    def list_files_recursive(
+        self,
+        folder_path: str = "",
+        *,
+        max_depth: int = 8,
+        _depth: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Recursively list files under folder_path.
+        Each item includes relativePath (path from folder_path root, posix).
+        """
+        if _depth > max_depth:
+            return []
+        folder_path = (folder_path or "").replace("\\", "/").strip("/")
+        out: List[Dict[str, Any]] = []
+        try:
+            children = self.list_children(folder_path)
+        except Exception as exc:
+            logger.warning("list_files_recursive failed at %s: %s", folder_path, exc)
+            return out
+        for it in children:
+            name = it.get("name") or ""
+            if not name:
+                continue
+            rel = f"{folder_path}/{name}" if folder_path else name
+            if it.get("folder") is not None:
+                out.extend(
+                    self.list_files_recursive(rel, max_depth=max_depth, _depth=_depth + 1)
+                )
+            elif it.get("file") is not None:
+                row = dict(it)
+                row["relativePath"] = rel
+                out.append(row)
+        return out
+
     def latest_child_folder(self, folder_path: str) -> Optional[Dict[str, Any]]:
         """
         Pick the newest child folder under folder_path by createdDateTime
