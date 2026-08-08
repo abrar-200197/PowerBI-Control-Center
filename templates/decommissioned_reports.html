@@ -108,13 +108,15 @@ function render(){
   // Group for display
   const by={};
   rows.forEach(r=>{const k=r.workspaceName||'Unknown';(by[k]=by[k]||[]).push(r)});
-  let html='<table><thead><tr><th>#</th><th>Report</th><th>Workspace</th><th>Folder</th><th>Type</th><th>Decommissioned</th><th>Batch</th><th>Size</th><th>Open</th></tr></thead><tbody>';
+  let html='<table><thead><tr><th>#</th><th>Report</th><th>Workspace</th><th>Folder</th><th>Type</th><th>Decommissioned</th><th>Batch</th><th>Size</th><th>File</th></tr></thead><tbody>';
   let n=0;
   Object.keys(by).sort((a,b)=>a.localeCompare(b)).forEach(wn=>{
     html+=`<tr class="ws-head"><td colspan="9">${esc(wn)} · ${by[wn].length} report(s)</td></tr>`;
     by[wn].forEach(r=>{
       n++;
-      const open=r.webUrl?`<a class="link" href="${esc(r.webUrl)}" target="_blank" rel="noopener">SharePoint</a>`:'—';
+      const open=r.webUrl
+        ?`<a class="link" href="${esc(r.webUrl)}" target="_blank" rel="noopener" title="Download archived report file">Download archive</a>`
+        :'—';
       html+=`<tr>
         <td>${n}</td>
         <td><strong>${esc(r.reportName)}</strong><div style="font-size:11px;opacity:.75">${esc(r.fileName||'')}</div></td>
