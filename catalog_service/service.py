@@ -79,23 +79,23 @@ class CatalogService:
         }
 
     def is_available(self) -> bool:
-        """True when Home can answer without waiting on full catalog if ui pack exists."""
+        """True when Home can answer from thin pack (never OOM-loads full catalog)."""
         if not cfg.CATALOG_FAST_PATH_ENABLED:
             return False
         if self._resolve_mode() != "sharepoint":
             return False
-        # Prefer thin home pack — cheap availability
+        # Only thin home pack — loading workspace_catalog.json here caused
+        # Gunicorn SIGKILL (OOM) on App Service when pack was briefly missing.
         thin = self.get_json("ui_home_index.json")
-        if thin and thin.get("workspaces") is not None:
-            return True
-        cat = self.get_workspace_catalog()
-        return bool(cat and cat.get("workspaces") is not None)
+        return bool(thin and thin.get("workspaces") is not None)
 
     # ------------------------------------------------------------------ loaders
     def get_json(self, name: str, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         name = Path(name).name
         if not name.endswith(".json"):
             return None
+        heavy = name in getattr(cfg, "HEAVY_CATALOG_FILES", ())
+        keep_heavy = bool(getattr(cfg, "CATALOG_KEEP_HEAVY_IN_MEMORY", False))
         with _lock:
             if not force_refresh:
                 mem = _memory.get(name)
@@ -103,14 +103,32 @@ class CatalogService:
                     return mem["data"]
             data, source = self._load_catalog_file(name, force_refresh=force_refresh)
             if data is not None:
-                _memory[name] = {
-                    "data": data,
-                    "loaded_at": time.time(),
-                    "source": source,
-                }
+                # Thin packs always memory-cached. Heavy blobs only if explicitly enabled
+                # (default off — 360MB × N workers = App Service SIGKILL).
+                if (not heavy) or keep_heavy:
+                    _memory[name] = {
+                        "data": data,
+                        "loaded_at": time.time(),
+                        "source": source,
+                    }
+                else:
+                    # Drop any prior heavy entry so RAM stays free after this call returns.
+                    _memory.pop(name, None)
+                    logger.info(
+                        "Catalog %s served without long-lived memory cache (source=%s)",
+                        name, source,
+                    )
             elif force_refresh:
                 _memory.pop(name, None)
             return data
+
+    def drop_heavy_memory(self) -> None:
+        """Explicitly free heavy catalog blobs from this worker's RAM."""
+        heavy = getattr(cfg, "HEAVY_CATALOG_FILES", ()) or ()
+        with _lock:
+            for name in list(_memory.keys()):
+                if name in heavy:
+                    _memory.pop(name, None)
 
     def get_workspace_catalog(self, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         cat = self.get_json("workspace_catalog.json", force_refresh=force_refresh)
@@ -420,7 +438,13 @@ class CatalogService:
         thin = self.get_json("ui_home_index.json")
         if thin and isinstance(thin.get("workspaces"), list):
             return self._home_from_thin_index(thin, allowed_workspace_ids, inactive_days)
-        return self._home_from_full_catalog(allowed_workspace_ids, inactive_days)
+        # Do NOT fall back to full ~360MB workspace_catalog on App Service Home —
+        # that path regularly SIGKILLs Gunicorn workers (OOM). Prefer offline UI.
+        logger.warning(
+            "ui_home_index.json missing/unusable — skipping full-catalog Home fallback "
+            "(set CATALOG_KEEP_HEAVY_IN_MEMORY=true only on large SKUs if you must)"
+        )
+        return None
 
     def build_home_details(
         self,

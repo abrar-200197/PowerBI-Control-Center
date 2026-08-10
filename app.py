@@ -12618,9 +12618,13 @@ def generate_documentation():
 
 def _warm_catalog_async():
     """
-    Warm thin packs first (Home + Impact grid in seconds), then heavy files
-    into server disk mirror/memory in the background. Browser never waits
-    on 300MB downloads.
+    Warm ONLY thin packs (Home + Impact table list + summary).
+
+    Never preload workspace_catalog.json / impact_index.json into workers —
+    that was the main App Service OOM path:
+      Worker was sent SIGKILL! Perhaps out of memory?
+    Full catalog is read on demand from disk/SharePoint and not kept in RAM
+    (see CATALOG_KEEP_HEAVY_IN_MEMORY).
     """
     if not CATALOG_AVAILABLE or catalog_service is None:
         return
@@ -12628,32 +12632,38 @@ def _warm_catalog_async():
     def _run():
         try:
             t0 = time.time()
-            # Phase 1 — tiny packs for Home / Impact list
             home = catalog_service.get_json('ui_home_index.json', force_refresh=False)
             tables = catalog_service.get_json('ui_impact_tables.json', force_refresh=False)
+            report_dir = catalog_service.get_json('ui_report_directory.json', force_refresh=False)
             summary = catalog_service.get_summary(force_refresh=False)
+            try:
+                catalog_service.get_json('ops_summary.json', force_refresh=False)
+            except Exception:
+                pass
             n_home = len((home or {}).get('workspaces') or [])
             n_tables = len((tables or {}).get('rows') or []) if isinstance(tables, dict) else 0
+            n_dir = len((report_dir or {}).get('rows') or []) if isinstance(report_dir, dict) else 0
             if not n_tables and hasattr(catalog_service, 'impact_table_rows'):
                 try:
                     n_tables = len(catalog_service.impact_table_rows())
                 except Exception:
                     pass
+            # Ensure we never left a heavy blob from a rebuild path
+            try:
+                catalog_service.drop_heavy_memory()
+            except Exception:
+                pass
             print(
-                f"⚡ Catalog warm-up (thin) in {time.time() - t0:.1f}s "
-                f"(homeWs={n_home}, impactRows={n_tables}, "
+                f"⚡ Catalog warm-up (thin only) in {time.time() - t0:.1f}s "
+                f"(homeWs={n_home}, impactRows={n_tables}, reportDir={n_dir}, "
                 f"summary={bool(summary)}, opsEnrichedAt={(home or summary or {}).get('opsEnrichedAt')})"
             )
-            # Phase 2 — full artifacts for Report Catalog / Models (disk-mirrored)
-            t1 = time.time()
-            cat = catalog_service.get_workspace_catalog(force_refresh=False)
-            impact = catalog_service.get_impact_index(force_refresh=False)
-            n = len((cat or {}).get('workspaces') or [])
-            print(
-                f"⚡ Catalog warm-up (full) in {time.time() - t1:.1f}s "
-                f"(workspaces={n}, impact={bool(impact)}, "
-                f"opsEnrichedAt={(cat or {}).get('opsEnrichedAt')})"
-            )
+            if n_home == 0:
+                print(
+                    "⚠️ ui_home_index empty/missing after warm-up — Home will show offline "
+                    "until SharePoint has the thin pack (extract job). "
+                    "Do NOT load full workspace_catalog on this SKU."
+                )
         except Exception as exc:
             print(f"⚠️ Catalog warm-up failed: {exc}")
 

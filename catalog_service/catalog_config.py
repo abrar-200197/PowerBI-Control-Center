@@ -196,12 +196,27 @@ ALLOW_LOCAL_CATALOG_FALLBACK = False
 CATALOG_FAST_PATH_ENABLED = os.getenv("CATALOG_FAST_PATH_ENABLED", "true").lower() in (
     "1", "true", "yes", "y",
 )
+# Keep huge JSON parsed in process memory (default OFF — prevents App Service OOM).
+# When false: workspace_catalog / impact_index stay on disk only; parsed only for
+# the duration of a request (or rebuild), then dropped. Thin ui_*.json still memory-cached.
+CATALOG_KEEP_HEAVY_IN_MEMORY = os.getenv(
+    "CATALOG_KEEP_HEAVY_IN_MEMORY", "false"
+).lower() in ("1", "true", "yes", "y")
 
 REQUIRED_CATALOG_FILES = (
     "workspace_catalog.json",
     "impact_index.json",
     "summary.json",
 )
+# Multi‑hundred‑MB artifacts — never hold long-lived in worker RAM by default.
+HEAVY_CATALOG_FILES = frozenset({
+    "workspace_catalog.json",
+    "impact_index.json",
+    "inventory.json",
+    "refresh_snapshot.json",
+    "usage_snapshot.json",
+    "ui_impact_reports.json",  # ~50MB with details; prefer detail APIs + disk
+})
 # Never ship these large blobs to the browser — server-side only.
 BROWSER_BLOCKED_CATALOG_FILES = frozenset({
     "workspace_catalog.json",
