@@ -3,22 +3,34 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-MOD_PATH = ROOT / "CatalogExtractTimer" / "__init__.py"
+MOD_PATH = ROOT / "function_app.py"
 
 
 def _load():
-    import types
     # Stub azure.functions so decide_mode can load without the Functions runtime
     if "azure.functions" not in sys.modules:
         stub = types.ModuleType("azure.functions")
-        stub.TimerRequest = object  # type: ignore
+
+        class _TimerRequest:
+            past_due = False
+
+        class _FunctionApp:
+            def timer_trigger(self, *a, **k):
+                def deco(fn):
+                    return fn
+
+                return deco
+
+        stub.TimerRequest = _TimerRequest
+        stub.FunctionApp = _FunctionApp
         sys.modules["azure"] = types.ModuleType("azure")
         sys.modules["azure.functions"] = stub
-    spec = importlib.util.spec_from_file_location("catalog_extract_timer", MOD_PATH)
+    spec = importlib.util.spec_from_file_location("catalog_function_app", MOD_PATH)
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(mod)

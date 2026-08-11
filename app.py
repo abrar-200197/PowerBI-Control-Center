@@ -5236,6 +5236,28 @@ def _normalize_semantic_tables(tables):
     return out
 
 
+def _rel_field(rel, *keys):
+    """Read a relationship endpoint from common Scanner / catalog key shapes."""
+    if not isinstance(rel, dict):
+        return ''
+    for k in keys:
+        v = rel.get(k)
+        if v is None or v == '':
+            continue
+        if isinstance(v, dict):
+            # nested { table, column } / { name }
+            return (
+                v.get('table')
+                or v.get('tableName')
+                or v.get('column')
+                or v.get('columnName')
+                or v.get('name')
+                or ''
+            )
+        return v
+    return ''
+
+
 def _extract_measures_and_relationships(dataset):
     tables = dataset.get('tables') or []
     all_measures = []
@@ -5251,17 +5273,67 @@ def _extract_measures_and_relationships(dataset):
                     'expression': measure.get('expression') or '',
                 })
 
+    # Some extracts put measures only under dataset.expressions
+    if not all_measures:
+        for expr in dataset.get('expressions') or []:
+            if not isinstance(expr, dict):
+                continue
+            name = expr.get('name') or ''
+            body = expr.get('expression') or expr.get('query') or ''
+            if name and body:
+                all_measures.append({
+                    'name': name,
+                    'table': expr.get('table') or 'Expression',
+                    'expression': body if isinstance(body, str) else str(body),
+                })
+
+    raw_rels = (
+        dataset.get('relationships')
+        or dataset.get('modelRelationships')
+        or dataset.get('datasetRelationships')
+        or []
+    )
     relationships = []
-    for rel in dataset.get('relationships') or []:
+    for rel in raw_rels:
         if not isinstance(rel, dict):
             continue
+        from_table = _rel_field(
+            rel, 'fromTable', 'sourceTable', 'fromTableName', 'from', 'FromTable',
+        )
+        from_col = _rel_field(
+            rel, 'fromColumn', 'sourceColumn', 'fromColumnName', 'FromColumn',
+        )
+        to_table = _rel_field(
+            rel, 'toTable', 'targetTable', 'toTableName', 'to', 'ToTable',
+        )
+        to_col = _rel_field(
+            rel, 'toColumn', 'targetColumn', 'toColumnName', 'ToColumn',
+        )
+        # nested from/to objects: { from: { table, column }, to: {...} }
+        if isinstance(rel.get('from'), dict) and not from_table:
+            fr = rel['from']
+            from_table = fr.get('table') or fr.get('tableName') or ''
+            from_col = from_col or fr.get('column') or fr.get('columnName') or ''
+        if isinstance(rel.get('to'), dict) and not to_table:
+            to = rel['to']
+            to_table = to.get('table') or to.get('tableName') or ''
+            to_col = to_col or to.get('column') or to.get('columnName') or ''
+        if not (from_table or to_table or from_col or to_col):
+            continue
         relationships.append({
-            'fromTable': rel.get('fromTable') or rel.get('sourceTable') or rel.get('fromTableName') or '',
-            'fromColumn': rel.get('fromColumn') or rel.get('sourceColumn') or rel.get('fromColumnName') or '',
-            'toTable': rel.get('toTable') or rel.get('targetTable') or rel.get('toTableName') or '',
-            'toColumn': rel.get('toColumn') or rel.get('targetColumn') or rel.get('toColumnName') or '',
-            'cardinality': rel.get('cardinality') or rel.get('crossFilteringBehavior') or rel.get('relationshipType') or '',
-            'isActive': rel.get('isActive', True),
+            'fromTable': from_table or '',
+            'fromColumn': from_col or '',
+            'toTable': to_table or '',
+            'toColumn': to_col or '',
+            'cardinality': (
+                rel.get('cardinality')
+                or rel.get('Cardinality')
+                or rel.get('crossFilteringBehavior')
+                or rel.get('relationshipType')
+                or ''
+            ),
+            'isActive': rel.get('isActive', rel.get('IsActive', True)),
+            'crossFilteringBehavior': rel.get('crossFilteringBehavior') or '',
         })
     return all_measures, relationships
 
@@ -5311,8 +5383,8 @@ def get_semantic_model_details():
                 print(f"⚠️ semantic-model-details catalog miss: {cat_err}")
 
         # 2) Fill missing measures / relationships / columns via Scanner (cached per workspace).
-        # Current SharePoint catalog was built without measures/relationships — until a full
-        # re-extract runs with the updated pipeline, Details must enrich on demand.
+        # IMPORTANT: having measures does NOT mean relationships are present.
+        # Old logic treated (has measures) as complete and skipped Scanner → Relationships (0).
         def _schema_incomplete(ds_obj):
             if not ds_obj:
                 return True
@@ -5320,10 +5392,28 @@ def get_semantic_model_details():
             if not tables:
                 return True
             has_cols = any((t.get('columns') or t.get('columnCount')) for t in tables)
-            has_meas = any((t.get('measures') or t.get('measureCount')) for t in tables) or bool(ds_obj.get('measureCount'))
-            has_rel = bool(ds_obj.get('relationships') or ds_obj.get('relationshipCount'))
-            # Incomplete if no columns OR (no measures AND no relationships)
-            return (not has_cols) or (not has_meas and not has_rel)
+            has_meas = (
+                any((t.get('measures') or t.get('measureCount')) for t in tables)
+                or bool(ds_obj.get('measureCount'))
+                or bool(ds_obj.get('expressions'))
+            )
+            rels = (
+                ds_obj.get('relationships')
+                or ds_obj.get('modelRelationships')
+                or []
+            )
+            rel_n = len(rels) if isinstance(rels, list) else 0
+            if not rel_n:
+                try:
+                    rel_n = int(ds_obj.get('relationshipCount') or 0)
+                except Exception:
+                    rel_n = 0
+            has_rel = rel_n > 0
+            # Multi-table models almost always have relationships in Desktop —
+            # if catalog has 2+ tables and 0 rels, force Scanner enrich.
+            multi_table = len(tables) >= 2
+            missing_rels = (not has_rel) and multi_table
+            return (not has_cols) or (not has_meas) or missing_rels
 
         # opt-out: enrich=0 skips Scanner (catalog-only)
         allow_enrich = str(request.args.get('enrich', '1')).lower() not in ('0', 'false', 'no')
@@ -5331,8 +5421,16 @@ def get_semantic_model_details():
 
         if allow_enrich and need_scan:
             try:
+                print(
+                    f"🔎 semantic-model-details enriching via Scanner "
+                    f"(ws={workspace_id[:8]}… ds={dataset_id[:8]}… "
+                    f"had_tables={len((dataset or {}).get('tables') or [])} "
+                    f"had_rels={len((dataset or {}).get('relationships') or [])})"
+                )
                 scan_ds = _get_scanned_dataset_cached(workspace_id, dataset_id)
                 if scan_ds:
+                    scan_rel_n = len(scan_ds.get('relationships') or [])
+                    print(f"   scanner dataset keys sample rels={scan_rel_n}")
                     if dataset is None or not (dataset.get('tables') or []):
                         dataset = scan_ds
                         source = 'scanner'
@@ -5353,6 +5451,17 @@ def get_semantic_model_details():
         raw_tables = dataset.get('tables') or []
         tables = _normalize_semantic_tables(raw_tables)
         all_measures, relationships = _extract_measures_and_relationships(dataset)
+
+        # If still no relationships after merge, try one more direct read of scan keys
+        if not relationships and allow_enrich:
+            try:
+                scan_ds = _get_scanned_dataset_cached(workspace_id, dataset_id)
+                if scan_ds and (scan_ds.get('relationships') or []):
+                    _, relationships = _extract_measures_and_relationships(scan_ds)
+                    if relationships and source and 'scanner' not in str(source):
+                        source = f'{source}+rels'
+            except Exception:
+                pass
 
         owner = dataset.get('configuredBy') or dataset.get('configuredByUser') or 'Unknown'
         created_date = dataset.get('createdDate') or dataset.get('createdDateTime') or 'Unknown'

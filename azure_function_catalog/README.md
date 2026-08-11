@@ -30,40 +30,31 @@ Example week cadence:
 - `host.json` sets `"functionTimeout": "05:00:00"` (needs plan that allows it).
 - Enough memory for large catalog JSON (~GB recommended during fresh).
 
-## Deploy options
+## Deploy layout (flat — Python v2 programming model)
 
-### Option A — Deploy whole Control Center repo as the Function App content
-
-Structure on the app:
+All Azure Function entrypoints are **root files**. No `CatalogExtractTimer/` folder.
 
 ```text
-/home/site/wwwroot/
-  host.json                    ← from azure_function_catalog/host.json
-  CatalogExtractTimer/         ← from azure_function_catalog/CatalogExtractTimer/
-  requirements.txt             ← merge azure_function_catalog + root deps
+azure_function_catalog/          (= wwwroot after publish)
+  function_app.py                ← timer CatalogExtractTimer (v2 decorator)
+  host.json
+  requirements.txt
+  .python_version                ← 3.11
   run_catalog_extract.py
-  catalog_service/
-  powerbi_connector.py         ← used by ops refresh path
-  ...
+  powerbi_connector.py
+  catalog_service/               ← Python package (imports only, not a "function")
 ```
 
-`CatalogExtractTimer` resolves repo root as the parent of `azure_function_catalog` **or** `wwwroot` when `run_catalog_extract.py` sits next to the timer.
+### Publish
 
-### Option B — Merge into existing crash-test Function App
-
-1. Copy `CatalogExtractTimer/` into the existing Function App root (next to `DailyHealthCheck/`).
-2. Merge `host.json` timeout (use the longer of the two).
-3. Ensure `run_catalog_extract.py` + `catalog_service/` (+ `powerbi_connector.py`) are on the app (subfolder or same root).
-4. Set `CATALOG_REPO_ROOT` if the extract scripts are not next to the function root.
-
-### Option C — Local / zip deploy from this folder
-
-```bash
-# From repo root
-func azure functionapp publish <YOUR_FUNCTION_APP_NAME> --python
+```powershell
+cd azure_function_catalog
+func azure functionapp publish afi-powerbi-metadata-extractor-prod-func --python --build remote
 ```
 
-Only works if the published package includes extract code; prefer Option A packaging scripts.
+Stack must be **Python 3.11** (not 3.6). After publish, Overview → Functions should list **CatalogExtractTimer**.
+
+`catalog_service/` must stay a folder — that is normal Python packaging (`import catalog_service`), not an Azure Functions convention.
 
 ## App settings (Application settings)
 

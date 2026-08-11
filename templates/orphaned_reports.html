@@ -68,21 +68,46 @@
     .risk-critical {
         background: #FEE2E2;
         color: #991B1B;
+        border: 1px solid #FECACA;
     }
 
     .risk-high {
         background: #FED7AA;
         color: #9A3412;
+        border: 1px solid #FDBA74;
     }
 
     .risk-medium {
         background: #FEF3C7;
         color: #92400E;
+        border: 1px solid #FDE68A;
     }
 
     .risk-low {
         background: #DBEAFE;
         color: #1E40AF;
+        border: 1px solid #BFDBFE;
+    }
+
+    html[data-theme="dark"] .risk-critical {
+        background: #3f1515;
+        color: #fca5a5;
+        border-color: #7f1d1d;
+    }
+    html[data-theme="dark"] .risk-high {
+        background: #431407;
+        color: #fdba74;
+        border-color: #9a3412;
+    }
+    html[data-theme="dark"] .risk-medium {
+        background: #3d2e12;
+        color: #fbbf24;
+        border-color: #78350f;
+    }
+    html[data-theme="dark"] .risk-low {
+        background: #172554;
+        color: #93c5fd;
+        border-color: #1e3a8a;
     }
 
     .orphaned-table {
