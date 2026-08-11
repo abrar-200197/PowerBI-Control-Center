@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Power BI Control Center{% endblock %}</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.png') }}" type="image/png" sizes="any">
+    <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.png') }}" type="image/png">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='ashley-emblem.png') }}">
     <script>
         /* Apply theme before paint to avoid flash */
         (function () {
@@ -109,11 +112,20 @@
         }
 
         .sidebar-logo {
-            width: 24px;
-            height: 24px;
+            width: 28px;
+            height: 28px;
             display: flex;
             align-items: center;
             justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .sidebar-logo img {
+            width: 28px;
+            height: 28px;
+            object-fit: contain;
+            display: block;
+            border-radius: 4px;
         }
 
         .sidebar-logo svg {
@@ -671,12 +683,9 @@
     <div class="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect x="2" y="12" width="4" height="10" fill="#F6C343"/>
-                    <rect x="8" y="8" width="4" height="14" fill="#F6C343"/>
-                    <rect x="14" y="4" width="4" height="18" fill="#F6C343"/>
-                    <rect x="20" y="2" width="2" height="20" fill="#F6C343"/>
-                </svg>
+                <img src="{{ url_for('static', filename='ashley-emblem.png') }}"
+                     width="28" height="28" alt="Ashley"
+                     onerror="this.style.display='none'">
             </div>
             <div class="sidebar-title">POWER BI <span>CONTROL CENTER</span></div>
         </div>
