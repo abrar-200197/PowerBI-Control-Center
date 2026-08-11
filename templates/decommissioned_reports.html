@@ -12,6 +12,15 @@
 .stat-label{color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
 .controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;box-shadow:var(--shadow-sm)}
 .controls input,.controls select{height:34px;border:1px solid var(--border);border-radius:6px;padding:0 10px;background:var(--input-bg);color:var(--text);font-size:13px;min-width:160px}
+.ws-filter-wrap{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.btn-clear-ws{
+  height:34px;padding:0 12px;font-size:12px;font-weight:600;
+  border:1px solid var(--border);border-radius:6px;
+  background:var(--bg-surface-2,var(--input-bg));color:var(--text);
+  cursor:pointer;white-space:nowrap;
+}
+.btn-clear-ws:hover{background:var(--table-hover);border-color:var(--text-muted)}
+.btn-clear-ws[hidden]{display:none !important}
 .note{font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px}
 .table-wrap{background:var(--bg-surface);border-radius:8px;border:1px solid var(--border);box-shadow:var(--shadow-sm);overflow:auto;max-height:calc(100vh - 300px)}
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -56,7 +65,10 @@ html[data-theme="dark"] a.link{color:#63b3ed}
     <div class="stat-card"><div class="stat-label">Source</div><div class="stat-value" style="font-size:14px" id="stSrc">SharePoint</div></div>
   </div>
   <div class="controls">
-    <select id="wsFilter"><option value="">All workspaces</option></select>
+    <div class="ws-filter-wrap">
+      <select id="wsFilter" aria-label="Filter by workspace"><option value="">All workspaces</option></select>
+      <button type="button" class="btn-clear-ws" id="clearWsBtn" hidden title="Show all workspaces">Clear</button>
+    </div>
     <input type="search" id="qFilter" placeholder="Search report, folder, batch…" />
     <button type="button" class="btn btn-secondary" id="refreshBtn" style="height:34px">Refresh</button>
   </div>
@@ -111,8 +123,23 @@ function filteredRows(){
   });
 }
 
+function syncClearButton(){
+  const btn=$('clearWsBtn');
+  if(!btn) return;
+  const hasWs=!!(($('wsFilter').value||'').trim());
+  btn.hidden=!hasWs;
+}
+
+function clearWorkspaceFilter(){
+  const sel=$('wsFilter');
+  if(sel) sel.value='';
+  syncClearButton();
+  render();
+}
+
 function render(){
   if(!CACHE) return;
+  syncClearButton();
   const rows=filteredRows();
   const wsSet=new Set(rows.map(r=>r.workspaceName));
   $('stats').style.display='grid';
@@ -157,7 +184,8 @@ function render(){
   $('tableHost').innerHTML=html;
 }
 
-$('wsFilter').addEventListener('change',render);
+$('wsFilter').addEventListener('change',()=>{syncClearButton();render();});
+$('clearWsBtn').addEventListener('click',clearWorkspaceFilter);
 $('qFilter').addEventListener('input',()=>{clearTimeout(window._dq);window._dq=setTimeout(render,200)});
 $('refreshBtn').addEventListener('click',()=>loadData(true));
 loadData(false);
