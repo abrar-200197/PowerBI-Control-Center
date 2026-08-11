@@ -53,9 +53,41 @@
     .sm-modal-body table { width:100%; border-collapse:collapse; font-size:12px; }
     .sm-modal-body th, .sm-modal-body td { padding:6px 8px; border-bottom:1px solid var(--border-soft); text-align:left; color:var(--text); }
     .sm-modal-body th { background:var(--bg-surface-2); color:var(--text-muted); }
+    /* Theme-aware modal content (no hardcoded light slate on DAX/tables) */
+    .sm-section-title {
+        margin:0 0 8px; font-size:12px; font-weight:700; color:var(--text-muted);
+        text-transform:uppercase; letter-spacing:.04em;
+    }
+    .sm-item-name { color:var(--text-strong); font-weight:600; }
+    .sm-item-meta { font-size:11px; color:var(--text-muted); margin-top:2px; }
+    .sm-linkish { font-size:11px; color:var(--info, #3182CE); font-weight:600; white-space:nowrap; }
+    .sm-dax {
+        margin:6px 0 0; padding:8px; border-radius:6px; font-size:11px;
+        white-space:pre-wrap; max-height:100px; overflow:auto;
+        background:var(--input-bg); color:var(--text); border:1px solid var(--border);
+        font-family:ui-monospace,"Cascadia Mono","Segoe UI Mono",Consolas,monospace;
+    }
+    .sm-cols-wrap { margin-top:8px; padding-top:8px; border-top:1px solid var(--border-soft); }
+    .sm-cols-table { width:100%; border-collapse:collapse; font-size:12px; }
+    .sm-cols-table th {
+        text-align:left; padding:4px 8px; color:var(--text-muted);
+        font-size:10px; text-transform:uppercase; font-weight:700;
+    }
+    .sm-cols-table td {
+        padding:4px 8px; border-bottom:1px solid var(--border-soft); color:var(--text);
+    }
+    .sm-cols-table td.muted { color:var(--text-muted); font-size:11px; }
+    .sm-hint { font-size:12px; color:var(--text-muted); font-style:italic; }
+    .sm-rel-wrap {
+        overflow:auto; max-height:240px; border:1px solid var(--border);
+        border-radius:8px; background:var(--bg-surface);
+    }
     html[data-theme="dark"] .status-ok { background:#0f2e22; color:#6ee7b7; border-color:#14532d; }
     html[data-theme="dark"] .status-warn { background:#3d2e12; color:#fbbf24; border-color:#78350f; }
     html[data-theme="dark"] .status-err { background:#3f1515; color:#fca5a5; border-color:#7f1d1d; }
+    html[data-theme="dark"] .sm-dax {
+        background:#0F1419; color:#E2E8F0; border-color:#2D3A4D;
+    }
 </style>
 {% endblock %}
 
@@ -278,7 +310,7 @@ document.addEventListener('keydown', (e) => {
             const statusBadge = statusPill(model.refreshStatus, model.refreshType);
             const safeId = String(model.id || '').replace(/'/g, '');
             const fmtCount = (n, tipMissing) => {
-                if (n == null) return `<span title="${tipMissing || 'Not in catalog extract'}" style="color:#94A3B8;">—</span>`;
+                if (n == null) return `<span title="${tipMissing || 'Not in catalog extract'}" class="sm-item-meta">—</span>`;
                 return String(n);
             };
 
@@ -312,7 +344,7 @@ document.addEventListener('keydown', (e) => {
         content.innerHTML = `
             <div class="empty-state" style="padding:28px 16px;">
                 <div class="loading-box" style="padding:0 0 8px;">Loading full model schema…</div>
-                <div style="font-size:12px;color:#94A3B8;max-width:360px;margin:0 auto;">
+                <div class="sm-item-meta" style="max-width:360px;margin:0 auto;text-align:center;">
                     First open in a workspace may run a one-time Scanner enrich (columns, measures, relationships). Later models in the same workspace are fast.
                 </div>
             </div>`;
@@ -333,7 +365,7 @@ document.addEventListener('keydown', (e) => {
             content.innerHTML = buildDetailsHTML(data);
 
         } catch (error) {
-            content.innerHTML = `<div class="empty-state" style="color:#C53030;">Failed to load details: ${escapeHtml(error.message)}</div>`;
+            content.innerHTML = `<div class="empty-state" style="color:var(--danger);">Failed to load details: ${escapeHtml(error.message)}</div>`;
         }
     }
 
@@ -346,7 +378,7 @@ document.addEventListener('keydown', (e) => {
             : tables.reduce((s, t) => s + ((t.columns && t.columns.length) || t.columnCount || 0), 0);
 
         let html = '';
-        html += `<div class="sm-meta" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:12px;color:#64748B;">
+        html += `<div class="sm-meta" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:12px;color:var(--text-muted);">
             <span class="badge-count">${tables.length} tables</span>
             <span class="badge-count">${colTotal} columns</span>
             <span class="badge-count">${measures.length} measures</span>
@@ -355,7 +387,7 @@ document.addEventListener('keydown', (e) => {
         </div>`;
 
         // Tables — columns visible by default
-        html += `<h6 style="margin:0 0 8px;font-size:12px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.04em;">Tables (${tables.length})</h6>`;
+        html += `<h6 class="sm-section-title">Tables (${tables.length})</h6>`;
         if (!tables.length) {
             html += `<div class="empty-state" style="padding:20px;">No tables in schema</div>`;
         } else {
@@ -369,9 +401,9 @@ document.addEventListener('keydown', (e) => {
                     const dt = typeof c === 'object' ? (c.dataType || '') : '';
                     const hidden = typeof c === 'object' && c.isHidden;
                     return `<tr style="${hidden ? 'opacity:.55;' : ''}">
-                        <td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;font-weight:500;color:#0F172A;">${escapeHtml(name)}</td>
-                        <td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;color:#64748B;font-size:11px;white-space:nowrap;">${escapeHtml(dt || '—')}</td>
-                        <td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;color:#94A3B8;font-size:11px;">${hidden ? 'hidden' : ''}</td>
+                        <td>${escapeHtml(name)}</td>
+                        <td class="muted" style="white-space:nowrap;">${escapeHtml(dt || '—')}</td>
+                        <td class="muted">${hidden ? 'hidden' : ''}</td>
                     </tr>`;
                 }).join('');
 
@@ -380,22 +412,22 @@ document.addEventListener('keydown', (e) => {
                     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;"
                          onclick="(function(id,btn){var el=document.getElementById(id);if(!el)return;var open=el.style.display==='none';el.style.display=open?'block':'none';if(btn)btn.textContent=open?'Hide columns':'Show columns';})('${tid}', this.querySelector('[data-toggle]'))">
                         <div>
-                            <strong style="color:#0F172A;">${escapeHtml(table.name || '')}</strong>
-                            <div style="font-size:11px;color:#64748B;margin-top:2px;">${colCount} column${colCount === 1 ? '' : 's'}${table.sourceTypeLabel ? ' · ' + escapeHtml(table.sourceTypeLabel) : ''}</div>
+                            <div class="sm-item-name">${escapeHtml(table.name || '')}</div>
+                            <div class="sm-item-meta">${colCount} column${colCount === 1 ? '' : 's'}${table.sourceTypeLabel ? ' · ' + escapeHtml(table.sourceTypeLabel) : ''}</div>
                         </div>
-                        <span data-toggle style="font-size:11px;color:#3182CE;font-weight:600;white-space:nowrap;">${cols.length ? 'Hide columns' : '—'}</span>
+                        <span data-toggle class="sm-linkish">${cols.length ? 'Hide columns' : '—'}</span>
                     </div>
-                    <div id="${tid}" style="display:${cols.length ? 'block' : 'none'};margin-top:8px;padding-top:8px;border-top:1px solid #EDF2F7;">
+                    <div id="${tid}" class="sm-cols-wrap" style="display:${cols.length ? 'block' : 'none'};">
                         ${cols.length
-                            ? `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+                            ? `<table class="sm-cols-table">
                                 <thead><tr>
-                                  <th style="text-align:left;padding:4px 8px;color:#64748B;font-size:10px;text-transform:uppercase;">Column</th>
-                                  <th style="text-align:left;padding:4px 8px;color:#64748B;font-size:10px;text-transform:uppercase;">Type</th>
-                                  <th style="text-align:left;padding:4px 8px;color:#64748B;font-size:10px;text-transform:uppercase;"></th>
+                                  <th>Column</th>
+                                  <th>Type</th>
+                                  <th></th>
                                 </tr></thead>
                                 <tbody>${colRows}</tbody>
                                </table>`
-                            : `<div style="font-size:12px;color:#94A3B8;font-style:italic;">No column names returned for this table.</div>`}
+                            : `<div class="sm-hint">No column names returned for this table.</div>`}
                     </div>
                 </div>`;
             });
@@ -403,7 +435,7 @@ document.addEventListener('keydown', (e) => {
         }
 
         // Measures
-        html += `<h6 style="margin:0 0 8px;font-size:12px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.04em;">Measures (${measures.length})</h6>`;
+        html += `<h6 class="sm-section-title">Measures (${measures.length})</h6>`;
         if (!measures.length) {
             html += `<div class="empty-state" style="padding:16px;margin-bottom:16px;">No DAX measures on this model (or none returned by Scanner for this dataset).</div>`;
         } else {
@@ -412,20 +444,28 @@ document.addEventListener('keydown', (e) => {
                 const expr = measure.expression ? String(measure.expression) : '';
                 html += `
                 <div class="list-group-item" style="padding:8px 12px;">
-                    <strong>${escapeHtml(measure.name || '')}</strong>
-                    <div style="font-size:11px;color:#64748B;margin-top:2px;">${escapeHtml(measure.table || 'Unknown table')}</div>
-                    ${expr ? `<pre style="margin:6px 0 0;padding:8px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;font-size:11px;white-space:pre-wrap;max-height:100px;overflow:auto;">${escapeHtml(expr)}</pre>` : ''}
+                    <div class="sm-item-name">${escapeHtml(measure.name || '')}</div>
+                    <div class="sm-item-meta">${escapeHtml(measure.table || 'Unknown table')}</div>
+                    ${expr ? `<pre class="sm-dax">${escapeHtml(expr)}</pre>` : ''}
                 </div>`;
             });
             html += `</div>`;
         }
 
         // Relationships
-        html += `<h6 style="margin:0 0 8px;font-size:12px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.04em;">Relationships (${relationships.length})</h6>`;
+        html += `<h6 class="sm-section-title">Relationships (${relationships.length})</h6>`;
         if (!relationships.length) {
-            html += `<div class="empty-state" style="padding:16px;">No relationships returned for this model.</div>`;
+            const src = data.source ? ` (source: ${escapeHtml(String(data.source))})` : '';
+            html += `<div class="empty-state" style="padding:16px;">
+                No relationships returned for this model${src}.
+                <div class="sm-item-meta" style="margin-top:8px;max-width:480px;margin-left:auto;margin-right:auto;">
+                    Multi-table models usually have relationships in Power BI Desktop.
+                    If this stays at 0 after refresh, the Admin Scanner may not have returned relationship metadata
+                    for this dataset (permissions, model type, or extract gap). Single-table models legitimately have none.
+                </div>
+            </div>`;
         } else {
-            html += `<div style="overflow:auto;max-height:240px;border:1px solid #E2E8F0;border-radius:8px;">
+            html += `<div class="sm-rel-wrap">
                 <table class="sm-table" style="font-size:12px;">
                     <thead><tr><th>From</th><th>To</th><th>Cardinality</th></tr></thead>
                     <tbody>`;

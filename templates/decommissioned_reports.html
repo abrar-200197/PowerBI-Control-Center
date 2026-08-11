@@ -19,11 +19,31 @@ th{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);color
 td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:top}
 tr:hover td{background:rgba(127,127,127,.06)}
 .ws-head td{background:rgba(43,108,176,.08);font-weight:600;color:var(--text-strong)}
-.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#EBF8FF;color:#2B6CB0}
-a.link{color:#3182CE;text-decoration:none} a.link:hover{text-decoration:underline}
+.pill{
+  display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;
+  background:var(--chip-bg);color:var(--text-strong);border:1px solid var(--border);
+  letter-spacing:.02em;text-transform:uppercase;
+}
+/* Optional type tint (readable in light + dark) */
+.pill.type-pbix{background:#EBF8FF;color:#1A4F8A;border-color:#BEE3F8}
+.pill.type-rdl,.pill.type-paginated{background:#FAF5FF;color:#553C9A;border-color:#E9D8FD}
+.pill.type-other{background:var(--chip-bg);color:var(--text-strong);border-color:var(--border)}
+a.link{color:var(--info,#3182CE);text-decoration:none;font-weight:600}
+a.link:hover{text-decoration:underline}
 .loading,.idle{padding:48px;text-align:center;color:var(--text-muted)}
-.spinner{width:28px;height:28px;border:3px solid var(--border);border-top-color:#3182CE;border-radius:50%;animation:sp .7s linear infinite;margin:0 auto 12px}
+.spinner{width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--info,#3182CE);border-radius:50%;animation:sp .7s linear infinite;margin:0 auto 12px}
 @keyframes sp{to{transform:rotate(360deg)}}
+html[data-theme="dark"] .pill.type-pbix{
+  background:#0c2a43;color:#90cdf4;border-color:#2b6cb0;
+}
+html[data-theme="dark"] .pill.type-rdl,
+html[data-theme="dark"] .pill.type-paginated{
+  background:#2a1f3d;color:#d6bcfa;border-color:#6b46c1;
+}
+html[data-theme="dark"] .pill.type-other{
+  background:var(--chip-bg);color:var(--text-strong);border-color:var(--border);
+}
+html[data-theme="dark"] a.link{color:#63b3ed}
 </style>
 {% endblock %}
 {% block content %}
@@ -117,12 +137,16 @@ function render(){
       const open=r.webUrl
         ?`<a class="link" href="${esc(r.webUrl)}" target="_blank" rel="noopener" title="Download archived report file">Download archive</a>`
         :'—';
+      const ft=String(r.fileType||'').toLowerCase();
+      let typeClass='type-other';
+      if(ft.includes('pbix')||ft==='powerbi'||ft==='pbi') typeClass='type-pbix';
+      else if(ft.includes('rdl')||ft.includes('paginated')) typeClass='type-rdl';
       html+=`<tr>
         <td>${n}</td>
         <td><strong>${esc(r.reportName)}</strong><div style="font-size:11px;opacity:.75">${esc(r.fileName||'')}</div></td>
         <td>${esc(r.workspaceName)}</td>
         <td>${esc(r.folderName||'—')}</td>
-        <td><span class="pill">${esc(r.fileType||'')}</span></td>
+        <td><span class="pill ${typeClass}">${esc(r.fileType||'—')}</span></td>
         <td>${esc(r.decommissionedAtDisplay||'—')}</td>
         <td>${esc(r.batchFolder||'—')}</td>
         <td>${esc(r.sizeDisplay||'—')}</td>

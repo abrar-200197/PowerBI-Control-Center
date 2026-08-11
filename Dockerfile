@@ -88,6 +88,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/health || curl -fsS http://127.0.0.1:8000/ || exit 1
 
-# 15m timeout for large catalog / lineage work
-CMD ["gunicorn", "--bind=0.0.0.0:8000", "--timeout", "900", "--workers", "4", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
+# 15m timeout for long export/lineage work.
+# 2 sync workers (not 4): each accidental full-catalog parse is multi‑hundred MB;
+# 4 workers + warm full catalog caused: Worker was sent SIGKILL! Perhaps out of memory?
+# Override at deploy with: gunicorn --workers ${WEB_CONCURRENCY:-2} ...
+CMD ["gunicorn", "--bind=0.0.0.0:8000", "--timeout", "900", "--workers", "2", "--threads", "4", "--worker-class", "gthread", "--max-requests", "500", "--max-requests-jitter", "50", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
 
