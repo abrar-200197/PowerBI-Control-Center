@@ -27,7 +27,35 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;background:var(--bg-surface);z-index:1}
 td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:top}
 tr:hover td{background:rgba(127,127,127,.06)}
-.ws-head td{background:rgba(43,108,176,.08);font-weight:600;color:var(--text-strong)}
+.ws-head td{background:rgba(43,108,176,.08);font-weight:600;color:var(--text-strong);padding:0}
+.ws-head-btn{
+  width:100%;display:flex;align-items:center;gap:10px;justify-content:space-between;
+  padding:10px 12px;border:0;background:transparent;color:inherit;font:inherit;font-weight:600;
+  cursor:pointer;text-align:left;
+}
+.ws-head-btn:hover{background:rgba(127,127,127,.08)}
+.ws-head-left{display:flex;align-items:center;gap:10px;min-width:0}
+.ws-chevron{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;border-radius:4px;flex-shrink:0;
+  background:rgba(127,127,127,.12);font-size:11px;line-height:1;color:var(--text-muted);
+  transition:transform .15s ease;
+}
+.ws-head.open .ws-chevron{transform:rotate(90deg);color:var(--text-strong)}
+.ws-count{
+  display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:999px;
+  background:var(--chip-bg);border:1px solid var(--border);font-size:11px;font-weight:700;
+  color:var(--text-strong);font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.ws-rows.collapsed{display:none}
+.ws-toggle-bar{display:flex;align-items:center;gap:8px;margin-left:auto}
+.btn-ws-toggle{
+  height:34px;padding:0 12px;font-size:12px;font-weight:600;
+  border:1px solid var(--border);border-radius:6px;
+  background:var(--bg-surface-2,var(--input-bg));color:var(--text);
+  cursor:pointer;white-space:nowrap;
+}
+.btn-ws-toggle:hover{background:var(--table-hover);border-color:var(--text-muted)}
 .pill{
   display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;
   background:var(--chip-bg);color:var(--text-strong);border:1px solid var(--border);
@@ -70,6 +98,10 @@ html[data-theme="dark"] a.link{color:#63b3ed}
       <button type="button" class="btn-clear-ws" id="clearWsBtn" hidden title="Show all workspaces">Clear</button>
     </div>
     <input type="search" id="qFilter" placeholder="Search report, folder, batch…" />
+    <div class="ws-toggle-bar">
+      <button type="button" class="btn-ws-toggle" id="expandAllBtn" title="Expand all workspace groups">Expand all</button>
+      <button type="button" class="btn-ws-toggle" id="collapseAllBtn" title="Collapse all workspace groups">Collapse all</button>
+    </div>
     <button type="button" class="btn btn-secondary" id="refreshBtn" style="height:34px">Refresh</button>
   </div>
   <div class="table-wrap" id="tableHost">
@@ -80,8 +112,44 @@ html[data-theme="dark"] a.link{color:#63b3ed}
 {% block extra_js %}
 <script>
 let CACHE = null;
+/** Workspace names currently expanded (persist across re-renders when possible). */
+const EXPANDED = new Set();
 const $ = (id) => document.getElementById(id);
 function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
+function wsKey(name){return String(name||'Unknown')}
+
+function setGroupOpen(k, open){
+  k=wsKey(k);
+  if(open) EXPANDED.add(k); else EXPANDED.delete(k);
+  const head=[...document.querySelectorAll('tr.ws-head')].find(h=>h.dataset.ws===k);
+  if(head){
+    head.classList.toggle('open', !!open);
+    const btn=head.querySelector('.ws-head-btn');
+    if(btn) btn.setAttribute('aria-expanded', open?'true':'false');
+    const chev=head.querySelector('.ws-chevron');
+    if(chev) chev.textContent=open?'▼':'▶';
+  }
+  document.querySelectorAll('tr.ws-row').forEach(r=>{
+    if(r.dataset.ws===k) r.classList.toggle('collapsed', !open);
+  });
+}
+
+function toggleGroup(k){
+  k=wsKey(k);
+  setGroupOpen(k, !EXPANDED.has(k));
+}
+
+function expandAllGroups(){
+  document.querySelectorAll('tr.ws-head').forEach(h=>{
+    if(h.dataset.ws) setGroupOpen(h.dataset.ws, true);
+  });
+}
+
+function collapseAllGroups(){
+  document.querySelectorAll('tr.ws-head').forEach(h=>{
+    if(h.dataset.ws) setGroupOpen(h.dataset.ws, false);
+  });
+}
 
 async function loadData(force){
   $('tableHost').innerHTML='<div class="loading"><div class="spinner"></div>Scanning SharePoint…</div>';
@@ -152,14 +220,40 @@ function render(){
     $('tableHost').innerHTML='<div class="idle">No decommissioned report files found'+(CACHE.basePath?' under '+esc(CACHE.basePath):'')+'.</div>';
     return;
   }
-  // Group for display
+  // Group for display — workspace headers only; rows collapsed unless expanded
   const by={};
   rows.forEach(r=>{const k=r.workspaceName||'Unknown';(by[k]=by[k]||[]).push(r)});
-  let html='<table><thead><tr><th>#</th><th>Report</th><th>Workspace</th><th>Folder</th><th>Type</th><th>Decommissioned</th><th>Batch</th><th>Size</th><th>File</th></tr></thead><tbody>';
+  const names=Object.keys(by).sort((a,b)=>a.localeCompare(b));
+
+  // When exactly one workspace is filtered, auto-expand it
+  const filteredWs=($('wsFilter').value||'').trim();
+  if(filteredWs && names.length===1){
+    EXPANDED.add(wsKey(names[0]));
+  }
+
+  // Drop expansion state for workspaces no longer in view
+  const visible=new Set(names.map(wsKey));
+  [...EXPANDED].forEach(k=>{if(!visible.has(k)) EXPANDED.delete(k)});
+
+  let html='<table><thead><tr><th style="width:40px">#</th><th>Report</th><th>Workspace</th><th>Folder</th><th>Type</th><th>Decommissioned</th><th>Batch</th><th>Size</th><th>File</th></tr></thead><tbody>';
   let n=0;
-  Object.keys(by).sort((a,b)=>a.localeCompare(b)).forEach(wn=>{
-    html+=`<tr class="ws-head"><td colspan="9">${esc(wn)} · ${by[wn].length} report(s)</td></tr>`;
-    by[wn].forEach(r=>{
+  names.forEach(wn=>{
+    const list=by[wn];
+    const k=wsKey(wn);
+    const isOpen=EXPANDED.has(k);
+    const chev=isOpen?'▼':'▶';
+    html+=`<tr class="ws-head${isOpen?' open':''}" data-ws="${esc(k)}">
+      <td colspan="9">
+        <button type="button" class="ws-head-btn" aria-expanded="${isOpen?'true':'false'}" data-ws-toggle="${esc(k)}">
+          <span class="ws-head-left">
+            <span class="ws-chevron" aria-hidden="true">${chev}</span>
+            <span>${esc(wn)}</span>
+          </span>
+          <span class="ws-count">${list.length} report${list.length===1?'':'s'}</span>
+        </button>
+      </td>
+    </tr>`;
+    list.forEach(r=>{
       n++;
       const open=r.webUrl
         ?`<a class="link" href="${esc(r.webUrl)}" target="_blank" rel="noopener" title="Download archived report file">Download archive</a>`
@@ -168,7 +262,7 @@ function render(){
       let typeClass='type-other';
       if(ft.includes('pbix')||ft==='powerbi'||ft==='pbi') typeClass='type-pbix';
       else if(ft.includes('rdl')||ft.includes('paginated')) typeClass='type-rdl';
-      html+=`<tr>
+      html+=`<tr class="ws-row${isOpen?'':' collapsed'}" data-ws="${esc(k)}">
         <td>${n}</td>
         <td><strong>${esc(r.reportName)}</strong><div style="font-size:11px;opacity:.75">${esc(r.fileName||'')}</div></td>
         <td>${esc(r.workspaceName)}</td>
@@ -182,10 +276,20 @@ function render(){
   });
   html+='</tbody></table>';
   $('tableHost').innerHTML=html;
+
+  // Wire collapse toggles (event delegation on host)
+  $('tableHost').querySelectorAll('[data-ws-toggle]').forEach(btn=>{
+    btn.addEventListener('click',(e)=>{
+      e.preventDefault();
+      toggleGroup(btn.getAttribute('data-ws-toggle'));
+    });
+  });
 }
 
 $('wsFilter').addEventListener('change',()=>{syncClearButton();render();});
 $('clearWsBtn').addEventListener('click',clearWorkspaceFilter);
+$('expandAllBtn').addEventListener('click',expandAllGroups);
+$('collapseAllBtn').addEventListener('click',collapseAllGroups);
 $('qFilter').addEventListener('input',()=>{clearTimeout(window._dq);window._dq=setTimeout(render,200)});
 $('refreshBtn').addEventListener('click',()=>loadData(true));
 loadData(false);
