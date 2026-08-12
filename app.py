@@ -7345,9 +7345,16 @@ def export_inactive_reports(workspace_id):
                 last_viewed_map[rid] = info
 
         # c) usage_snapshot.json overlay (catalog ops)
+        data_as_of_raw = None  # when usage / ops data is current through
         if CATALOG_AVAILABLE:
             try:
                 usage_snap = catalog_service.get_json('usage_snapshot.json') or {}
+                data_as_of_raw = (
+                    usage_snap.get('generatedAt')
+                    or usage_snap.get('opsEnrichedAt')
+                    or usage_snap.get('asOf')
+                    or usage_snap.get('endDate')
+                )
                 for rid, cnt in (usage_snap.get('report_views') or {}).items():
                     # don't wipe known values with empty snapshot
                     if rid not in report_views or report_views.get(rid) in (None,):
@@ -7359,6 +7366,62 @@ def export_inactive_reports(workspace_id):
                     last_viewed_map.setdefault(rid, info)
             except Exception as e:
                 print(f"   ⚠️ usage_snapshot overlay failed: {e}")
+
+        # ops / catalog timestamps for "as of" day math when usage has none
+        if not data_as_of_raw and pack:
+            data_as_of_raw = (
+                (pack.get('catalog_meta') or {}).get('opsEnrichedAt')
+                or pack.get('opsEnrichedAt')
+                or (pack.get('catalog_meta') or {}).get('generatedAt')
+                or pack.get('generatedAt')
+            )
+        if not data_as_of_raw and CATALOG_AVAILABLE:
+            try:
+                summary = catalog_service.get_summary() or {}
+                data_as_of_raw = summary.get('opsEnrichedAt') or summary.get('generatedAt')
+            except Exception:
+                pass
+
+        data_as_of_dt = _parse_dt(data_as_of_raw) or datetime.now(timezone.utc)
+        # Calendar date label for column header (local US style MM-DD-YYYY)
+        data_as_of_label = data_as_of_dt.strftime('%m-%d-%Y')
+
+        # Folder path map (best-effort) for Sub Folder column
+        folder_path_by_report = {}
+        try:
+            folder_meta = _fetch_workspace_folder_meta(workspace_id) or {}
+            report_folder_map = folder_meta.get('report_folder_map') or {}
+            folder_names_map = folder_meta.get('folder_names_map') or {}
+
+            def _build_folder_path(folder_id):
+                if not folder_id or folder_id not in folder_names_map:
+                    return None
+                parts = []
+                cur = folder_id
+                seen = set()
+                while cur and cur not in seen:
+                    seen.add(cur)
+                    info = folder_names_map.get(cur) or {}
+                    nm = info.get('name')
+                    if nm:
+                        parts.insert(0, nm)
+                    cur = info.get('parentFolderId')
+                return ' / '.join(parts) if parts else None
+
+            for rid, fid in report_folder_map.items():
+                path = _build_folder_path(fid)
+                if path:
+                    folder_path_by_report[rid] = path
+        except Exception as folder_err:
+            print(f"   ⚠️ folder map for decomm export skipped: {folder_err}")
+            folder_path_by_report = {}
+
+        def _days_until_as_of(value):
+            """Days from last refresh to catalog/usage data-as-of date."""
+            dt = _parse_dt(value)
+            if not dt:
+                return None
+            return max(0, (data_as_of_dt - dt).days)
 
         # ---------- 3) Evaluate each report ----------
         def evaluate_report(report):
@@ -7376,7 +7439,11 @@ def export_inactive_reports(workspace_id):
             except Exception:
                 days = None
             last_ref = report.get('last_refreshed') or report.get('lastRefresh') or ''
-            if days is None and last_ref:
+            # Prefer days relative to data-as-of (not wall-clock now) for the export column
+            days_as_of = _days_until_as_of(last_ref) if last_ref else None
+            if days_as_of is not None:
+                days = days_as_of
+            elif days is None and last_ref:
                 days = _days_since(last_ref)
 
             refresh_status = (
@@ -7385,7 +7452,6 @@ def export_inactive_reports(workspace_id):
                 or ''
             )
             refresh_type = report.get('refresh_type') or report.get('refreshType') or ''
-            refresh_note = report.get('refresh_note') or ''
 
             # Views (60-day window when snapshot provides it)
             if rid in report_views:
@@ -7403,10 +7469,7 @@ def export_inactive_reports(workspace_id):
             if days is not None and days > REFRESH_STALE_DAYS:
                 reasons.append(f'Days since refresh > {REFRESH_STALE_DAYS} ({days}d)')
 
-            # Rule 2: no refresh history
-            # - no last_refreshed timestamp and days unknown
-            # - DirectQuery/Live: no import history is expected → do NOT flag on rule 2 alone
-            #   (still flagged by rule 1 if stale metrics exist, or rule 3 if 0 views)
+            # Rule 2: no refresh history (import models only)
             no_history = False
             if not live_dq:
                 if (not last_ref) and (days is None):
@@ -7417,28 +7480,12 @@ def export_inactive_reports(workspace_id):
                 reasons.append('No refresh history')
 
             # Rule 3: last 60 days views == 0
-            # Apply when we have an explicit view_count / usage value (including 0).
+            zero_views = False
             if (views_known or report.get('view_count') is not None) and int(views or 0) == 0:
+                zero_views = True
                 reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
 
             is_candidate = len(reasons) > 0
-
-            # Risk from strongest signal
-            risk = 'Low'
-            if any('Days since refresh' in r for r in reasons) and days is not None:
-                if days > 180:
-                    risk = 'Critical'
-                elif days > 90:
-                    risk = 'High'
-            if any(r.startswith('0 views') for r in reasons):
-                risk = 'High' if risk == 'Low' else risk
-            if any('No refresh history' in r for r in reasons):
-                risk = 'High' if risk in {'Low', 'Medium'} else risk
-            if len(reasons) >= 2:
-                if risk == 'High':
-                    risk = 'Critical'
-                elif risk == 'Low':
-                    risk = 'Medium'
 
             owner = _clean_person(
                 report.get('dataset_owner'),
@@ -7448,42 +7495,50 @@ def export_inactive_reports(workspace_id):
                 report.get('modifiedBy'),
                 report.get('modified_by'),
             )
-            created_by = _clean_person(report.get('createdBy'), report.get('created_by')) or '—'
-            modified_by = _clean_person(report.get('modifiedBy'), report.get('modified_by')) or '—'
 
-            last_viewed = last_viewed_map.get(rid) or report.get('last_viewed')
-            if isinstance(last_viewed, dict):
-                last_viewed_str = last_viewed.get('timestamp') or last_viewed.get('user') or '—'
-            else:
-                last_viewed_str = last_viewed or '—'
+            # Sub folder: root = NA
+            sub_folder = (
+                report.get('folderPath')
+                or report.get('folder_path')
+                or report.get('folderName')
+                or report.get('folder_name')
+                or folder_path_by_report.get(rid)
+                or ''
+            )
+            sub_folder = str(sub_folder).strip() if sub_folder else ''
+            if not sub_folder or sub_folder.lower() in {'root', 'workspace', 'none', 'n/a', 'na', '—'}:
+                sub_folder = 'NA'
+
+            model_name = (
+                report.get('datasetName')
+                or report.get('dataset_name')
+                or ''
+            ).strip() or 'NA'
+
+            last_ref_disp = ''
+            if last_ref and str(last_ref) not in {'—', '-', 'Unknown', 'None'}:
+                last_ref_disp = str(last_ref)[:19].replace('T', ' ')
+
+            # Comments: note zero views (no Views column in export)
+            comments = ''
+            if zero_views:
+                comments = f'Zero views in last {VIEW_LOOKBACK_LABEL}'
 
             return {
-                'report_id': rid,
+                'workspace_name': workspace_name,
+                'sub_folder': sub_folder,
                 'report_name': name,
-                'dataset_name': report.get('datasetName') or report.get('dataset_name') or '—',
-                'dataset_id': report.get('datasetId') or '',
-                'owner': owner or '—',
-                'created_by': created_by,
-                'modified_by': modified_by,
-                'views_30d': views if views_known or report.get('view_count') is not None else None,
-                'views_known': views_known or report.get('view_count') is not None,
-                'last_viewed': str(last_viewed_str)[:40],
-                'last_refreshed': last_ref or '—',
-                'days_since_refresh': days,
-                'refresh_status': refresh_status or ('DirectQuery/Live' if live_dq else '—'),
-                'refresh_type': refresh_type or ('directquery/live' if live_dq else '—'),
-                'is_live_dq': live_dq,
+                'model_name': model_name,
+                'last_refreshed_on': last_ref_disp or 'NA',
+                'days_since_refresh': days if days is not None else '',
+                'contact_owner': owner or 'NA',
+                'archived_status': '',
+                'comments': comments,
+                'can_decommission': '',
+                'review_comments': '',
                 'is_candidate': is_candidate,
                 'reasons': reasons,
-                'risk_level': risk if is_candidate else '—',
-                'recommendation': (
-                    'Review with owner — decommission candidate'
-                    if is_candidate else 'Keep / monitor'
-                ),
-                'action': (
-                    'Email owner for approval to archive/delete'
-                    if is_candidate else 'No action'
-                ),
+                'zero_views': zero_views,
             }
 
         evaluated = []
@@ -7494,147 +7549,116 @@ def export_inactive_reports(workspace_id):
 
         candidates = [r for r in evaluated if r['is_candidate']]
         candidates.sort(key=lambda x: (
-            {'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3}.get(x['risk_level'], 9),
-            -(x['days_since_refresh'] or -1),
-            (x['report_name'] or '').lower(),
+            (x.get('workspace_name') or '').lower(),
+            (x.get('sub_folder') or '').lower(),
+            (x.get('report_name') or '').lower(),
         ))
-        evaluated.sort(key=lambda x: (x['report_name'] or '').lower())
 
         print(
             f"   ✅ total={len(evaluated)} candidates={len(candidates)} "
-            f"source={source} views_keys={len(report_views)}"
+            f"source={source} views_keys={len(report_views)} as_of={data_as_of_label}"
         )
 
-        # ---------- 4) Excel ----------
+        # ---------- 4) Excel (single sheet — requested columns only) ----------
         wb = Workbook()
-        ws_inactive = wb.active
-        ws_inactive.title = 'Decommission Candidates'
-        ws_summary = wb.create_sheet('All Reports')
-        ws_rules = wb.create_sheet('Rules & Workflow')
+        ws_out = wb.active
+        ws_out.title = 'Decommission List'
 
         header_fill = PatternFill(start_color='2B6CB0', end_color='2B6CB0', fill_type='solid')
         header_font = Font(color='FFFFFF', bold=True, size=11)
-        warning_fill = PatternFill(start_color='FED7D7', end_color='FED7D7', fill_type='solid')
-        critical_fill = PatternFill(start_color='FEB2B2', end_color='FEB2B2', fill_type='solid')
-        safe_fill = PatternFill(start_color='C6F6D5', end_color='C6F6D5', fill_type='solid')
         center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
         left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        def style_header(ws, headers):
-            ws.append(headers)
-            for col_num, _h in enumerate(headers, 1):
-                cell = ws.cell(row=1, column=col_num)
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = center_align
-            ws.auto_filter.ref = f'A1:{chr(64+len(headers))}1'
-            ws.freeze_panes = 'A2'
-
-        def autosize(ws, max_width=48):
-            for col in ws.columns:
-                max_length = 0
-                letter = col[0].column_letter
-                for cell in col:
-                    try:
-                        max_length = max(max_length, len(str(cell.value or '')))
-                    except Exception:
-                        pass
-                ws.column_dimensions[letter].width = min(max_length + 2, max_width)
-
-        # Sheet 1 — candidates
-        cand_headers = [
-            'Report Name', 'Report ID', 'Dataset', 'Owner',
-            'Views (Last 60 Days)', 'Last Viewed',
-            'Last Refreshed', 'Days Since Refresh', 'Refresh Type', 'Refresh Status',
-            'Decommission Reasons', 'Risk Level', 'Recommendation', 'Action Required',
+        days_header = f'LastRefresh in days till {data_as_of_label}'
+        headers = [
+            'Workspace Name',
+            'Sub Folder',
+            'Report Name',
+            'Model Name',
+            'LastRefreshedOn',
+            days_header,
+            'Contact/Owner',
+            'Archived Status',
+            'Comments',
+            'Can Decommission',
+            'Review Comments',
         ]
-        style_header(ws_inactive, cand_headers)
+
+        ws_out.append(headers)
+        for col_num, _h in enumerate(headers, 1):
+            cell = ws_out.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_align
+        # AutoFilter + freeze
+        last_col_letter = chr(ord('A') + len(headers) - 1) if len(headers) <= 26 else 'K'
+        ws_out.auto_filter.ref = f'A1:{last_col_letter}1'
+        ws_out.freeze_panes = 'A2'
+        # Note in header comment on days column
+        ws_out.cell(row=1, column=6).comment = None
+        try:
+            from openpyxl.comments import Comment
+            ws_out.cell(row=1, column=6).comment = Comment(
+                f'Days from LastRefreshedOn through data-as-of date ({data_as_of_label}). '
+                f'Source: catalog/ops usage extract.',
+                'Power BI Control Center',
+            )
+        except Exception:
+            pass
 
         for r in candidates:
-            views_disp = r['views_30d'] if r['views_known'] else 'Unknown'
-            days_disp = r['days_since_refresh'] if r['days_since_refresh'] is not None else '—'
-            ws_inactive.append([
+            ws_out.append([
+                r['workspace_name'],
+                r['sub_folder'],
                 r['report_name'],
-                r['report_id'],
-                r['dataset_name'],
-                r['owner'],
-                views_disp,
-                r['last_viewed'],
-                str(r['last_refreshed'])[:19] if r['last_refreshed'] != '—' else '—',
-                days_disp,
-                r['refresh_type'],
-                r['refresh_status'],
-                '; '.join(r['reasons']),
-                r['risk_level'],
-                r['recommendation'],
-                r['action'],
+                r['model_name'],
+                r['last_refreshed_on'],
+                r['days_since_refresh'] if r['days_since_refresh'] != '' else 'NA',
+                r['contact_owner'],
+                r['archived_status'],  # empty for reviewers
+                r['comments'],
+                r['can_decommission'],  # empty
+                r['review_comments'],  # empty
             ])
-            rn = ws_inactive.max_row
-            fill = critical_fill if r['risk_level'] == 'Critical' else warning_fill
-            ws_inactive.cell(row=rn, column=11).fill = fill  # reasons
-            ws_inactive.cell(row=rn, column=12).fill = fill  # risk
+            # Left-align text columns
+            rn = ws_out.max_row
+            for c in range(1, 12):
+                ws_out.cell(row=rn, column=c).alignment = left_align if c != 6 else center_align
 
         if not candidates:
-            ws_inactive.append(['No decommission candidates under current rules'] + [''] * (len(cand_headers) - 1))
+            ws_out.append(
+                [workspace_name, 'NA', 'No decommission candidates under current rules',
+                 'NA', 'NA', 'NA', 'NA', '', '', '', '']
+            )
 
-        autosize(ws_inactive)
+        # Column widths
+        widths = {
+            'A': 28, 'B': 22, 'C': 36, 'D': 28, 'E': 18, 'F': 28,
+            'G': 28, 'H': 16, 'I': 32, 'J': 16, 'K': 22,
+        }
+        for letter, w in widths.items():
+            ws_out.column_dimensions[letter].width = w
 
-        # Sheet 2 — all reports
-        all_headers = [
-            'Report Name', 'Candidate?', 'Views (30d)', 'Days Since Refresh',
-            'Last Refreshed', 'Refresh Type', 'Owner', 'Reasons', 'Risk',
-        ]
-        style_header(ws_summary, all_headers)
-        for r in evaluated:
-            views_disp = r['views_30d'] if r['views_known'] else 'Unknown'
-            days_disp = r['days_since_refresh'] if r['days_since_refresh'] is not None else '—'
-            ws_summary.append([
-                r['report_name'],
-                'YES' if r['is_candidate'] else 'No',
-                views_disp,
-                days_disp,
-                str(r['last_refreshed'])[:19] if r['last_refreshed'] != '—' else '—',
-                r['refresh_type'],
-                r['owner'],
-                '; '.join(r['reasons']) if r['reasons'] else '—',
-                r['risk_level'],
-            ])
-            rn = ws_summary.max_row
-            if r['is_candidate']:
-                ws_summary.cell(row=rn, column=2).fill = warning_fill
-            else:
-                ws_summary.cell(row=rn, column=2).fill = safe_fill
-        autosize(ws_summary)
-
-        # Sheet 3 — rules
-        ws_rules.append(['DECOMMISSION RULES (this export)'])
-        ws_rules.append([])
+        # Thin Rules sheet (optional reference — not the main list)
+        ws_rules = wb.create_sheet('Rules')
+        ws_rules.append(['Decommission list export'])
         ws_rules.append(['Workspace', workspace_name])
-        ws_rules.append(['Workspace ID', workspace_id])
         ws_rules.append(['Generated (UTC)', datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')])
+        ws_rules.append(['Data as of', data_as_of_label])
         ws_rules.append(['Data source', source])
-        ws_rules.append(['Total reports (excl. [App])', len(evaluated)])
-        ws_rules.append(['Decommission candidates', len(candidates)])
+        ws_rules.append(['Candidates', len(candidates)])
         ws_rules.append([])
-        ws_rules.append(['A report is a candidate if ANY rule matches:'])
-        ws_rules.append(['1', f'Days since last refresh > {REFRESH_STALE_DAYS}'])
-        ws_rules.append(['2', 'No import refresh history (import/scheduled models only; DirectQuery/Live excluded from this rule)'])
+        ws_rules.append(['Candidate if ANY:'])
+        ws_rules.append(['1', f'Days since last refresh > {REFRESH_STALE_DAYS} (through {data_as_of_label})'])
+        ws_rules.append(['2', 'No import refresh history (not applied alone to DirectQuery/Live)'])
         ws_rules.append(['3', f'Views in last {VIEW_LOOKBACK_LABEL} == 0'])
         ws_rules.append([])
-        ws_rules.append(['Notes'])
-        ws_rules.append(['•', 'Views come from catalog ops / usage snapshot / usage cache (Activity Events when available).'])
-        ws_rules.append(['•', 'Refresh age comes from catalog ops (refresh_snapshot) when present.'])
-        ws_rules.append(['•', 'DirectQuery/Live are not flagged only because they lack import refresh history.'])
-        ws_rules.append(['•', 'Published [App] report copies are excluded.'])
-        ws_rules.append([])
-        ws_rules.append(['Suggested workflow'])
-        ws_rules.append(['1', 'Review candidates with workspace owners'])
-        ws_rules.append(['2', 'Notify owners (Keep / Archive / Delete) — 30 day response window'])
-        ws_rules.append(['3', 'Archive non-responsive / approved items'])
-        ws_rules.append(['4', 'Delete after retention period (e.g. 90 days in archive)'])
-        ws_rules.column_dimensions['A'].width = 18
-        ws_rules.column_dimensions['B'].width = 100
-        ws_rules.cell(row=1, column=1).font = Font(bold=True, size=14, color='FFFFFF')
+        ws_rules.append(['Comments column', f'Pre-filled with "Zero views in last {VIEW_LOOKBACK_LABEL}" when views known and == 0'])
+        ws_rules.append(['Archived Status / Can Decommission / Review Comments', 'Left blank for reviewers'])
+        ws_rules.append(['Excluded', 'Usage Metrics Report, Report Usage Metrics Report, [App] copies'])
+        ws_rules.column_dimensions['A'].width = 40
+        ws_rules.column_dimensions['B'].width = 80
+        ws_rules.cell(row=1, column=1).font = Font(bold=True, size=13, color='FFFFFF')
         ws_rules.cell(row=1, column=1).fill = header_fill
 
         output = io.BytesIO()
@@ -7642,8 +7666,8 @@ def export_inactive_reports(workspace_id):
         output.seek(0)
 
         safe_ws = ''.join(c if c.isalnum() or c in ('-', '_') else '_' for c in workspace_name)[:60]
-        filename = f'Decommission_Report_{safe_ws}_{datetime.now(timezone.utc).strftime("%Y%m%d")}.xlsx'
-        print(f"   📁 {filename} candidates={len(candidates)}/{len(evaluated)}")
+        filename = f'Decommission_List_{safe_ws}_{datetime.now(timezone.utc).strftime("%Y%m%d")}.xlsx'
+        print(f"   📁 {filename} candidates={len(candidates)}/{len(evaluated)} as_of={data_as_of_label}")
 
         return send_file(
             output,
