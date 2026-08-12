@@ -172,10 +172,23 @@ def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, An
 
         files = sp.list_files_recursive(base, max_depth=10)
         rows: List[Dict[str, Any]] = []
+        try:
+            from catalog_service.thin_packs import is_excluded_report_name
+        except Exception:
+            def is_excluded_report_name(name):  # type: ignore
+                n = (name or "").strip().casefold()
+                return n in {
+                    "usage metrics report",
+                    "report usage metrics report",
+                }
         for it in files:
             row = _row_from_file(it, base)
-            if row:
-                rows.append(row)
+            if not row:
+                continue
+            # Hide platform usage metrics archives (not business decomm content)
+            if is_excluded_report_name(row.get("reportName")):
+                continue
+            rows.append(row)
 
         # Newest first
         def _sort_key(r: Dict[str, Any]):

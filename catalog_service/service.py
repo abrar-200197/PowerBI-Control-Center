@@ -236,9 +236,10 @@ class CatalogService:
                 continue
             if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
                 continue
+            from catalog_service.thin_packs import is_excluded_report_name
             reports = [
                 r for r in (ws.get("reports") or [])
-                if not str(r.get("name") or "").startswith("[App]")
+                if not is_excluded_report_name(r.get("name"))
             ]
             out.append({
                 "id": wid,
@@ -275,11 +276,12 @@ class CatalogService:
             if did and did not in datasets_by_id:
                 datasets_by_id[did] = d
 
+        from catalog_service.thin_packs import is_excluded_report_name
         reports = []
         ops_hits = 0
         for r in ws.get("reports") or []:
             name = r.get("name") or ""
-            if name.startswith("[App]"):
+            if is_excluded_report_name(name):
                 continue
             ds_id = r.get("datasetId") or ""
             ds = datasets_by_id.get(ds_id) or {}
@@ -640,8 +642,9 @@ class CatalogService:
             if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
                 continue
             wname = ws.get("name") or ""
+            from catalog_service.thin_packs import is_excluded_report_name
             for r in ws.get("reports") or []:
-                if str(r.get("name") or "").startswith("[App]"):
+                if is_excluded_report_name(r.get("name")):
                     continue
                 ds = datasets_map.get(r.get("datasetId") or "") or {}
                 include = False
@@ -812,9 +815,10 @@ class CatalogService:
                 continue
             if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
                 continue
+            from catalog_service.thin_packs import is_excluded_report_name
             n = 0
             for r in ws.get("reports") or []:
-                if str(r.get("name") or "").startswith("[App]"):
+                if is_excluded_report_name(r.get("name")):
                     continue
                 ds = datasets_map.get(r.get("datasetId") or "") or {}
                 if _is_refresh_failed(r, ds):
@@ -827,7 +831,11 @@ class CatalogService:
         allowed_workspace_ids: Optional[Set[str]] = None,
     ) -> Tuple[Dict[str, int], int]:
         """Return ({workspaceId: zeroViewsCount}, usageLookbackDays) from catalog view_count."""
-        from catalog_service.thin_packs import USAGE_LOOKBACK_DAYS, _is_zero_views
+        from catalog_service.thin_packs import (
+            USAGE_LOOKBACK_DAYS,
+            _is_zero_views,
+            is_excluded_report_name,
+        )
 
         cat = self.get_workspace_catalog()
         out: Dict[str, int] = {}
@@ -841,7 +849,7 @@ class CatalogService:
                 continue
             zc = 0
             for r in ws.get("reports") or []:
-                if str(r.get("name") or "").startswith("[App]"):
+                if is_excluded_report_name(r.get("name")):
                     continue
                 if _is_zero_views(r):
                     zc += 1
@@ -948,9 +956,10 @@ class CatalogService:
             if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
                 continue
 
+            from catalog_service.thin_packs import is_excluded_report_name
             ws_reports = ws_inactive = ws_orphaned = ws_zero = ws_failed = 0
             for r in ws.get("reports") or []:
-                if str(r.get("name") or "").startswith("[App]"):
+                if is_excluded_report_name(r.get("name")):
                     continue
                 ds = datasets_map.get(r.get("datasetId") or "") or {}
                 ws_reports += 1

@@ -18,6 +18,21 @@ logger = logging.getLogger(__name__)
 # Match Report Catalog / ops usage window (Activity Events ViewReport)
 USAGE_LOOKBACK_DAYS = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))
 
+_EXCLUDED_REPORT_NAMES = frozenset({
+    "usage metrics report",
+    "report usage metrics report",
+})
+
+
+def is_excluded_report_name(name: Optional[str]) -> bool:
+    """Platform usage metrics + [App] shells — never include in UI packs."""
+    n = (name or "").strip()
+    if not n:
+        return False
+    if n.startswith("[App]"):
+        return True
+    return n.casefold() in _EXCLUDED_REPORT_NAMES
+
 
 def _parse_days(iso_ts: Optional[str], now: datetime) -> Optional[int]:
     if not iso_ts:
@@ -150,7 +165,7 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
         wname = ws.get("name") or ""
         rc = ic = oc = zc = fc = 0
         for r in ws.get("reports") or []:
-            if str(r.get("name") or "").startswith("[App]"):
+            if is_excluded_report_name(r.get("name")):
                 continue
             ds = datasets_map.get(r.get("datasetId") or "") or {}
             rc += 1
@@ -309,6 +324,8 @@ def build_ui_impact_reports(impact_index: Dict[str, Any]) -> Dict[str, Any]:
             for rep in ds.get("reports") or []:
                 if not isinstance(rep, dict):
                     continue
+                if is_excluded_report_name(rep.get("reportName")):
+                    continue
                 rid = rep.get("reportId")
                 if not rid:
                     continue
@@ -448,7 +465,7 @@ def build_ui_report_directory(catalog: Dict[str, Any]) -> Dict[str, Any]:
         wname = ws.get("name") or ""
         for r in ws.get("reports") or []:
             rname = str(r.get("name") or "")
-            if not rname or rname.startswith("[App]"):
+            if not rname or is_excluded_report_name(rname):
                 continue
             rid = r.get("id")
             if not rid:
