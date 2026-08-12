@@ -41,13 +41,14 @@ tr:hover td{background:rgba(127,127,127,.06)}
   background:rgba(127,127,127,.12);font-size:11px;line-height:1;color:var(--text-muted);
   transition:transform .15s ease;
 }
-.ws-head.open .ws-chevron{transform:rotate(90deg);color:var(--text-strong)}
+.ws-head.open .ws-chevron{color:var(--text-strong)}
 .ws-count{
   display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:999px;
   background:var(--chip-bg);border:1px solid var(--border);font-size:11px;font-weight:700;
   color:var(--text-strong);font-variant-numeric:tabular-nums;white-space:nowrap;
 }
-.ws-rows.collapsed{display:none}
+/* Report rows under a workspace — collapsed = overview only */
+tr.ws-row.collapsed{display:none !important}
 .ws-toggle-bar{display:flex;align-items:center;gap:8px;margin-left:auto}
 .btn-ws-toggle{
   height:34px;padding:0 12px;font-size:12px;font-weight:600;
@@ -112,16 +113,16 @@ html[data-theme="dark"] a.link{color:#63b3ed}
 {% block extra_js %}
 <script>
 let CACHE = null;
-/** Workspace names currently expanded (persist across re-renders when possible). */
+/** Workspace names currently expanded (by name; default = none = overview). */
 const EXPANDED = new Set();
+/** Map group id -> workspace name for current table render. */
+let GROUP_NAMES = {};
 const $ = (id) => document.getElementById(id);
 function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
 function wsKey(name){return String(name||'Unknown')}
 
-function setGroupOpen(k, open){
-  k=wsKey(k);
-  if(open) EXPANDED.add(k); else EXPANDED.delete(k);
-  const head=[...document.querySelectorAll('tr.ws-head')].find(h=>h.dataset.ws===k);
+function applyGroupDom(gid, open){
+  const head=document.querySelector(`tr.ws-head[data-gid="${gid}"]`);
   if(head){
     head.classList.toggle('open', !!open);
     const btn=head.querySelector('.ws-head-btn');
@@ -129,25 +130,36 @@ function setGroupOpen(k, open){
     const chev=head.querySelector('.ws-chevron');
     if(chev) chev.textContent=open?'▼':'▶';
   }
-  document.querySelectorAll('tr.ws-row').forEach(r=>{
-    if(r.dataset.ws===k) r.classList.toggle('collapsed', !open);
+  document.querySelectorAll(`tr.ws-row[data-gid="${gid}"]`).forEach(r=>{
+    r.classList.toggle('collapsed', !open);
   });
 }
 
-function toggleGroup(k){
-  k=wsKey(k);
-  setGroupOpen(k, !EXPANDED.has(k));
+function setGroupOpenById(gid, open){
+  const name=GROUP_NAMES[String(gid)];
+  if(name){
+    if(open) EXPANDED.add(wsKey(name)); else EXPANDED.delete(wsKey(name));
+  }
+  applyGroupDom(String(gid), open);
+}
+
+function toggleGroupById(gid){
+  gid=String(gid);
+  const name=GROUP_NAMES[gid];
+  const open=name ? !EXPANDED.has(wsKey(name)) : true;
+  setGroupOpenById(gid, open);
 }
 
 function expandAllGroups(){
-  document.querySelectorAll('tr.ws-head').forEach(h=>{
-    if(h.dataset.ws) setGroupOpen(h.dataset.ws, true);
+  document.querySelectorAll('tr.ws-head[data-gid]').forEach(h=>{
+    setGroupOpenById(h.getAttribute('data-gid'), true);
   });
 }
 
 function collapseAllGroups(){
-  document.querySelectorAll('tr.ws-head').forEach(h=>{
-    if(h.dataset.ws) setGroupOpen(h.dataset.ws, false);
+  EXPANDED.clear();
+  document.querySelectorAll('tr.ws-head[data-gid]').forEach(h=>{
+    applyGroupDom(h.getAttribute('data-gid'), false);
   });
 }
 
@@ -201,6 +213,8 @@ function syncClearButton(){
 function clearWorkspaceFilter(){
   const sel=$('wsFilter');
   if(sel) sel.value='';
+  // Back to full estate overview
+  EXPANDED.clear();
   syncClearButton();
   render();
 }
@@ -217,34 +231,44 @@ function render(){
   $('stSrc').textContent='SharePoint';
   $('noteBar').textContent=CACHE.note||'SharePoint archive only — not live Power BI metadata.';
   if(!rows.length){
+    GROUP_NAMES={};
     $('tableHost').innerHTML='<div class="idle">No decommissioned report files found'+(CACHE.basePath?' under '+esc(CACHE.basePath):'')+'.</div>';
     return;
   }
-  // Group for display — workspace headers only; rows collapsed unless expanded
+  // Group for display — default collapsed (workspace overview only)
   const by={};
   rows.forEach(r=>{const k=r.workspaceName||'Unknown';(by[k]=by[k]||[]).push(r)});
   const names=Object.keys(by).sort((a,b)=>a.localeCompare(b));
 
-  // When exactly one workspace is filtered, auto-expand it
+  // Convenience expands only — default load stays collapsed overview
   const filteredWs=($('wsFilter').value||'').trim();
+  const qActive=!!(($('qFilter').value||'').trim());
   if(filteredWs && names.length===1){
     EXPANDED.add(wsKey(names[0]));
+  }
+  // Search: open groups that have matching rows so hits are visible
+  if(qActive){
+    names.forEach(wn=>EXPANDED.add(wsKey(wn)));
   }
 
   // Drop expansion state for workspaces no longer in view
   const visible=new Set(names.map(wsKey));
   [...EXPANDED].forEach(k=>{if(!visible.has(k)) EXPANDED.delete(k)});
 
+  GROUP_NAMES={};
   let html='<table><thead><tr><th style="width:40px">#</th><th>Report</th><th>Workspace</th><th>Folder</th><th>Type</th><th>Decommissioned</th><th>Batch</th><th>Size</th><th>File</th></tr></thead><tbody>';
   let n=0;
-  names.forEach(wn=>{
+  names.forEach((wn, idx)=>{
     const list=by[wn];
     const k=wsKey(wn);
+    const gid=String(idx);
+    GROUP_NAMES[gid]=k;
+    // Default overview: collapsed unless user expanded this workspace
     const isOpen=EXPANDED.has(k);
     const chev=isOpen?'▼':'▶';
-    html+=`<tr class="ws-head${isOpen?' open':''}" data-ws="${esc(k)}">
+    html+=`<tr class="ws-head${isOpen?' open':''}" data-gid="${gid}">
       <td colspan="9">
-        <button type="button" class="ws-head-btn" aria-expanded="${isOpen?'true':'false'}" data-ws-toggle="${esc(k)}">
+        <button type="button" class="ws-head-btn" aria-expanded="${isOpen?'true':'false'}" data-gid-toggle="${gid}">
           <span class="ws-head-left">
             <span class="ws-chevron" aria-hidden="true">${chev}</span>
             <span>${esc(wn)}</span>
@@ -262,7 +286,7 @@ function render(){
       let typeClass='type-other';
       if(ft.includes('pbix')||ft==='powerbi'||ft==='pbi') typeClass='type-pbix';
       else if(ft.includes('rdl')||ft.includes('paginated')) typeClass='type-rdl';
-      html+=`<tr class="ws-row${isOpen?'':' collapsed'}" data-ws="${esc(k)}">
+      html+=`<tr class="ws-row${isOpen?'':' collapsed'}" data-gid="${gid}">
         <td>${n}</td>
         <td><strong>${esc(r.reportName)}</strong><div style="font-size:11px;opacity:.75">${esc(r.fileName||'')}</div></td>
         <td>${esc(r.workspaceName)}</td>
@@ -276,22 +300,24 @@ function render(){
   });
   html+='</tbody></table>';
   $('tableHost').innerHTML=html;
-
-  // Wire collapse toggles (event delegation on host)
-  $('tableHost').querySelectorAll('[data-ws-toggle]').forEach(btn=>{
-    btn.addEventListener('click',(e)=>{
-      e.preventDefault();
-      toggleGroup(btn.getAttribute('data-ws-toggle'));
-    });
-  });
 }
 
 $('wsFilter').addEventListener('change',()=>{syncClearButton();render();});
 $('clearWsBtn').addEventListener('click',clearWorkspaceFilter);
-$('expandAllBtn').addEventListener('click',expandAllGroups);
-$('collapseAllBtn').addEventListener('click',collapseAllGroups);
+$('expandAllBtn').addEventListener('click',(e)=>{e.preventDefault();expandAllGroups();});
+$('collapseAllBtn').addEventListener('click',(e)=>{e.preventDefault();collapseAllGroups();});
 $('qFilter').addEventListener('input',()=>{clearTimeout(window._dq);window._dq=setTimeout(render,200)});
 $('refreshBtn').addEventListener('click',()=>loadData(true));
+
+// Event delegation — survives table re-render (btn listeners on old nodes would die)
+$('tableHost').addEventListener('click',(e)=>{
+  const btn=e.target && e.target.closest ? e.target.closest('[data-gid-toggle]') : null;
+  if(!btn || !$('tableHost').contains(btn)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  toggleGroupById(btn.getAttribute('data-gid-toggle'));
+});
+
 loadData(false);
 </script>
 {% endblock %}
