@@ -38,6 +38,21 @@ except Exception as _catalog_import_err:
     CATALOG_AVAILABLE = False
     print(f"⚠️ Catalog service not available: {_catalog_import_err}")
 
+# Shared exclude: platform usage metrics + [App] shells (Catalog / Home / Decomm / etc.)
+try:
+    from catalog_service.thin_packs import is_excluded_report_name as _is_excluded_report_name
+except Exception:
+    def _is_excluded_report_name(name):  # type: ignore
+        n = (name or "").strip()
+        if not n:
+            return False
+        if n.startswith("[App]"):
+            return True
+        return n.casefold() in {
+            "usage metrics report",
+            "report usage metrics report",
+        }
+
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'powerbi-doc-generator-secret-key-2024')
@@ -1561,7 +1576,7 @@ def get_reports_metadata(workspace_id):
                     if not rid:
                         continue
                     name = report.get('name') or ''
-                    if str(name).startswith('[App]'):
+                    if _is_excluded_report_name(name):
                         continue
                     row = _ensure_row(rid, name)
                     before_c, before_m = row.get('created_by'), row.get('modified_by')
@@ -3311,8 +3326,8 @@ def search_workspace_tables(workspace_id):
                                         if not report_folder_id or report_folder_id not in allowed_folder_ids:
                                             continue
 
-                                # Skip [App] reports
-                                if report.get('name', '').startswith('[App]'):
+                                # Skip [App] shells + platform usage metrics reports
+                                if _is_excluded_report_name(report.get('name')):
                                     continue
 
                                 report_names.append({
@@ -4204,8 +4219,11 @@ def deep_content_search(workspace_id):
             with deep_search_progress[workspace_id]['lock']:
                 deep_search_progress[workspace_id]['message'] = f'Processing {idx}/{total_reports} reports...'
 
-            # Skip Fabric system reports and other non-embeddable reports
-            if 'Fabric Capacity Metrics' in report_name or 'Usage Metrics Report' in report_name:
+            # Skip platform / system reports (usage metrics, capacity metrics, [App] shells)
+            if (
+                _is_excluded_report_name(report_name)
+                or 'Fabric Capacity Metrics' in report_name
+            ):
                 print(f"\n      ⏭️  Skipping system report: {report_name}")
                 reports_skipped += 1
                 continue
@@ -6715,7 +6733,7 @@ def get_reports():
                     break
 
         for report in reports:
-            if report.get('name', '').startswith('[App]'):
+            if _is_excluded_report_name(report.get('name')):
                 continue
             dataset_id = report.get('datasetId')
             if not dataset_id:
@@ -6841,9 +6859,9 @@ def get_reports():
         root_reports_count = 0
 
         for report in reports:
-            # SKIP [App] reports - they're just published copies of original reports
+            # SKIP [App] shells + platform Usage Metrics reports
             report_name = report.get('name', '')
-            if report_name.startswith('[App]'):
+            if _is_excluded_report_name(report_name):
                 app_reports_excluded += 1
                 continue
 
@@ -7345,8 +7363,8 @@ def export_inactive_reports(workspace_id):
         # ---------- 3) Evaluate each report ----------
         def evaluate_report(report):
             name = report.get('name') or 'Unknown'
-            if str(name).startswith('[App]'):
-                return None  # skip published app copies
+            if _is_excluded_report_name(name):
+                return None  # skip [App] shells + platform usage metrics
 
             rid = report.get('id') or ''
             live_dq = _is_live_or_dq(report)
@@ -8122,7 +8140,7 @@ def get_orphaned_reports(workspace_id):
                 if not rid:
                     continue
                 name = r.get("name") or "Unknown"
-                if str(name).startswith("[App]"):
+                if _is_excluded_report_name(name):
                     continue
                 ds_id = r.get("datasetId") or ""
                 ds = datasets_map.get(ds_id) or {}
@@ -8158,7 +8176,7 @@ def get_orphaned_reports(workspace_id):
                 for r in resp.json().get("value") or []:
                     rid = r.get("id")
                     name = r.get("name") or "Unknown"
-                    if not rid or str(name).startswith("[App]"):
+                    if not rid or _is_excluded_report_name(name):
                         continue
                     row = by_id.get(rid) or {
                         "report_id": rid,
@@ -8234,7 +8252,7 @@ def get_orphaned_reports(workspace_id):
                     for r in ws.get("reports") or []:
                         rid = r.get("id")
                         name = r.get("name") or "Unknown"
-                        if not rid or str(name).startswith("[App]"):
+                        if not rid or _is_excluded_report_name(name):
                             continue
                         row = by_id.get(rid) or {
                             "report_id": rid,
@@ -8699,7 +8717,7 @@ def _sim_analyze_reports(catalog_ws, catalog_datasets, scan_ws, threshold):
     profiles = []
     for report in reports:
         name = report.get('name') or ''
-        if name.startswith('[App]'):
+        if _is_excluded_report_name(name):
             continue
         ds_id = report.get('datasetId') or ''
         ds = datasets_map.get(ds_id) or {}
@@ -9013,7 +9031,7 @@ def _sim_analyze_visuals(scan_ws, threshold):
     reports_with_pages = 0
     for report in scan_ws.get('reports') or []:
         name = report.get('name') or ''
-        if name.startswith('[App]'):
+        if _is_excluded_report_name(name):
             continue
         pages = report.get('pages') or []
         if pages:
