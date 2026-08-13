@@ -164,6 +164,6 @@ class TemplateGenerator:
 
 
 def get_generator() -> Generator:
-    if os.getenv("DEMO_MODE", "1") == "1" or not os.getenv("AZURE_OPENAI_ENDPOINT"):
+    if os.getenv("DEMO_MODE", "0") == "1" or not os.getenv("AZURE_OPENAI_ENDPOINT"):
         return TemplateGenerator()
     return AzureOpenAIGenerator()

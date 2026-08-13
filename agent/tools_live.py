@@ -16,8 +16,8 @@ Power BI REST executeQueries limits (hard, documented):
 On Premium/Fabric capacity you also get executeDaxQueries (Arrow IPC) with no
 fixed row cap -- set USE_ARROW=1 once you have pyarrow installed.
 
-Set DEMO_MODE=1 (the default in the shipped demo) to use the offline stub so
-you can see the whole flow without a tenant.
+Set DEMO_MODE=1 to use the offline stub (no tenant). Default is off so live
+queries run with the signed-in user's token (RLS).
 """
 from __future__ import annotations
 
@@ -126,7 +126,7 @@ def execute_dax(dataset_id: str, dax: str, obo_token: str, user_upn: str,
     dax = ensure_row_cap(validate_dax(dax))
     _limiter(user_upn).check()
 
-    if os.getenv("DEMO_MODE", "1") == "1":
+    if os.getenv("DEMO_MODE", "0") == "1":
         return _demo_execute(dataset_id, dax)
 
     import requests  # imported lazily so DEMO_MODE needs no network stack

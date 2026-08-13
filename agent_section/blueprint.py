@@ -56,17 +56,7 @@ def _identity() -> Tuple[str, Optional[str]]:
 
 # --- snapshot ---------------------------------------------------------------
 _snap = None
-
-
-def _snapshot():
-    """One long-lived read-only handle. Cheap, and the file only changes when
-    the Sunday/6-hourly job swaps it in."""
-    global _snap
-    if _snap is None:
-        from agent.db import Snapshot
-        _snap = Snapshot(os.getenv("CATALOG_SNAPSHOT_PATH")
-                         or _default_snapshot_path())
-    return _snap
+_snap_build_error: Optional[str] = None
 
 
 def _default_snapshot_path() -> str:
@@ -78,15 +68,41 @@ def _default_snapshot_path() -> str:
     return os.path.join(here, "data", "catalog.sqlite")
 
 
+def _snapshot():
+    """One long-lived read-only handle. Builds catalog.sqlite from the JSON
+    catalog on first use when the file is missing."""
+    global _snap, _snap_build_error
+    if _snap is not None:
+        return _snap
+
+    path = os.getenv("CATALOG_SNAPSHOT_PATH") or _default_snapshot_path()
+    if not os.path.isfile(path):
+        try:
+            from agent.build_snapshot import ensure_snapshot
+            path = str(ensure_snapshot(path))
+            _snap_build_error = None
+        except Exception as exc:  # noqa: BLE001
+            _snap_build_error = f"{type(exc).__name__}: {exc}"
+            raise FileNotFoundError(
+                f"catalog snapshot missing at {path} and auto-build failed: "
+                f"{_snap_build_error}"
+            ) from exc
+
+    from agent.db import Snapshot
+    _snap = Snapshot(path)
+    return _snap
+
+
 def reset_snapshot() -> None:
     """Call after the snapshot file is replaced, to drop the stale handle."""
-    global _snap
+    global _snap, _snap_build_error
     if _snap is not None:
         try:
             _snap.close()
         except Exception:  # noqa: BLE001
             pass
     _snap = None
+    _snap_build_error = None
 
 
 # --- routes -----------------------------------------------------------------
@@ -101,7 +117,16 @@ def page():
 @agent_bp.get("/api/models")
 def api_models():
     search = (request.args.get("q") or "").strip()
-    return jsonify({"models": service.list_models(_snapshot(), search)})
+    try:
+        models = service.list_models(_snapshot(), search)
+    except Exception as exc:  # noqa: BLE001
+        current_app.logger.exception("agent models list failed")
+        return jsonify({
+            "models": [],
+            "error": f"{type(exc).__name__}: {exc}",
+            "snapshot_error": _snap_build_error,
+        }), 503
+    return jsonify({"models": models})
 
 
 @agent_bp.get("/api/models/<dataset_id>")
@@ -110,6 +135,9 @@ def api_model(dataset_id: str):
         return jsonify(service.model_profile(_snapshot(), dataset_id))
     except LookupError as exc:
         return jsonify({"error": str(exc)}), 404
+    except Exception as exc:  # noqa: BLE001
+        current_app.logger.exception("agent model profile failed")
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 503
 
 
 @agent_bp.get("/api/status")
