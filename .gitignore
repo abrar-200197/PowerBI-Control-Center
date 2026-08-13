@@ -56,3 +56,5 @@ htmlcov/
 
 # OneDrive / Office noise
 ~$*
+
+data/flask_sessions/

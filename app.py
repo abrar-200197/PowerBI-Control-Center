@@ -57,28 +57,50 @@ except Exception:
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'powerbi-doc-generator-secret-key-2024')
 
-# Session configuration - CRITICAL for preventing cross-user session issues
-# Use Flask's built-in client-side sessions (works in all environments including Azure)
-#
-# Policy (production):
-#   - Non-permanent session cookie → cleared when the browser is fully closed
-#   - Absolute max age 12 hours from login (even if browser stays open)
+# Session configuration
+# IMPORTANT: Client-side signed cookies overflow (~4KB) once we store Power BI
+# + Copilot JWTs + the MSAL token_cache. Browsers then drop the cookie → endless
+# login loop. Use server-side filesystem sessions (cookie only holds a small id).
 SESSION_MAX_HOURS = int(os.getenv('SESSION_MAX_HOURS', '12'))
-app.config['SESSION_PERMANENT'] = False  # no Max-Age / no persistent cookie
+app.config['SESSION_PERMANENT'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=SESSION_MAX_HOURS)
 app.config['SESSION_REFRESH_EACH_REQUEST'] = False
 
-# Session cookie configuration for production (Azure App Service with TLS termination)
-# Prefer Secure cookies when running on Azure HTTPS
 _on_azure = bool(os.getenv('WEBSITE_HOSTNAME'))
-app.config['SESSION_COOKIE_SECURE'] = _on_azure or os.getenv('SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes')
-app.config['SESSION_COOKIE_HTTPONLY'] = True  # Prevent JavaScript access
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # Allow cross-site requests for OAuth redirect
-app.config['SESSION_COOKIE_NAME'] = 'pbi_session'  # Custom session cookie name
+app.config['SESSION_COOKIE_SECURE'] = _on_azure or os.getenv(
+    'SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes')
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_NAME'] = 'pbi_session'
+
+# Server-side session store (Flask-Session)
+_sess_dir = os.getenv('FLASK_SESSION_DIR') or (
+    '/home/data/flask_sessions' if _on_azure
+    else os.path.join(os.getcwd(), 'data', 'flask_sessions')
+)
+try:
+    os.makedirs(_sess_dir, exist_ok=True)
+except OSError:
+    _sess_dir = os.path.join(os.getcwd(), 'data', 'flask_sessions')
+    os.makedirs(_sess_dir, exist_ok=True)
+
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['SESSION_FILE_DIR'] = _sess_dir
+app.config['SESSION_FILE_THRESHOLD'] = 500
+app.config['SESSION_USE_SIGNER'] = True
+app.config['SESSION_KEY_PREFIX'] = 'pbi_cc:'
+
+try:
+    from flask_session import Session as _FlaskSession
+    _FlaskSession(app)
+    _session_backend = f'filesystem:{_sess_dir}'
+except Exception as _sess_err:
+    _session_backend = f'cookie-fallback ({_sess_err})'
+    print(f"⚠️ Flask-Session unavailable, cookie sessions may overflow: {_sess_err}")
 
 print(f"Session configuration:")
 print(f"   SECRET_KEY: {'Set from environment' if os.getenv('SECRET_KEY') else 'Using default (set SECRET_KEY in production!)'}")
-print(f"   Session type: Client-side cookie | permanent=False (browser-close expires)")
+print(f"   Session backend: {_session_backend}")
 print(f"   Absolute max age: {SESSION_MAX_HOURS}h from login")
 print(f"   Cookie secure: {app.config['SESSION_COOKIE_SECURE']}")
 print(f"   Cookie SameSite: {app.config['SESSION_COOKIE_SAMESITE']}")
@@ -400,9 +422,22 @@ def authorized():
         # Non-permanent cookie → expires when browser is fully closed.
         # Absolute 12h bound enforced via login_at + login_required.
         session.permanent = False
-        session["user"] = result.get("id_token_claims")
-        session["access_token"] = result.get("access_token")  # Store Power BI access token
+        # Keep only fields we use — full id_token_claims can be large
+        _claims = result.get("id_token_claims") or {}
+        session["user"] = {
+            "oid": _claims.get("oid"),
+            "name": _claims.get("name"),
+            "preferred_username": _claims.get("preferred_username")
+                or _claims.get("upn")
+                or _claims.get("email"),
+            "email": _claims.get("email") or _claims.get("preferred_username"),
+            "tid": _claims.get("tid"),
+        }
+        session["access_token"] = result.get("access_token")  # Power BI token
         session["login_at"] = datetime.now(timezone.utc).isoformat()
+        # Drop any stale multi-audience tokens from a prior broken session
+        session.pop("copilot_access_token", None)
+        session.pop("fabric_access_token", None)
         _save_cache(cache)
 
         # Best-effort: warm Power Platform token for AGENT_BRAIN=copilot
