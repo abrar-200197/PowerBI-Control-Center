@@ -43,10 +43,25 @@ def _env(key: str) -> str:
     v = (os.getenv(key) or "").strip()
     if v:
         return v
-    if key == "COPILOTSTUDIOAGENT__TENANTID":
-        return (os.getenv("TENANT_ID") or "").strip()
-    if key == "COPILOTSTUDIOAGENT__AGENTAPPID":
-        return (os.getenv("CLIENT_ID") or "").strip()
+    aliases = {
+        "COPILOTSTUDIOAGENT__ENVIRONMENTID": (
+            "COPILOT_ENVIRONMENT_ID", "COPILOTSTUDIO_ENVIRONMENTID",
+        ),
+        "COPILOTSTUDIOAGENT__SCHEMANAME": (
+            "COPILOT_SCHEMA_NAME", "COPILOTSTUDIO_SCHEMANAME",
+        ),
+        "COPILOTSTUDIOAGENT__TENANTID": (
+            "COPILOT_TENANT_ID", "TENANT_ID", "AZURE_TENANT_ID",
+        ),
+        "COPILOTSTUDIOAGENT__AGENTAPPID": (
+            "COPILOT_AGENT_APP_ID", "COPILOTSTUDIOAGENT__CLIENTID",
+            "CLIENT_ID", "AZURE_CLIENT_ID",
+        ),
+    }
+    for name in aliases.get(key, ()):
+        x = (os.getenv(name) or "").strip()
+        if x:
+            return x
     return ""
 
 

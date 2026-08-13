@@ -180,16 +180,38 @@ _COPILOT_KEYS = (
 )
 
 
+def _first_env(*names: str) -> str:
+    for n in names:
+        v = (os.getenv(n) or "").strip()
+        if v:
+            return v
+    return ""
+
+
 def _copilot_env(key: str) -> str:
     """Studio vars, with TENANT_ID / CLIENT_ID fallbacks for the shared app reg."""
     v = (os.getenv(key) or "").strip()
     if v:
         return v
-    if key == "COPILOTSTUDIOAGENT__TENANTID":
-        return (os.getenv("TENANT_ID") or "").strip()
-    if key == "COPILOTSTUDIOAGENT__AGENTAPPID":
-        return (os.getenv("CLIENT_ID") or os.getenv("COPILOTSTUDIOAGENT__CLIENTID") or "").strip()
-    return ""
+    # Alternate spellings people put in App Settings
+    aliases = {
+        "COPILOTSTUDIOAGENT__ENVIRONMENTID": (
+            "COPILOT_ENVIRONMENT_ID", "COPILOTSTUDIO_ENVIRONMENTID",
+        ),
+        "COPILOTSTUDIOAGENT__SCHEMANAME": (
+            "COPILOT_SCHEMA_NAME", "COPILOTSTUDIO_SCHEMANAME",
+        ),
+        "COPILOTSTUDIOAGENT__TENANTID": (
+            "COPILOT_TENANT_ID", "COPILOTSTUDIO_TENANTID",
+            "TENANT_ID", "AZURE_TENANT_ID", "MICROSOFT_PROVIDER_AUTHENTICATION_TENANT_ID",
+        ),
+        "COPILOTSTUDIOAGENT__AGENTAPPID": (
+            "COPILOT_AGENT_APP_ID", "COPILOTSTUDIOAGENT__CLIENTID",
+            "COPILOTSTUDIO_AGENTAPPID", "CLIENT_ID", "AZURE_CLIENT_ID",
+            "MICROSOFT_PROVIDER_AUTHENTICATION_CLIENT_ID",
+        ),
+    }
+    return _first_env(*aliases.get(key, ()))
 
 
 def _copilot_configured() -> bool:
@@ -211,12 +233,19 @@ def _loop_configured() -> bool:
 
 
 def resolve_brain(requested: Optional[str] = None) -> str:
-    """Pick the backend. Explicit request wins, but never silently: asking for
-    an unconfigured brain falls back to local rather than erroring, so the tab
-    still works while an admin is still enabling a preview feature."""
+    """Pick the backend. Explicit request wins when configured.
+
+    If AGENT_BRAIN=copilot but Studio env is incomplete, fall through to loop
+    (if OpenAI is set) then local — never pretend Copilot is active.
+    """
     want = (requested or os.getenv("AGENT_BRAIN") or "auto").lower()
-    if want == BRAIN_COPILOT and _copilot_configured():
-        return BRAIN_COPILOT
+    if want == BRAIN_COPILOT:
+        if _copilot_configured():
+            return BRAIN_COPILOT
+        # Incomplete Studio config — degrade gracefully
+        if _loop_configured():
+            return BRAIN_LOOP
+        return BRAIN_LOCAL
     if want == BRAIN_MCP and _mcp_configured():
         return BRAIN_MCP
     if want == BRAIN_LOOP and _loop_configured():
@@ -227,7 +256,7 @@ def resolve_brain(requested: Optional[str] = None) -> str:
         if _copilot_configured():
             return BRAIN_COPILOT
         if _loop_configured():
-            return BRAIN_LOOP     # a real agent beats the rule engine
+            return BRAIN_LOOP
         if _mcp_configured():
             return BRAIN_MCP
     return BRAIN_LOCAL
@@ -236,23 +265,39 @@ def resolve_brain(requested: Optional[str] = None) -> str:
 def brain_status() -> Dict[str, Any]:
     """Surfaced in the UI so it is never a mystery which brain answered."""
     active = resolve_brain()
+    requested = (os.getenv("AGENT_BRAIN") or "auto").lower()
+    missing = [k for k in _COPILOT_KEYS if not _copilot_env(k)]
+    note_map = {
+        BRAIN_COPILOT: "Copilot Studio agent (direct-to-engine, runs as the "
+                       "signed-in user)",
+        BRAIN_LOOP: "LLM in a loop with tools — plans, chains tool calls "
+                    "and self-corrects",
+        BRAIN_MCP: "Power BI remote MCP server (Copilot's DAX engine)",
+        BRAIN_LOCAL: "Rule-based fallback — regex routing, single pass, "
+                     "no LLM. Set AZURE_OPENAI_* for the real agent.",
+    }
+    note = note_map[active]
+    if requested == BRAIN_COPILOT and active != BRAIN_COPILOT:
+        note = (
+            f"AGENT_BRAIN=copilot but Studio is not fully configured "
+            f"(missing {', '.join(missing) or 'unknown'}). "
+            f"Running '{active}' instead. Set the missing App Settings and restart."
+        )
     return {
         "active": active,
         "copilot_studio_configured": _copilot_configured(),
         "mcp_configured": _mcp_configured(),
         "loop_configured": _loop_configured(),
-        "requested": (os.getenv("AGENT_BRAIN") or "auto").lower(),
-        "missing_copilot_keys": [k for k in _COPILOT_KEYS if not _copilot_env(k)],
+        "requested": requested,
+        "missing_copilot_keys": missing,
+        "copilot_env_resolved": {
+            "environment_id_set": bool(_copilot_env("COPILOTSTUDIOAGENT__ENVIRONMENTID")),
+            "schema_name_set": bool(_copilot_env("COPILOTSTUDIOAGENT__SCHEMANAME")),
+            "tenant_id_set": bool(_copilot_env("COPILOTSTUDIOAGENT__TENANTID")),
+            "agent_app_id_set": bool(_copilot_env("COPILOTSTUDIOAGENT__AGENTAPPID")),
+        },
         "is_real_agent": active in (BRAIN_COPILOT, BRAIN_LOOP),
-        "note": {
-            BRAIN_COPILOT: "Copilot Studio agent (direct-to-engine, runs as the "
-                           "signed-in user)",
-            BRAIN_LOOP: "LLM in a loop with tools — plans, chains tool calls "
-                        "and self-corrects",
-            BRAIN_MCP: "Power BI remote MCP server (Copilot's DAX engine)",
-            BRAIN_LOCAL: "Rule-based fallback — regex routing, single pass, "
-                         "no LLM. Set AZURE_OPENAI_* for the real agent.",
-        }[active],
+        "note": note,
     }
 
 
