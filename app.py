@@ -522,6 +522,52 @@ def get_user_powerbi_token():
     return None
 
 
+# ---------------------------------------------------------------------------
+# Agent section (/agent) — after get_user_powerbi_token so identity can refresh.
+# Uses the SIGNED-IN USER token (RLS). Never answers with service principal.
+# ---------------------------------------------------------------------------
+try:
+    from agent_section.blueprint import agent_bp, set_token_resolver
+
+    def _agent_identity():
+        """Return (user_upn, power_bi_access_token) for the current request."""
+        user = session.get('user') or {}
+        upn = (
+            user.get('preferred_username')
+            or user.get('upn')
+            or user.get('userPrincipalName')
+            or user.get('email')
+            or 'unknown@local'
+        )
+        token = None
+        try:
+            token = get_user_powerbi_token()
+        except Exception:
+            token = session.get('access_token')
+        return upn, token
+
+    set_token_resolver(_agent_identity)
+
+    @agent_bp.before_request
+    def _agent_require_login():
+        if 'user' not in session or _session_expired():
+            if 'user' in session:
+                session.clear()
+            if request.path.startswith('/agent/api/') or '/api/' in (request.path or ''):
+                return jsonify({
+                    'success': False,
+                    'error': 'Not authenticated or session expired',
+                    'redirect': url_for('login'),
+                    'auth_required': True,
+                }), 401
+            return redirect(url_for('login'))
+
+    app.register_blueprint(agent_bp)
+    print("✅ Agent section registered at /agent")
+except Exception as _agent_import_err:
+    print(f"⚠️ Agent section not available: {_agent_import_err}")
+
+
 def get_user_fabric_token():
     """
     Fabric API token (audience api.fabric.microsoft.com).
