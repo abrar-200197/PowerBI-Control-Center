@@ -39,16 +39,34 @@ _MISSING = (
 )
 
 
+def _env(key: str) -> str:
+    v = (os.getenv(key) or "").strip()
+    if v:
+        return v
+    if key == "COPILOTSTUDIOAGENT__TENANTID":
+        return (os.getenv("TENANT_ID") or "").strip()
+    if key == "COPILOTSTUDIOAGENT__AGENTAPPID":
+        return (os.getenv("CLIENT_ID") or "").strip()
+    return ""
+
+
 def _settings():
     from microsoft_agents.copilotstudio.client import ConnectionSettings
-    direct_url = os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
+    direct_url = (os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL") or "").strip()
     if direct_url:
         # DirectConnect mode: env id / schema name are not needed.
         return ConnectionSettings(environment_id="", agent_identifier="",
                                   direct_connect_url=direct_url)
+    env_id = _env("COPILOTSTUDIOAGENT__ENVIRONMENTID")
+    schema = _env("COPILOTSTUDIOAGENT__SCHEMANAME")
+    if not env_id or not schema:
+        raise RuntimeError(
+            "Set COPILOTSTUDIOAGENT__ENVIRONMENTID and "
+            "COPILOTSTUDIOAGENT__SCHEMANAME (from Studio publish / embed URL)"
+        )
     return ConnectionSettings(
-        environment_id=os.environ["COPILOTSTUDIOAGENT__ENVIRONMENTID"],
-        agent_identifier=os.environ["COPILOTSTUDIOAGENT__SCHEMANAME"],
+        environment_id=env_id,
+        agent_identifier=schema,
         cloud=None, copilot_agent_type=None, custom_power_platform_cloud=None,
     )
 
@@ -128,8 +146,13 @@ def health() -> Dict[str, Any]:
         installed = False
     keys = ("COPILOTSTUDIOAGENT__ENVIRONMENTID", "COPILOTSTUDIOAGENT__SCHEMANAME",
             "COPILOTSTUDIOAGENT__TENANTID", "COPILOTSTUDIOAGENT__AGENTAPPID")
+    missing = [k for k in keys if not _env(k)]
     return {
         "sdk_installed": installed,
-        "missing_env": [k for k in keys if not os.getenv(k)],
+        "missing_env": missing,
+        "environment_id": _env("COPILOTSTUDIOAGENT__ENVIRONMENTID")[:12] + "…"
+            if _env("COPILOTSTUDIOAGENT__ENVIRONMENTID") else "",
+        "schema_name": _env("COPILOTSTUDIOAGENT__SCHEMANAME"),
         "direct_connect": bool(os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")),
+        "ready": installed and not missing,
     }

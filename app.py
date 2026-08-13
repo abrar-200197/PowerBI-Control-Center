@@ -150,6 +150,12 @@ SCOPE = ["https://analysis.windows.net/powerbi/api/.default"]
 # Fabric API scope - needed for getDefinition and other Fabric-specific endpoints
 FABRIC_SCOPE = ["https://api.fabric.microsoft.com/.default"]
 
+# Power Platform / Copilot Studio (delegated CopilotStudio.Copilots.Invoke).
+# Separate audience from Power BI — must silent-acquire; do not reuse PBI JWT.
+COPILOT_SCOPE = [
+    (os.getenv("COPILOT_TOKEN_SCOPE") or "https://api.powerplatform.com/.default").strip()
+]
+
 # Optional: If you also need Graph API access, request it separately
 GRAPH_SCOPE = ["User.Read"]
 
@@ -399,6 +405,30 @@ def authorized():
         session["login_at"] = datetime.now(timezone.utc).isoformat()
         _save_cache(cache)
 
+        # Best-effort: warm Power Platform token for AGENT_BRAIN=copilot
+        # (needs CopilotStudio.Copilots.Invoke consented on the app).
+        try:
+            accounts = msal_app.get_accounts(
+                username=session.get("user", {}).get("preferred_username")
+            )
+            if not accounts:
+                accounts = msal_app.get_accounts()
+            if accounts:
+                c_res = msal_app.acquire_token_silent(
+                    COPILOT_SCOPE, account=accounts[0]
+                )
+                if c_res and "access_token" in c_res and "error" not in c_res:
+                    session["copilot_access_token"] = c_res["access_token"]
+                    _save_cache(cache)
+                    print("✅ Copilot / Power Platform token warmed at login")
+                elif c_res and c_res.get("error"):
+                    print(
+                        "⚠️ Copilot token at login: "
+                        f"{c_res.get('error_description', c_res.get('error'))}"
+                    )
+        except Exception as _c_warm_err:
+            print(f"⚠️ Copilot token warm skipped: {_c_warm_err}")
+
         # Get the new user ID and clear their old cache if any
         new_user_id = session.get('user', {}).get('oid')
         if new_user_id:
@@ -522,28 +552,101 @@ def get_user_powerbi_token():
     return None
 
 
+def get_user_copilot_token():
+    """Delegated token for Power Platform / Copilot Studio invoke.
+
+    Requires CopilotStudio.Copilots.Invoke on the app registration and admin
+    consent. Audience is api.powerplatform.com — never reuse the Power BI JWT.
+    """
+    if "copilot_access_token" in session:
+        left = _jwt_seconds_left(session["copilot_access_token"])
+        if left is not None and left > 300:
+            return session["copilot_access_token"]
+        if left is not None and left <= 300:
+            session.pop("copilot_access_token", None)
+
+    cache = _load_cache()
+    accounts = msal_app.get_accounts(
+        username=session.get("user", {}).get("preferred_username")
+    )
+    if not accounts:
+        accounts = msal_app.get_accounts()
+
+    if accounts:
+        result = msal_app.acquire_token_silent(COPILOT_SCOPE, account=accounts[0])
+        if result and "access_token" in result and "error" not in result:
+            print("✅ Copilot / Power Platform token acquired (silent)")
+            session["copilot_access_token"] = result["access_token"]
+            _save_cache(cache)
+            return result["access_token"]
+        if result and "error" in result:
+            print(
+                "⚠️ Copilot token silent fail: "
+                f"{result.get('error_description', result.get('error'))}"
+            )
+
+    # OBO from Power BI assertion (may fail if audiences cannot bridge)
+    pbi_token = get_user_powerbi_token()
+    if pbi_token:
+        try:
+            result = msal_app.acquire_token_on_behalf_of(
+                user_assertion=pbi_token,
+                scopes=COPILOT_SCOPE,
+            )
+            if result and "access_token" in result and "error" not in result:
+                print("✅ Copilot token acquired (OBO)")
+                session["copilot_access_token"] = result["access_token"]
+                _save_cache(cache)
+                return result["access_token"]
+            err = (result or {}).get("error_description") or (result or {}).get("error")
+            print(f"⚠️ Copilot OBO failed: {str(err)[:160]}")
+        except Exception as exc:
+            print(f"⚠️ Copilot OBO error: {exc}")
+
+    print("⚠️ Could not acquire Copilot / Power Platform token")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Agent section (/agent) — after get_user_powerbi_token so identity can refresh.
 # Uses the SIGNED-IN USER token (RLS). Never answers with service principal.
+# When AGENT_BRAIN=copilot, pass Power Platform token (not Power BI).
 # ---------------------------------------------------------------------------
 try:
     from agent_section.blueprint import agent_bp, set_token_resolver
 
     def _agent_identity():
-        """Return (user_upn, power_bi_access_token) for the current request."""
-        user = session.get('user') or {}
+        """Return (user_upn, access_token) for the current request.
+
+        Copilot Studio needs a Power Platform-scoped user token.
+        loop/mcp/local live DAX needs the Power BI user token.
+        """
+        user = session.get("user") or {}
         upn = (
-            user.get('preferred_username')
-            or user.get('upn')
-            or user.get('userPrincipalName')
-            or user.get('email')
-            or 'unknown@local'
+            user.get("preferred_username")
+            or user.get("upn")
+            or user.get("userPrincipalName")
+            or user.get("email")
+            or "unknown@local"
         )
+        brain = (os.getenv("AGENT_BRAIN") or "auto").lower()
+        studio_ready = bool(
+            os.getenv("COPILOTSTUDIOAGENT__ENVIRONMENTID")
+            and os.getenv("COPILOTSTUDIOAGENT__SCHEMANAME")
+        )
+        want_copilot = brain == "copilot" or (brain == "auto" and studio_ready)
+
         token = None
-        try:
-            token = get_user_powerbi_token()
-        except Exception:
-            token = session.get('access_token')
+        if want_copilot:
+            try:
+                token = get_user_copilot_token()
+            except Exception:
+                token = session.get("copilot_access_token")
+        if not token:
+            try:
+                token = get_user_powerbi_token()
+            except Exception:
+                token = session.get("access_token")
         return upn, token
 
     set_token_resolver(_agent_identity)

@@ -180,8 +180,23 @@ _COPILOT_KEYS = (
 )
 
 
+def _copilot_env(key: str) -> str:
+    """Studio vars, with TENANT_ID / CLIENT_ID fallbacks for the shared app reg."""
+    v = (os.getenv(key) or "").strip()
+    if v:
+        return v
+    if key == "COPILOTSTUDIOAGENT__TENANTID":
+        return (os.getenv("TENANT_ID") or "").strip()
+    if key == "COPILOTSTUDIOAGENT__AGENTAPPID":
+        return (os.getenv("CLIENT_ID") or os.getenv("COPILOTSTUDIOAGENT__CLIENTID") or "").strip()
+    return ""
+
+
 def _copilot_configured() -> bool:
-    return all(os.getenv(k) for k in _COPILOT_KEYS)
+    # Direct-connect URL alone is enough for the SDK settings path
+    if (os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL") or "").strip():
+        return True
+    return all(_copilot_env(k) for k in _COPILOT_KEYS)
 
 
 def _mcp_configured() -> bool:
@@ -227,7 +242,7 @@ def brain_status() -> Dict[str, Any]:
         "mcp_configured": _mcp_configured(),
         "loop_configured": _loop_configured(),
         "requested": (os.getenv("AGENT_BRAIN") or "auto").lower(),
-        "missing_copilot_keys": [k for k in _COPILOT_KEYS if not os.getenv(k)],
+        "missing_copilot_keys": [k for k in _COPILOT_KEYS if not _copilot_env(k)],
         "is_real_agent": active in (BRAIN_COPILOT, BRAIN_LOOP),
         "note": {
             BRAIN_COPILOT: "Copilot Studio agent (direct-to-engine, runs as the "
