@@ -67,8 +67,17 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=SESSION_MAX_HOURS)
 app.config['SESSION_REFRESH_EACH_REQUEST'] = False
 
 _on_azure = bool(os.getenv('WEBSITE_HOSTNAME'))
-app.config['SESSION_COOKIE_SECURE'] = _on_azure or os.getenv(
-    'SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes')
+# Secure cookies only work over HTTPS. On localhost (http://) they are dropped by
+# the browser → OAuth state missing on /getAToken → endless login loop.
+# Force insecure cookies for local dev unless you explicitly serve local HTTPS.
+_secure_env = (os.getenv('SESSION_COOKIE_SECURE') or '').strip().lower()
+if _on_azure:
+    app.config['SESSION_COOKIE_SECURE'] = True
+elif _secure_env in ('1', 'true', 'yes', 'on'):
+    app.config['SESSION_COOKIE_SECURE'] = True
+    print("⚠️ SESSION_COOKIE_SECURE=true on non-Azure — only use with local HTTPS")
+else:
+    app.config['SESSION_COOKIE_SECURE'] = False
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_NAME'] = 'pbi_session'
@@ -150,18 +159,28 @@ REDIRECT_PATH = "/getAToken"  # Must match redirect URI in Azure AD app registra
 
 
 
-# Auto-detect environment and set appropriate redirect URI
-# Priority: Environment variable > Auto-detection
-if os.getenv('REDIRECT_URI'):
-    # Use explicitly set redirect URI from environment
-    REDIRECT_URI = os.getenv('REDIRECT_URI')
-elif os.getenv('WEBSITE_HOSTNAME'):
-    # Running on Azure App Service - use production URL
-    REDIRECT_URI = f"https://{os.getenv('WEBSITE_HOSTNAME')}{REDIRECT_PATH}"
+# Auto-detect environment and set appropriate redirect URI.
+# Localhost must NOT keep a production https://… REDIRECT_URI from .env —
+# that causes Azure AD to bounce to the wrong host or drop the local session.
+_env_redirect = (os.getenv('REDIRECT_URI') or '').strip()
+if os.getenv('WEBSITE_HOSTNAME'):
+    # Azure App Service — prefer explicit env, else hostname
+    if _env_redirect and 'localhost' not in _env_redirect.lower():
+        REDIRECT_URI = _env_redirect
+    else:
+        REDIRECT_URI = f"https://{os.getenv('WEBSITE_HOSTNAME')}{REDIRECT_PATH}"
     print(f"🌐 Running on Azure App Service: {REDIRECT_URI}")
 else:
-    # Running locally - use localhost
-    REDIRECT_URI = f'http://localhost:5000{REDIRECT_PATH}'
+    # Local dev — always http://localhost:5000 unless env is already localhost
+    if _env_redirect and 'localhost' in _env_redirect.lower():
+        REDIRECT_URI = _env_redirect
+    else:
+        if _env_redirect:
+            print(
+                f"⚠️ Ignoring REDIRECT_URI={_env_redirect!r} on local run "
+                f"(use http://localhost:5000{REDIRECT_PATH})"
+            )
+        REDIRECT_URI = f'http://localhost:5000{REDIRECT_PATH}'
     print(f"💻 Running locally: {REDIRECT_URI}")
 
 # Scopes for user-delegated permissions
@@ -374,11 +393,22 @@ def authorized():
     # Verify state to prevent CSRF
     if request.args.get('state') != session.get("state"):
         print(f"❌ STATE MISMATCH - Session may not be persisting!")
+        print(f"   request state: {request.args.get('state')}")
+        print(f"   session state: {session.get('state')}")
+        print(f"   cookies: {list(request.cookies.keys())}")
+        print(f"   SESSION_COOKIE_SECURE={app.config.get('SESSION_COOKIE_SECURE')}")
+        print(f"   REDIRECT_URI={REDIRECT_URI}")
         print(f"   This usually means:")
-        print(f"   1. Browser cache issue (try incognito mode)")
-        print(f"   2. Session cookies not working in production")
-        print(f"   3. SECRET_KEY not set in production environment")
-        flash('Invalid state parameter. Please try again.', 'error')
+        print(f"   1. SESSION_COOKIE_SECURE=true on http://localhost (cookie dropped)")
+        print(f"   2. REDIRECT_URI points at Azure while you run localhost")
+        print(f"   3. Flask-Session dir not writable / SECRET_KEY changed mid-login")
+        print(f"   4. Browser blocked cookies / opened callback in another profile")
+        flash(
+            'Sign-in session was lost (OAuth state). '
+            'On localhost use http://localhost:5000, set SESSION_COOKIE_SECURE=false, '
+            'and REDIRECT_URI=http://localhost:5000/getAToken. Try Incognito once.',
+            'error',
+        )
         return redirect(url_for("login"))
 
     # Check for errors from Azure AD
