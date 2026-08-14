@@ -65,24 +65,89 @@ def _env(key: str) -> str:
     return ""
 
 
+def _normalize_environment_id(raw: str) -> str:
+    """Power Platform data-plane host uses the env GUID **without** dashes.
+
+    Studio embed URLs look like:
+      .../environments/Default-<guid>/bots/<schema>/...
+    App settings often store the dashed GUID or ``Default-<guid>``.
+
+    The SDK builds:
+      {id_no_dashes[:-2]}.{id_no_dashes[-2:]}.environment.api.powerplatform.com
+
+    If dashes are left in, DNS becomes invalid, e.g.
+      ClientConnectorDNSError: Cannot connect to host
+      5a9d9cfd-c32e-....4d.environment.api.powerplatform.com
+    """
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    # Strip common Studio URL prefixes / path crumbs
+    lower = s.lower()
+    for prefix in ("default-", "environments/", "/environments/"):
+        if lower.startswith(prefix):
+            s = s[len(prefix) :]
+            lower = s.lower()
+    # If a full URL/path was pasted, take the GUID-looking segment
+    if "/" in s:
+        parts = [p for p in s.replace("\\", "/").split("/") if p]
+        for p in reversed(parts):
+            pl = p.lower()
+            if pl.startswith("default-"):
+                p = p[8:]
+            cand = p.replace("-", "")
+            if len(cand) >= 32 and all(c in "0123456789abcdef" for c in cand.lower()):
+                s = p
+                break
+    # Keep hex only (drop braces, dashes, spaces)
+    hex_only = "".join(c for c in s if c in "0123456789abcdefABCDEF")
+    return hex_only.lower()
+
+
 def _settings():
     from microsoft_agents.copilotstudio.client import ConnectionSettings
-    direct_url = (os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL") or "").strip()
+
+    direct_url = (
+        os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
+        or os.getenv("COPILOT_DIRECT_CONNECT_URL")
+        or ""
+    ).strip()
     if direct_url:
         # DirectConnect mode: env id / schema name are not needed.
-        return ConnectionSettings(environment_id="", agent_identifier="",
-                                  direct_connect_url=direct_url)
-    env_id = _env("COPILOTSTUDIOAGENT__ENVIRONMENTID")
+        return ConnectionSettings(
+            environment_id="",
+            agent_identifier="",
+            direct_connect_url=direct_url,
+        )
+
+    env_id = _normalize_environment_id(_env("COPILOTSTUDIOAGENT__ENVIRONMENTID"))
     schema = _env("COPILOTSTUDIOAGENT__SCHEMANAME")
     if not env_id or not schema:
         raise RuntimeError(
             "Set COPILOTSTUDIOAGENT__ENVIRONMENTID and "
-            "COPILOTSTUDIOAGENT__SCHEMANAME (from Studio publish / embed URL)"
+            "COPILOTSTUDIOAGENT__SCHEMANAME (from Studio publish / embed URL). "
+            "Environment id may be dashed GUID or Default-<guid>; we strip dashes."
         )
+    if len(env_id) < 32:
+        raise RuntimeError(
+            f"COPILOTSTUDIOAGENT__ENVIRONMENTID looks too short after normalize "
+            f"({env_id!r}). Paste the Environment ID from Studio → Settings → "
+            f"Advanced → Metadata (or the GUID from the embed URL)."
+        )
+
+    # Explicit PROD cloud so host suffix is api.powerplatform.com
+    try:
+        from microsoft_agents.copilotstudio.client import PowerPlatformCloud
+        cloud = PowerPlatformCloud.PROD
+    except Exception:
+        cloud = None
+
     return ConnectionSettings(
         environment_id=env_id,
         agent_identifier=schema,
-        cloud=None, copilot_agent_type=None, custom_power_platform_cloud=None,
+        cloud=cloud,
+        copilot_agent_type=None,
+        custom_power_platform_cloud=None,
     )
 
 
@@ -139,7 +204,24 @@ async def _ask_async(question, user_upn, user_token, dataset_id,
                 if title:
                     suggested.append(title)
 
-    await asyncio.wait_for(_run(), timeout=timeout_s)
+    try:
+        await asyncio.wait_for(_run(), timeout=timeout_s)
+    except Exception as exc:
+        msg = f"{type(exc).__name__}: {exc}"
+        # Helpful hint when host still has dashed GUID (old build / bad env)
+        if "DNS" in msg or "Cannot connect to host" in msg or "Name or service" in msg:
+            h = health()
+            exp = h.get("expected_host") or ""
+            raise RuntimeError(
+                f"{msg}\n"
+                f"Copilot Studio host DNS failed. "
+                f"Normalized env id={h.get('environment_id_normalized')!r}. "
+                f"Expected host≈{exp!r}. "
+                f"Fix COPILOTSTUDIOAGENT__ENVIRONMENTID (GUID from Studio Metadata; "
+                f"dashes or Default- prefix are OK — we strip them) "
+                f"or set COPILOTSTUDIOAGENT__DIRECTCONNECTURL from the embed URL."
+            ) from exc
+        raise
 
     return {
         "brain": "copilot",
@@ -162,12 +244,24 @@ def health() -> Dict[str, Any]:
     keys = ("COPILOTSTUDIOAGENT__ENVIRONMENTID", "COPILOTSTUDIOAGENT__SCHEMANAME",
             "COPILOTSTUDIOAGENT__TENANTID", "COPILOTSTUDIOAGENT__AGENTAPPID")
     missing = [k for k in keys if not _env(k)]
+    raw_env = _env("COPILOTSTUDIOAGENT__ENVIRONMENTID")
+    norm_env = _normalize_environment_id(raw_env)
+    # Expected data-plane host (helps diagnose DNS errors in /agent/api/status)
+    expected_host = ""
+    if len(norm_env) >= 32:
+        expected_host = (
+            f"{norm_env[:-2]}.{norm_env[-2:]}.environment.api.powerplatform.com"
+        )
     return {
         "sdk_installed": installed,
         "missing_env": missing,
-        "environment_id": _env("COPILOTSTUDIOAGENT__ENVIRONMENTID")[:12] + "…"
-            if _env("COPILOTSTUDIOAGENT__ENVIRONMENTID") else "",
+        "environment_id_raw": (raw_env[:20] + "…") if len(raw_env) > 20 else raw_env,
+        "environment_id_normalized": norm_env[:16] + "…" if len(norm_env) > 16 else norm_env,
+        "expected_host": expected_host,
         "schema_name": _env("COPILOTSTUDIOAGENT__SCHEMANAME"),
-        "direct_connect": bool(os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")),
-        "ready": installed and not missing,
+        "direct_connect": bool(
+            os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
+            or os.getenv("COPILOT_DIRECT_CONNECT_URL")
+        ),
+        "ready": installed and not missing and len(norm_env) >= 32,
     }
