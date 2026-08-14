@@ -164,6 +164,47 @@ def _parse_studio_channels_url(raw: str) -> dict:
     }
 
 
+def _reject_bad_pp_host(direct_url: str) -> None:
+    """Fail fast on Dynamics org URLs / bad hosts that always NXDOMAIN for Studio."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(direct_url).hostname or "").lower()
+    if not host:
+        return
+    # Classic mistake: paste Dataverse / Dynamics org URL (*.crm.dynamics.com)
+    # or a mangled *.crm.environment.api.powerplatform.com host.
+    if ".crm." in host or host.endswith(".dynamics.com"):
+        raise RuntimeError(
+            f"COPILOTSTUDIOAGENT__DIRECTCONNECTURL host looks like Dataverse/Dynamics "
+            f"({host!r}), not the Copilot Studio Direct-to-Engine host.\n"
+            f"Do NOT use an org URL like https://org.crm.dynamics.com.\n"
+            f"Open Copilot Studio → your agent → Channels → Mobile app / "
+            f"Custom website / Web app (Direct Line or Direct Connect) and copy the "
+            f"connection URL that contains:\n"
+            f"  https://{{hex30}}.{{hex2}}.environment.api.powerplatform.com/"
+            f"copilotstudio/dataverse-backed/authenticated/bots/{{SchemaName}}\n"
+            f"Set that full URL as App Setting COPILOTSTUDIOAGENT__DIRECTCONNECTURL "
+            f"and also set COPILOTSTUDIOAGENT__SCHEMANAME to the bot schema name."
+        )
+    # Unsplit 32-hex GUID before .environment. always NXDOMAIN for PROD (need split).
+    labels = host.split(".")
+    if (
+        len(labels) >= 4
+        and labels[1] == "environment"
+        and "powerplatform" in host
+        and labels[0].replace("-", "").isalnum()
+        and len(labels[0].replace("-", "")) >= 32
+        and "." not in labels[0]
+    ):
+        raise RuntimeError(
+            f"Direct Connect host {host!r} uses an unsplit environment id "
+            f"(missing the . before the last 2 hex digits). "
+            f"PROD hosts must look like "
+            f"{{30hex}}.{{2hex}}.environment.api.powerplatform.com. "
+            f"Paste the Channels URL from Copilot Studio instead of building it by hand."
+        )
+
+
 def _settings():
     from microsoft_agents.copilotstudio.client import ConnectionSettings
 
@@ -210,15 +251,19 @@ def _settings():
             )
         direct_url = _build_direct_connect_url(env_id, schema)
 
+    _reject_bad_pp_host(direct_url)
+
     try:
         from microsoft_agents.copilotstudio.client import PowerPlatformCloud
         cloud = PowerPlatformCloud.PROD
     except Exception:
         cloud = None
 
+    # When Direct Connect URL is set, clear environment_id so the SDK never
+    # rebuilds a host from Metadata GUID (can disagree with Channels host).
     return ConnectionSettings(
-        environment_id=env_id or "",
-        agent_identifier=schema or "",
+        environment_id="" if direct_raw else (env_id or ""),
+        agent_identifier=schema or "unused-when-direct-url",
         cloud=cloud,
         copilot_agent_type=None,
         custom_power_platform_cloud=None,
