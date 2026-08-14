@@ -312,8 +312,90 @@ async def _ask_async(question, user_upn, user_token, dataset_id,
     }
 
 
+def _dns_probe(host: str) -> Dict[str, Any]:
+    """Non-secret DNS check for the Power Platform data-plane host."""
+    host = (host or "").strip().lower()
+    if not host:
+        return {"host": "", "ok": False, "error": "empty_host"}
+    try:
+        import socket
+        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        addrs = sorted({i[4][0] for i in infos if i and i[4]})
+        return {
+            "host": host,
+            "ok": bool(addrs),
+            "addresses": addrs[:5],
+            "error": None if addrs else "no_addresses",
+        }
+    except Exception as exc:
+        return {
+            "host": host,
+            "ok": False,
+            "addresses": [],
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _connection_debug() -> Dict[str, Any]:
+    """
+    Exact URL/host the CopilotClient will use (no secrets / no tokens).
+
+    Exposed via GET /agent/api/status for IT Financials troubleshooting.
+    """
+    from urllib.parse import urlparse
+
+    out: Dict[str, Any] = {
+        "settings_ok": False,
+        "settings_error": None,
+        "direct_connect_url": "",
+        "direct_connect_host": "",
+        "direct_connect_path": "",
+        "source": None,  # override | built_from_metadata
+        "dns": None,
+    }
+    override_raw = (
+        os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
+        or os.getenv("COPILOT_DIRECT_CONNECT_URL")
+        or ""
+    ).strip()
+    out["override_configured"] = bool(override_raw)
+    if override_raw:
+        out["source"] = "override"
+        # Never return query strings (could hold tokens in some Studio UIs)
+        bare = override_raw.split("?", 1)[0].rstrip("/")
+        out["override_preview"] = bare[:160] + ("…" if len(bare) > 160 else "")
+    else:
+        out["source"] = "built_from_metadata"
+        out["override_preview"] = ""
+
+    try:
+        settings = _settings()
+        url = (getattr(settings, "direct_connect_url", None) or "").strip()
+        # Strip query if any
+        if "?" in url:
+            url = url.split("?", 1)[0]
+        url = url.rstrip("/")
+        parsed = urlparse(url) if url else None
+        host = (parsed.hostname or "") if parsed else ""
+        path = (parsed.path or "") if parsed else ""
+        out["settings_ok"] = True
+        out["direct_connect_url"] = url
+        out["direct_connect_host"] = host
+        out["direct_connect_path"] = path
+        out["agent_identifier"] = getattr(settings, "agent_identifier", None) or ""
+        out["environment_id_on_settings"] = (
+            (getattr(settings, "environment_id", None) or "")[:16] + "…"
+            if (getattr(settings, "environment_id", None) or "")
+            else ""
+        )
+        out["dns"] = _dns_probe(host)
+    except Exception as exc:
+        out["settings_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
 def health() -> Dict[str, Any]:
-    """Config check that does NOT need a user token -- safe for /health."""
+    """Config check that does NOT need a user token -- safe for status APIs."""
     try:
         import microsoft_agents.copilotstudio.client  # noqa: F401
         installed = True
@@ -325,7 +407,7 @@ def health() -> Dict[str, Any]:
     raw_env = _env("COPILOTSTUDIOAGENT__ENVIRONMENTID")
     norm_env = _normalize_environment_id(raw_env)
     schema = _env("COPILOTSTUDIOAGENT__SCHEMANAME")
-    # Expected data-plane host (helps diagnose DNS errors in /agent/api/status)
+    # Expected data-plane host from Metadata GUID alone
     expected_host = ""
     direct_built = ""
     if len(norm_env) >= 32:
@@ -339,14 +421,23 @@ def health() -> Dict[str, Any]:
         os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
         or os.getenv("COPILOT_DIRECT_CONNECT_URL")
     )
+    conn = _connection_debug()
     return {
         "sdk_installed": installed,
         "missing_env": missing,
         "environment_id_raw": (raw_env[:20] + "…") if len(raw_env) > 20 else raw_env,
-        "environment_id_normalized": norm_env[:16] + "…" if len(norm_env) > 16 else norm_env,
-        "expected_host": expected_host,
-        "direct_connect_url_built": (direct_built[:120] + "…") if len(direct_built) > 120 else direct_built,
+        "environment_id_normalized": (
+            norm_env[:16] + "…" if len(norm_env) > 16 else norm_env
+        ),
+        "environment_id_normalized_full": norm_env,  # needed to compare with docs
+        "expected_host_from_metadata": expected_host,
+        "direct_connect_url_from_metadata": direct_built,
         "schema_name": schema,
         "direct_connect_override": override,
-        "ready": installed and not missing and (len(norm_env) >= 32 or override),
+        # What the running client actually uses (after _settings())
+        "connection": conn,
+        "dns_ok": bool((conn.get("dns") or {}).get("ok")),
+        "ready": installed
+        and (len(norm_env) >= 32 or override)
+        and bool(schema or override),
     }

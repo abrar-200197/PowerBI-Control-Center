@@ -283,6 +283,14 @@ def brain_status() -> Dict[str, Any]:
             f"(missing {', '.join(missing) or 'unknown'}). "
             f"Running '{active}' instead. Set the missing App Settings and restart."
         )
+    copilot_health: Dict[str, Any] = {}
+    if active == BRAIN_COPILOT or _copilot_configured() or requested == BRAIN_COPILOT:
+        try:
+            from agent_section.brains import copilot_studio
+            copilot_health = copilot_studio.health()
+        except Exception as exc:  # noqa: BLE001
+            copilot_health = {"error": f"{type(exc).__name__}: {exc}"}
+
     return {
         "active": active,
         "copilot_studio_configured": _copilot_configured(),
@@ -295,7 +303,13 @@ def brain_status() -> Dict[str, Any]:
             "schema_name_set": bool(_copilot_env("COPILOTSTUDIOAGENT__SCHEMANAME")),
             "tenant_id_set": bool(_copilot_env("COPILOTSTUDIOAGENT__TENANTID")),
             "agent_app_id_set": bool(_copilot_env("COPILOTSTUDIOAGENT__AGENTAPPID")),
+            "direct_connect_url_set": bool(
+                os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
+                or os.getenv("COPILOT_DIRECT_CONNECT_URL")
+            ),
         },
+        # Debug: host + URL the SDK will call (no secrets). Use while testing IT Financials.
+        "copilot_studio": copilot_health,
         "is_real_agent": active in (BRAIN_COPILOT, BRAIN_LOOP),
         "note": note,
     }
