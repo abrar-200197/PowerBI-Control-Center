@@ -123,14 +123,24 @@ def _build_direct_connect_url(env_id_hex: str, schema: str) -> str:
 
 
 def _parse_studio_channels_url(raw: str) -> dict:
-    """Parse a Copilot Studio Channels → Web app connection URL.
+    """Parse Studio Channels URL (Direct Connect) OR Mobile app Token Endpoint.
 
-    Example (Microsoft docs):
-      https://{id}.environment.api.powerplatform.com/copilotstudio/dataverse-backed/
+    Direct Connect (ideal):
+      https://{clusterId}.environment.api.powerplatform.com/copilotstudio/dataverse-backed/
         authenticated/bots/{agentName}/conversations?api-version=...
 
-    ``{id}`` is often already ``{hex30}.{hex2}`` (split form). Prefer pasting this
-    full URL into COPILOTSTUDIOAGENT__DIRECTCONNECTURL when Metadata GUID DNS fails.
+    Mobile app Token Endpoint (what most tenants actually show):
+      https://{clusterId}.environment.api.powerplatform.com/powervirtualagents/
+        botservice/.../directline/token?api-version=...
+      or .../copilotstudio/.../directline/token?...
+
+    Web app "Embed code" only has copilotstudio.microsoft.com webchat — that is
+    NOT a Direct Connect host. Metadata GUID → host split also often NXDOMAIN
+    because cluster id ≠ environment GUID. Prefer Mobile app Token Endpoint host.
+
+    ``{clusterId}`` is often already ``{hex30}.{hex2}`` but can be ANY id Microsoft
+    assigned to the environment cluster — never invent it from Metadata GUID if
+    that host does not resolve.
     """
     from urllib.parse import urlparse
 
@@ -141,27 +151,68 @@ def _parse_studio_channels_url(raw: str) -> dict:
     host = (p.hostname or "").lower()
     if not host:
         return {}
+    # Maker portal / webchat hosts are not Direct-to-Engine
+    if "copilotstudio.microsoft.com" in host or host.endswith("powerapps.com"):
+        return {
+            "host": host,
+            "schema": "",
+            "direct_connect_url": "",
+            "is_pp_environment_host": False,
+            "is_maker_embed_only": True,
+        }
     path = p.path or ""
     schema = ""
-    # .../bots/{schemaName}/...
+    # .../bots/{schemaName}/...  (schema name, not botservice)
     parts = [x for x in path.split("/") if x]
     for i, seg in enumerate(parts):
         if seg.lower() == "bots" and i + 1 < len(parts):
-            schema = parts[i + 1]
-            break
-    # Base URL through .../bots/{schema} (SDK adds /conversations)
+            cand = parts[i + 1]
+            if cand.lower() not in ("botservice", "v1", "bot"):
+                schema = cand
+                break
+    # If pasted URL already has Direct Connect path, keep through /bots/{schema}
     base_path = path
     if "/conversations" in base_path:
         base_path = base_path[: base_path.index("/conversations")]
+    if "/directline" in base_path.lower():
+        # Token endpoint — only host is trustworthy; rebuild Direct Connect path
+        base_path = ""
     while base_path.endswith("/"):
         base_path = base_path[:-1]
-    base = f"{p.scheme}://{host}{base_path}"
+
+    is_pp = "environment.api.powerplatform." in host or (
+        host.endswith("api.powerplatform.com") and ".environment." in host
+    )
+    if is_pp and (not base_path or "/copilotstudio/" not in base_path.lower()):
+        # Host from Token Endpoint (or bare host) — caller fills schema
+        return {
+            "host": host,
+            "schema": schema,
+            "direct_connect_url": "",  # need schema to build full path
+            "token_endpoint_host": host,
+            "is_pp_environment_host": True,
+            "is_token_endpoint": True,
+        }
+
+    base = f"{p.scheme or 'https'}://{host}{base_path}" if base_path else ""
     return {
         "host": host,
         "schema": schema,
         "direct_connect_url": base,
-        "is_pp_environment_host": "environment.api.powerplatform." in host,
+        "is_pp_environment_host": is_pp,
     }
+
+
+def _direct_url_from_host(host: str, schema: str) -> str:
+    host = (host or "").strip().lower().lstrip("https://").lstrip("http://")
+    host = host.split("/")[0]
+    schema = (schema or "").strip()
+    if not host or not schema:
+        return ""
+    return (
+        f"https://{host}/copilotstudio/dataverse-backed/"
+        f"authenticated/bots/{schema}"
+    )
 
 
 def _reject_bad_pp_host(direct_url: str) -> None:
@@ -208,48 +259,110 @@ def _reject_bad_pp_host(direct_url: str) -> None:
 def _settings():
     from microsoft_agents.copilotstudio.client import ConnectionSettings
 
-    # Prefer full Channels / Direct Connect URL (authoritative host from Microsoft).
+    # Prefer full Channels / Direct Connect URL, OR Mobile app Token Endpoint
+    # (we keep the host — Metadata GUID split often NXDOMAIN).
     direct_raw = (
         os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
         or os.getenv("COPILOT_DIRECT_CONNECT_URL")
+        or os.getenv("COPILOTSTUDIOAGENT__TOKENENDPOINT")
+        or os.getenv("COPILOT_TOKEN_ENDPOINT")
         or ""
     ).strip()
+    # Bare host override (e.g. abc.12.environment.api.powerplatform.com)
+    host_only = (
+        os.getenv("COPILOTSTUDIOAGENT__ENVIRONMENTHOST")
+        or os.getenv("COPILOT_ENVIRONMENT_HOST")
+        or ""
+    ).strip()
+
     parsed = _parse_studio_channels_url(direct_raw) if direct_raw else {}
+    if parsed.get("is_maker_embed_only"):
+        raise RuntimeError(
+            "COPILOTSTUDIOAGENT__DIRECTCONNECTURL is a maker/webchat URL "
+            "(copilotstudio.microsoft.com), not the Direct-to-Engine API host.\n"
+            "Fix: Copilot Studio → Channels → **Mobile app** → copy **Token endpoint** "
+            "(host looks like *.environment.api.powerplatform.com). "
+            "Paste that full URL into COPILOTSTUDIOAGENT__DIRECTCONNECTURL "
+            "(or COPILOTSTUDIOAGENT__TOKENENDPOINT) and set "
+            "COPILOTSTUDIOAGENT__SCHEMANAME=cr037_… from the embed bot name."
+        )
 
     env_id = _normalize_environment_id(_env("COPILOTSTUDIOAGENT__ENVIRONMENTID"))
     schema = _env("COPILOTSTUDIOAGENT__SCHEMANAME") or (parsed.get("schema") or "")
 
+    direct_url = ""
     if parsed.get("direct_connect_url"):
         direct_url = parsed["direct_connect_url"]
         if parsed.get("schema") and not schema:
             schema = parsed["schema"]
+    elif parsed.get("is_token_endpoint") or parsed.get("token_endpoint_host"):
+        # Mobile Token Endpoint — rebuild Direct Connect path using schema
+        if not schema:
+            raise RuntimeError(
+                "Token Endpoint host was provided but "
+                "COPILOTSTUDIOAGENT__SCHEMANAME is empty. "
+                "Set it to the bot schema from Embed "
+                "(e.g. cr037_powerbireportcreator_PgSgoL)."
+            )
+        direct_url = _direct_url_from_host(parsed.get("host") or "", schema)
+    elif host_only and schema:
+        direct_url = _direct_url_from_host(host_only, schema)
     elif direct_raw and direct_raw.startswith("http"):
-        # Non-standard URL — pass through; strip trailing /conversations if present
         direct_url = direct_raw.split("?")[0]
         if "/conversations" in direct_url:
             direct_url = direct_url[: direct_url.index("/conversations")]
-        direct_url = direct_url.rstrip("/")
-    else:
-        direct_url = ""
+        if "/directline" in direct_url.lower():
+            # leftover token path — host only
+            from urllib.parse import urlparse as _up
+            h = (_up(direct_url).hostname or "")
+            if not schema:
+                raise RuntimeError(
+                    "Token/directline URL needs COPILOTSTUDIOAGENT__SCHEMANAME."
+                )
+            direct_url = _direct_url_from_host(h, schema)
+        else:
+            direct_url = direct_url.rstrip("/")
+    elif direct_raw and "environment.api.powerplatform." in direct_raw and schema:
+        # pasted bare host without scheme
+        direct_url = _direct_url_from_host(direct_raw, schema)
+
+    using_override = bool(direct_url)
 
     if not direct_url:
         if not env_id or not schema:
             raise RuntimeError(
-                "Copilot Studio is not configured. Either:\n"
-                "  A) Set COPILOTSTUDIOAGENT__DIRECTCONNECTURL to the URL from "
-                "Copilot Studio → Channels → Web app (recommended), OR\n"
-                "  B) Set COPILOTSTUDIOAGENT__ENVIRONMENTID + "
-                "COPILOTSTUDIOAGENT__SCHEMANAME from Settings → Advanced → Metadata.\n"
-                "If DNS fails on the built host, use option A (the Channels URL has "
-                "the correct Power Platform hostname for your agent)."
+                "Copilot Studio is not configured. Do ONE of:\n"
+                "  A) Channels → **Mobile app** → copy Token endpoint URL → "
+                "App Setting COPILOTSTUDIOAGENT__DIRECTCONNECTURL (or "
+                "COPILOTSTUDIOAGENT__TOKENENDPOINT) + "
+                "COPILOTSTUDIOAGENT__SCHEMANAME\n"
+                "  B) COPILOTSTUDIOAGENT__ENVIRONMENTHOST="
+                "<host from Token endpoint> + SCHEMANAME\n"
+                "  C) ENVIRONMENTID + SCHEMANAME (often NXDOMAIN — avoid if DNS fails)\n"
+                "Web app Embed code alone is NOT enough (no Direct Connect host)."
             )
         if len(env_id) < 32:
             raise RuntimeError(
                 f"COPILOTSTUDIOAGENT__ENVIRONMENTID looks too short after normalize "
-                f"({env_id!r}). Prefer pasting the Channels → Web app URL into "
-                f"COPILOTSTUDIOAGENT__DIRECTCONNECTURL."
+                f"({env_id!r}). Prefer Mobile app Token endpoint URL."
             )
         direct_url = _build_direct_connect_url(env_id, schema)
+        # Warn early if Metadata-built host won't resolve (common)
+        from urllib.parse import urlparse as _up
+        built_host = (_up(direct_url).hostname or "")
+        dns = _dns_probe(built_host)
+        if not dns.get("ok"):
+            raise RuntimeError(
+                f"Host built from Metadata Environment ID does not resolve: "
+                f"{built_host!r} ({dns.get('error')}).\n"
+                f"Environment GUID is often NOT the Power Platform cluster host.\n"
+                f"REQUIRED: Copilot Studio → Channels → **Mobile app** → copy "
+                f"**Token endpoint** (https://XXXX.YY.environment.api.powerplatform.com/"
+                f"...). Set App Setting:\n"
+                f"  COPILOTSTUDIOAGENT__DIRECTCONNECTURL=<paste full Token endpoint>\n"
+                f"  COPILOTSTUDIOAGENT__SCHEMANAME={schema or 'YourSchema'}\n"
+                f"Then restart the App Service. Check /agent/api/status → dns_ok."
+            )
 
     _reject_bad_pp_host(direct_url)
 
@@ -259,10 +372,9 @@ def _settings():
     except Exception:
         cloud = None
 
-    # When Direct Connect URL is set, clear environment_id so the SDK never
-    # rebuilds a host from Metadata GUID (can disagree with Channels host).
+    # Prefer Direct Connect URL so SDK never rebuilds a bad Metadata host.
     return ConnectionSettings(
-        environment_id="" if direct_raw else (env_id or ""),
+        environment_id="" if using_override else (env_id or ""),
         agent_identifier=schema or "unused-when-direct-url",
         cloud=cloud,
         copilot_agent_type=None,
