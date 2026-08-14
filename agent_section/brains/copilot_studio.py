@@ -72,12 +72,10 @@ def _normalize_environment_id(raw: str) -> str:
       .../environments/Default-<guid>/bots/<schema>/...
     App settings often store the dashed GUID or ``Default-<guid>``.
 
-    The SDK builds:
+    Host must be:
       {id_no_dashes[:-2]}.{id_no_dashes[-2:]}.environment.api.powerplatform.com
-
-    If dashes are left in, DNS becomes invalid, e.g.
-      ClientConnectorDNSError: Cannot connect to host
-      5a9d9cfd-c32e-....4d.environment.api.powerplatform.com
+    NOT:
+      {id_no_dashes}.environment.api.powerplatform.com   ← DNS NXDOMAIN
     """
     s = (raw or "").strip()
     if not s:
@@ -104,38 +102,62 @@ def _normalize_environment_id(raw: str) -> str:
     return hex_only.lower()
 
 
+def _environment_data_plane_host(env_id_hex: str, cloud_suffix: str = "api.powerplatform.com") -> str:
+    """PROD host: first 30 hex + '.' + last 2 hex + '.environment.' + suffix."""
+    eid = (env_id_hex or "").lower().replace("-", "")
+    if len(eid) < 32:
+        raise ValueError(f"environment id too short for PP host: {eid!r}")
+    # Microsoft PowerPlatformEnvironment.get_environment_endpoint (PROD suffix len=2)
+    return f"{eid[:-2]}.{eid[-2:]}.environment.{cloud_suffix}"
+
+
+def _build_direct_connect_url(env_id_hex: str, schema: str) -> str:
+    """Full Direct-to-Engine base URL (no /conversations — SDK appends that).
+
+    Built ourselves so we never depend on SDK host-building quirks / older
+    package builds that produced unsplit hosts like:
+      {fullguid}.environment.api.powerplatform.com
+    """
+    host = _environment_data_plane_host(env_id_hex)
+    schema = (schema or "").strip()
+    if not schema:
+        raise ValueError("schema/agent identifier required")
+    # Published agents = dataverse-backed path
+    return (
+        f"https://{host}/copilotstudio/dataverse-backed/authenticated/bots/{schema}"
+    )
+
+
 def _settings():
     from microsoft_agents.copilotstudio.client import ConnectionSettings
 
+    # Explicit override wins (paste full Direct Connect / island URL if needed)
     direct_url = (
         os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
         or os.getenv("COPILOT_DIRECT_CONNECT_URL")
         or ""
     ).strip()
-    if direct_url:
-        # DirectConnect mode: env id / schema name are not needed.
-        return ConnectionSettings(
-            environment_id="",
-            agent_identifier="",
-            direct_connect_url=direct_url,
-        )
 
     env_id = _normalize_environment_id(_env("COPILOTSTUDIOAGENT__ENVIRONMENTID"))
     schema = _env("COPILOTSTUDIOAGENT__SCHEMANAME")
-    if not env_id or not schema:
-        raise RuntimeError(
-            "Set COPILOTSTUDIOAGENT__ENVIRONMENTID and "
-            "COPILOTSTUDIOAGENT__SCHEMANAME (from Studio publish / embed URL). "
-            "Environment id may be dashed GUID or Default-<guid>; we strip dashes."
-        )
-    if len(env_id) < 32:
-        raise RuntimeError(
-            f"COPILOTSTUDIOAGENT__ENVIRONMENTID looks too short after normalize "
-            f"({env_id!r}). Paste the Environment ID from Studio → Settings → "
-            f"Advanced → Metadata (or the GUID from the embed URL)."
-        )
 
-    # Explicit PROD cloud so host suffix is api.powerplatform.com
+    if not direct_url:
+        if not env_id or not schema:
+            raise RuntimeError(
+                "Set COPILOTSTUDIOAGENT__ENVIRONMENTID and "
+                "COPILOTSTUDIOAGENT__SCHEMANAME (from Studio publish / embed URL). "
+                "Environment id may be dashed GUID or Default-<guid>; we strip dashes."
+            )
+        if len(env_id) < 32:
+            raise RuntimeError(
+                f"COPILOTSTUDIOAGENT__ENVIRONMENTID looks too short after normalize "
+                f"({env_id!r}). Paste the Environment ID from Studio → Settings → "
+                f"Advanced → Metadata (or the GUID from the embed URL)."
+            )
+        # Always use DirectConnect with a host we build correctly.
+        # Avoids ClientConnectorDNSError from unsplit env id hosts on some SDK paths.
+        direct_url = _build_direct_connect_url(env_id, schema)
+
     try:
         from microsoft_agents.copilotstudio.client import PowerPlatformCloud
         cloud = PowerPlatformCloud.PROD
@@ -143,11 +165,13 @@ def _settings():
         cloud = None
 
     return ConnectionSettings(
-        environment_id=env_id,
-        agent_identifier=schema,
+        # Empty env/schema when using direct URL is OK per SDK ctor
+        environment_id=env_id or "",
+        agent_identifier=schema or "",
         cloud=cloud,
         copilot_agent_type=None,
         custom_power_platform_cloud=None,
+        direct_connect_url=direct_url,
     )
 
 
@@ -246,22 +270,29 @@ def health() -> Dict[str, Any]:
     missing = [k for k in keys if not _env(k)]
     raw_env = _env("COPILOTSTUDIOAGENT__ENVIRONMENTID")
     norm_env = _normalize_environment_id(raw_env)
+    schema = _env("COPILOTSTUDIOAGENT__SCHEMANAME")
     # Expected data-plane host (helps diagnose DNS errors in /agent/api/status)
     expected_host = ""
+    direct_built = ""
     if len(norm_env) >= 32:
-        expected_host = (
-            f"{norm_env[:-2]}.{norm_env[-2:]}.environment.api.powerplatform.com"
-        )
+        try:
+            expected_host = _environment_data_plane_host(norm_env)
+            if schema:
+                direct_built = _build_direct_connect_url(norm_env, schema)
+        except Exception:
+            pass
+    override = bool(
+        os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
+        or os.getenv("COPILOT_DIRECT_CONNECT_URL")
+    )
     return {
         "sdk_installed": installed,
         "missing_env": missing,
         "environment_id_raw": (raw_env[:20] + "…") if len(raw_env) > 20 else raw_env,
         "environment_id_normalized": norm_env[:16] + "…" if len(norm_env) > 16 else norm_env,
         "expected_host": expected_host,
-        "schema_name": _env("COPILOTSTUDIOAGENT__SCHEMANAME"),
-        "direct_connect": bool(
-            os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
-            or os.getenv("COPILOT_DIRECT_CONNECT_URL")
-        ),
-        "ready": installed and not missing and len(norm_env) >= 32,
+        "direct_connect_url_built": (direct_built[:120] + "…") if len(direct_built) > 120 else direct_built,
+        "schema_name": schema,
+        "direct_connect_override": override,
+        "ready": installed and not missing and (len(norm_env) >= 32 or override),
     }
