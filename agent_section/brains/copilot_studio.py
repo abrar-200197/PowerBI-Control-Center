@@ -112,50 +112,102 @@ def _environment_data_plane_host(env_id_hex: str, cloud_suffix: str = "api.power
 
 
 def _build_direct_connect_url(env_id_hex: str, schema: str) -> str:
-    """Full Direct-to-Engine base URL (no /conversations — SDK appends that).
-
-    Built ourselves so we never depend on SDK host-building quirks / older
-    package builds that produced unsplit hosts like:
-      {fullguid}.environment.api.powerplatform.com
-    """
+    """Full Direct-to-Engine base URL (no /conversations — SDK appends that)."""
     host = _environment_data_plane_host(env_id_hex)
     schema = (schema or "").strip()
     if not schema:
         raise ValueError("schema/agent identifier required")
-    # Published agents = dataverse-backed path
     return (
         f"https://{host}/copilotstudio/dataverse-backed/authenticated/bots/{schema}"
     )
 
 
+def _parse_studio_channels_url(raw: str) -> dict:
+    """Parse a Copilot Studio Channels → Web app connection URL.
+
+    Example (Microsoft docs):
+      https://{id}.environment.api.powerplatform.com/copilotstudio/dataverse-backed/
+        authenticated/bots/{agentName}/conversations?api-version=...
+
+    ``{id}`` is often already ``{hex30}.{hex2}`` (split form). Prefer pasting this
+    full URL into COPILOTSTUDIOAGENT__DIRECTCONNECTURL when Metadata GUID DNS fails.
+    """
+    from urllib.parse import urlparse
+
+    s = (raw or "").strip()
+    if not s or "://" not in s:
+        return {}
+    p = urlparse(s)
+    host = (p.hostname or "").lower()
+    if not host:
+        return {}
+    path = p.path or ""
+    schema = ""
+    # .../bots/{schemaName}/...
+    parts = [x for x in path.split("/") if x]
+    for i, seg in enumerate(parts):
+        if seg.lower() == "bots" and i + 1 < len(parts):
+            schema = parts[i + 1]
+            break
+    # Base URL through .../bots/{schema} (SDK adds /conversations)
+    base_path = path
+    if "/conversations" in base_path:
+        base_path = base_path[: base_path.index("/conversations")]
+    while base_path.endswith("/"):
+        base_path = base_path[:-1]
+    base = f"{p.scheme}://{host}{base_path}"
+    return {
+        "host": host,
+        "schema": schema,
+        "direct_connect_url": base,
+        "is_pp_environment_host": "environment.api.powerplatform." in host,
+    }
+
+
 def _settings():
     from microsoft_agents.copilotstudio.client import ConnectionSettings
 
-    # Explicit override wins (paste full Direct Connect / island URL if needed)
-    direct_url = (
+    # Prefer full Channels / Direct Connect URL (authoritative host from Microsoft).
+    direct_raw = (
         os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL")
         or os.getenv("COPILOT_DIRECT_CONNECT_URL")
         or ""
     ).strip()
+    parsed = _parse_studio_channels_url(direct_raw) if direct_raw else {}
 
     env_id = _normalize_environment_id(_env("COPILOTSTUDIOAGENT__ENVIRONMENTID"))
-    schema = _env("COPILOTSTUDIOAGENT__SCHEMANAME")
+    schema = _env("COPILOTSTUDIOAGENT__SCHEMANAME") or (parsed.get("schema") or "")
+
+    if parsed.get("direct_connect_url"):
+        direct_url = parsed["direct_connect_url"]
+        if parsed.get("schema") and not schema:
+            schema = parsed["schema"]
+    elif direct_raw and direct_raw.startswith("http"):
+        # Non-standard URL — pass through; strip trailing /conversations if present
+        direct_url = direct_raw.split("?")[0]
+        if "/conversations" in direct_url:
+            direct_url = direct_url[: direct_url.index("/conversations")]
+        direct_url = direct_url.rstrip("/")
+    else:
+        direct_url = ""
 
     if not direct_url:
         if not env_id or not schema:
             raise RuntimeError(
-                "Set COPILOTSTUDIOAGENT__ENVIRONMENTID and "
-                "COPILOTSTUDIOAGENT__SCHEMANAME (from Studio publish / embed URL). "
-                "Environment id may be dashed GUID or Default-<guid>; we strip dashes."
+                "Copilot Studio is not configured. Either:\n"
+                "  A) Set COPILOTSTUDIOAGENT__DIRECTCONNECTURL to the URL from "
+                "Copilot Studio → Channels → Web app (recommended), OR\n"
+                "  B) Set COPILOTSTUDIOAGENT__ENVIRONMENTID + "
+                "COPILOTSTUDIOAGENT__SCHEMANAME from Settings → Advanced → Metadata.\n"
+                "If DNS fails on the built host, use option A (the Channels URL has "
+                "the correct Power Platform hostname for your agent)."
             )
         if len(env_id) < 32:
             raise RuntimeError(
                 f"COPILOTSTUDIOAGENT__ENVIRONMENTID looks too short after normalize "
-                f"({env_id!r}). Paste the Environment ID from Studio → Settings → "
-                f"Advanced → Metadata (or the GUID from the embed URL)."
+                f"({env_id!r}). Prefer pasting the Channels → Web app URL into "
+                f"COPILOTSTUDIOAGENT__DIRECTCONNECTURL."
             )
-        # Always use DirectConnect with a host we build correctly.
-        # Avoids ClientConnectorDNSError from unsplit env id hosts on some SDK paths.
         direct_url = _build_direct_connect_url(env_id, schema)
 
     try:
@@ -165,7 +217,6 @@ def _settings():
         cloud = None
 
     return ConnectionSettings(
-        # Empty env/schema when using direct URL is OK per SDK ctor
         environment_id=env_id or "",
         agent_identifier=schema or "",
         cloud=cloud,
@@ -238,12 +289,15 @@ async def _ask_async(question, user_upn, user_token, dataset_id,
             exp = h.get("expected_host") or ""
             raise RuntimeError(
                 f"{msg}\n"
-                f"Copilot Studio host DNS failed. "
-                f"Normalized env id={h.get('environment_id_normalized')!r}. "
-                f"Expected host≈{exp!r}. "
-                f"Fix COPILOTSTUDIOAGENT__ENVIRONMENTID (GUID from Studio Metadata; "
-                f"dashes or Default- prefix are OK — we strip them) "
-                f"or set COPILOTSTUDIOAGENT__DIRECTCONNECTURL from the embed URL."
+                f"Power Platform hostname does not resolve (NXDOMAIN). "
+                f"Built host={exp!r} from env id={h.get('environment_id_normalized')!r}. "
+                f"That means the Environment ID used to build the host is wrong for "
+                f"this agent (Metadata GUID ≠ Channels data-plane host), OR the host "
+                f"is blocked. Fix: open Copilot Studio → Channels → Web app, copy the "
+                f"connection URL (contains xxx.yy.environment.api.powerplatform.com/"
+                f"copilotstudio/.../bots/YourSchema), and set App Setting "
+                f"COPILOTSTUDIOAGENT__DIRECTCONNECTURL to that full URL. "
+                f"Also set COPILOTSTUDIOAGENT__SCHEMANAME if not already set."
             ) from exc
         raise
 
