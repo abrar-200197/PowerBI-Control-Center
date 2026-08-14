@@ -333,8 +333,8 @@ async function send(){
       card.innerHTML='<div class="blk">'+md(j.answer||j.error||'Sign-in required')+
         '</div><div class="acts" style="margin-top:12px">'+
         '<a class="bdl" href="'+esc(href)+'" style="display:inline-block;text-decoration:none;padding:8px 14px">'+
-        'Grant Copilot access</a>'+
-        '<span class="meta">one-time Power Platform consent, then ask again</span></div>';
+        'Connect Copilot</a>'+
+        '<span class="meta">gets a Power Platform user token, then ask again</span></div>';
     }else if(!r.ok){
       card.innerHTML='<div class="blk">'+esc(j.error||'Request failed')+'</div>';
     }else{
@@ -354,8 +354,8 @@ function renderAnswer(card,j,question){
     const href=j.consent_url||'/login/copilot-consent?next=/agent/';
     h+='<div class="acts" style="margin-top:12px">'+
       '<a class="bdl" href="'+esc(href)+'" style="display:inline-block;text-decoration:none;padding:8px 14px">'+
-      'Grant Copilot access</a>'+
-      '<span class="meta">one-time Power Platform consent, then ask again</span></div>';
+      'Connect Copilot</a>'+
+      '<span class="meta">gets a Power Platform user token, then ask again</span></div>';
   }
   if(j.rows&&j.rows.length)h+=rowsTable(j.rows);
   if(j.dax)h+='<details><summary>DAX executed</summary><pre><code>'+

@@ -648,31 +648,40 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
 
 @app.route('/login/copilot-consent')
 def login_copilot_consent():
-    """Interactive step-up for Power Platform / Copilot Studio scope.
+    """Acquire Power Platform token for Copilot Studio (step-up if needed).
 
-    Login only requests Power BI. Copilot Studio needs a separate audience
-    (api.powerplatform.com). Silent/OBO often cannot mint that token until the
-    user consents once (and the app has CopilotStudio.Copilots.Invoke + admin
-    consent). After this round-trip, get_user_copilot_token() can refresh quietly.
+    Login only requests the Power BI audience. Copilot Studio needs
+    api.powerplatform.com (CopilotStudio.Copilots.Invoke). With admin consent
+    already granted on the app, silent acquire from the MSAL session cache
+    usually works after a normal SSO. Do NOT use prompt=consent here — that
+    forces the Entra consent UI and triggers "Approval required" even when
+    admin consent is already Granted.
     """
     if "user" not in session or _session_expired():
         session["next"] = "/agent/"
         return redirect(url_for("login"))
 
+    dest = request.args.get("next") or "/agent/"
+    force = (request.args.get("force") or "").strip().lower() in (
+        "1", "true", "yes", "consent",
+    )
+
     # Already have a usable Copilot token?
     existing = session.get("copilot_access_token")
-    if existing:
+    if existing and not force:
         left = _jwt_seconds_left(existing)
         if left is not None and left > 300:
-            return redirect(request.args.get("next") or "/agent/")
+            return redirect(dest)
 
-    # Try silent first (after MSAL cache fix this often works post-admin-consent)
-    try:
-        tok = get_user_copilot_token()
-        if tok:
-            return redirect(request.args.get("next") or "/agent/")
-    except Exception as exc:
-        print(f"⚠️ copilot-consent silent attempt: {exc}")
+    # Silent first — works when admin consent is Granted + session RT is cached
+    if not force:
+        try:
+            tok = get_user_copilot_token()
+            if tok:
+                print("✅ Copilot token via silent (no interactive consent needed)")
+                return redirect(dest)
+        except Exception as exc:
+            print(f"⚠️ copilot step-up silent attempt: {exc}")
 
     redirect_uri = REDIRECT_URI
     if not os.getenv("WEBSITE_HOSTNAME"):
@@ -681,22 +690,25 @@ def login_copilot_consent():
 
     session["state"] = str(uuid.uuid4())
     session["oauth_purpose"] = "copilot"
-    session["oauth_next"] = request.args.get("next") or "/agent/"
+    session["oauth_next"] = dest
     session["oauth_redirect_uri"] = redirect_uri
     session.modified = True
     session.permanent = True
 
     cca, _cache = _msal_for_request()
-    # login_hint reduces account picker friction for the signed-in user
     login_hint = (session.get("user") or {}).get("preferred_username") or None
-    auth_url = cca.get_authorization_request_url(
-        COPILOT_SCOPE,
-        state=session["state"],
-        redirect_uri=redirect_uri,
-        login_hint=login_hint,
-        prompt="consent",  # force consent UI once for Power Platform API
-    )
-    print(f"🔐 Copilot step-up consent → {auth_url[:120]}...")
+    # No prompt=consent (avoids Approval required when admin consent exists).
+    # Optional ?force=1 uses select_account only if silent keeps failing.
+    auth_kwargs = {
+        "scopes": COPILOT_SCOPE,
+        "state": session["state"],
+        "redirect_uri": redirect_uri,
+        "login_hint": login_hint,
+    }
+    if force:
+        auth_kwargs["prompt"] = "select_account"
+    auth_url = cca.get_authorization_request_url(**auth_kwargs)
+    print(f"🔐 Copilot Power Platform authorize (force={force}) → {auth_url[:120]}...")
     return redirect(auth_url)
 
 

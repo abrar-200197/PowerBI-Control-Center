@@ -448,20 +448,23 @@ def _auth_required(question: str, brain: str) -> Dict[str, Any]:
     # The app exposes an interactive step-up at /login/copilot-consent.
     if brain == BRAIN_COPILOT:
         answer = (
-            "**Power Platform consent required.** Your web sign-in gave this app "
-            "a Power BI token, but Copilot Studio needs a separate delegated token "
-            "for `api.powerplatform.com` (permission "
-            "`CopilotStudio.Copilots.Invoke`).\n\n"
-            "1. Open **[Grant Copilot access](/login/copilot-consent?next=/agent/)** "
-            "and accept the consent prompt.\n"
-            "2. Confirm an Entra admin has granted admin consent for "
-            "`CopilotStudio.Copilots.Invoke` on this app registration.\n"
-            "3. Return here and ask again.\n\n"
+            "**Power Platform token missing.** You are signed in for Power BI, but "
+            "this app still needs a short-lived user token for "
+            "`api.powerplatform.com` (Copilot Studio). That is a **different "
+            "audience** from the Power BI token used for catalog/metadata — same "
+            "app registration, not the same JWT.\n\n"
+            "Admin consent for `CopilotStudio.Copilots.Invoke` is already on the "
+            "app; you should **not** need a new admin approval request.\n\n"
+            "1. Click **Connect Copilot** (or open `/login/copilot-consent?next=/agent/`).\n"
+            "2. Sign in if prompted — **do not** use \"Request approval\" if you "
+            "see it; cancel and retry after a normal sign-in, or ask IT only if "
+            "silent acquire keeps failing.\n"
+            "3. Ask your question again.\n\n"
             "I will not answer from the governance snapshot (no RLS)."
         )
         warnings = [
             "no Power Platform (Copilot) delegated user token on the request",
-            "use /login/copilot-consent to step-up",
+            "use /login/copilot-consent (no prompt=consent; admin consent already granted)",
         ]
         consent_url = "/login/copilot-consent?next=/agent/"
     else:
