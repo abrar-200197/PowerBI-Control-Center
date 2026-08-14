@@ -82,22 +82,43 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_NAME'] = 'pbi_session'
 
-# Server-side session store (Flask-Session)
-_sess_dir = os.getenv('FLASK_SESSION_DIR') or (
-    '/home/data/flask_sessions' if _on_azure
-    else os.path.join(os.getcwd(), 'data', 'flask_sessions')
-)
-try:
-    os.makedirs(_sess_dir, exist_ok=True)
-except OSError:
-    _sess_dir = os.path.join(os.getcwd(), 'data', 'flask_sessions')
-    os.makedirs(_sess_dir, exist_ok=True)
+# Server-side session store (Flask-Session).
+# Local: prefer %TEMP% (or FLASK_SESSION_DIR). Sessions under OneDrive paths often
+# fail to read back the OAuth "state" → endless /login loop.
+def _pick_session_dir() -> str:
+    env = (os.getenv('FLASK_SESSION_DIR') or '').strip()
+    candidates = []
+    if env:
+        candidates.append(env)
+    if _on_azure:
+        candidates.append('/home/data/flask_sessions')
+    # Local non-synced dirs first
+    candidates.append(os.path.join(os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp', 'pbi_cc_flask_sessions'))
+    candidates.append(os.path.join(os.getcwd(), 'data', 'flask_sessions'))
+    last_err = None
+    for cand in candidates:
+        try:
+            os.makedirs(cand, exist_ok=True)
+            probe = os.path.join(cand, '.write_probe')
+            with open(probe, 'w', encoding='utf-8') as f:
+                f.write('ok')
+            os.remove(probe)
+            return cand
+        except Exception as exc:
+            last_err = exc
+            continue
+    raise RuntimeError(f"No writable Flask session directory (last error: {last_err})")
+
+
+_sess_dir = _pick_session_dir()
 
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['SESSION_FILE_DIR'] = _sess_dir
 app.config['SESSION_FILE_THRESHOLD'] = 500
 app.config['SESSION_USE_SIGNER'] = True
 app.config['SESSION_KEY_PREFIX'] = 'pbi_cc:'
+# Ensure Flask always saves session after login/callback
+app.config['SESSION_PERMANENT'] = False
 
 try:
     from flask_session import Session as _FlaskSession
@@ -113,6 +134,7 @@ print(f"   Session backend: {_session_backend}")
 print(f"   Absolute max age: {SESSION_MAX_HOURS}h from login")
 print(f"   Cookie secure: {app.config['SESSION_COOKIE_SECURE']}")
 print(f"   Cookie SameSite: {app.config['SESSION_COOKIE_SAMESITE']}")
+print(f"   REDIRECT will log after auth constants load")
 
 # ============================================================================
 # CACHE CONTROL - Prevent stale content after deployments
@@ -349,30 +371,59 @@ def session_test():
     })
 
 
+def _oauth_redirect_uri() -> str:
+    """Must match the browser host (localhost vs 127.0.0.1) and Entra registration."""
+    if os.getenv('WEBSITE_HOSTNAME'):
+        return REDIRECT_URI
+    # Prefer URI stored on /login so code exchange matches authorize request
+    stored = session.get('oauth_redirect_uri')
+    if stored:
+        return stored
+    root = (request.url_root or 'http://localhost:5000/').rstrip('/')
+    return f"{root}{REDIRECT_PATH}"
+
+
 @app.route('/login')
 def login():
     """Initiate Azure AD SSO login"""
-    # CRITICAL: Clear any existing session data to ensure fresh login
-    # This prevents auto-login with stale/other user's session
-    session.clear()
+    # Drop prior auth data but keep the filesystem session identity stable so the
+    # browser cookie still maps to the same server-side file after AAD returns.
+    for _k in (
+        'user', 'access_token', 'copilot_access_token', 'fabric_access_token',
+        'token_cache', 'login_at', 'next', 'test_key',
+    ):
+        session.pop(_k, None)
 
     # Generate a unique state token to prevent CSRF attacks
     session["state"] = str(uuid.uuid4())
+    # Use the host the user opened (localhost ≠ 127.0.0.1 cookies)
+    redirect_uri = REDIRECT_URI
+    if not os.getenv('WEBSITE_HOSTNAME'):
+        root = (request.url_root or 'http://localhost:5000/').rstrip('/')
+        redirect_uri = f"{root}{REDIRECT_PATH}"
+    session["oauth_redirect_uri"] = redirect_uri
+    session.modified = True
+    session.permanent = True  # keep cookie across the AAD round-trip
 
     print("\n🔐 LOGIN INITIATED:")
-    print(f"   Redirect URI: {REDIRECT_URI}")
+    print(f"   Redirect URI: {redirect_uri}")
+    print(f"   Config REDIRECT_URI: {REDIRECT_URI}")
+    print(f"   Request host: {request.host}")
     print(f"   State token: {session['state']}")
-    print(f"   Session ID: {id(session)}")
+    print(f"   Cookie secure: {app.config.get('SESSION_COOKIE_SECURE')}")
+    print(f"   Session dir: {app.config.get('SESSION_FILE_DIR')}")
+    print(f"   Session keys: {list(session.keys())}")
+    print(f"   Cookies in: {list(request.cookies.keys())}")
 
     # Build authorization URL with prompt=select_account to force account selection
     auth_url = msal_app.get_authorization_request_url(
         SCOPE,
         state=session["state"],
-        redirect_uri=REDIRECT_URI,
+        redirect_uri=redirect_uri,
         prompt="select_account"  # Force user to select account (no auto-login)
     )
 
-    print(f"   Auth URL: {auth_url[:100]}...")
+    print(f"   Auth URL: {auth_url[:120]}...")
 
     return redirect(auth_url)
 
@@ -381,35 +432,50 @@ def login():
 def authorized():
     """Handle the redirect from Azure AD after authentication"""
 
+    redirect_uri = _oauth_redirect_uri()
+
     # Debug logging for production troubleshooting
     print(f"\n🔍 SSO CALLBACK RECEIVED:")
     print(f"   Request URL: {request.url}")
+    print(f"   Request host: {request.host}")
     print(f"   Request state: {request.args.get('state')}")
     print(f"   Session state: {session.get('state')}")
     print(f"   Session keys: {list(session.keys())}")
+    print(f"   oauth_redirect_uri: {redirect_uri}")
+    print(f"   Cookies: {list(request.cookies.keys())}")
     print(f"   Has code: {bool(request.args.get('code'))}")
     print(f"   Has error: {bool(request.args.get('error'))}")
 
-    # Verify state to prevent CSRF
+    # Verify state — show error page (do NOT redirect /login forever)
     if request.args.get('state') != session.get("state"):
         print(f"❌ STATE MISMATCH - Session may not be persisting!")
-        print(f"   request state: {request.args.get('state')}")
-        print(f"   session state: {session.get('state')}")
-        print(f"   cookies: {list(request.cookies.keys())}")
         print(f"   SESSION_COOKIE_SECURE={app.config.get('SESSION_COOKIE_SECURE')}")
-        print(f"   REDIRECT_URI={REDIRECT_URI}")
-        print(f"   This usually means:")
-        print(f"   1. SESSION_COOKIE_SECURE=true on http://localhost (cookie dropped)")
-        print(f"   2. REDIRECT_URI points at Azure while you run localhost")
-        print(f"   3. Flask-Session dir not writable / SECRET_KEY changed mid-login")
-        print(f"   4. Browser blocked cookies / opened callback in another profile")
-        flash(
-            'Sign-in session was lost (OAuth state). '
-            'On localhost use http://localhost:5000, set SESSION_COOKIE_SECURE=false, '
-            'and REDIRECT_URI=http://localhost:5000/getAToken. Try Incognito once.',
-            'error',
-        )
-        return redirect(url_for("login"))
+        print(f"   REDIRECT_URI config={REDIRECT_URI}")
+        html = f"""<!doctype html><html><body style="font-family:Segoe UI,sans-serif;max-width:740px;margin:40px auto;padding:0 16px;line-height:1.45">
+<h2>Sign-in session lost (OAuth state mismatch)</h2>
+<p>Azure AD returned, but this browser did not send back the session cookie that held the CSRF <code>state</code>.</p>
+<pre style="background:#f4f4f4;padding:12px;overflow:auto">request_state = {request.args.get('state')!r}
+session_state = {session.get('state')!r}
+cookies = {list(request.cookies.keys())!r}
+host = {request.host!r}
+redirect_uri = {redirect_uri!r}
+cookie_secure = {app.config.get('SESSION_COOKIE_SECURE')!r}
+session_dir = {app.config.get('SESSION_FILE_DIR')!r}
+</pre>
+<ol>
+<li>Always open <b>http://localhost:5000</b> (not 127.0.0.1) unless both URIs are in Entra.</li>
+<li>Entra app → Authentication → Redirect URIs must include
+  <code>http://localhost:5000/getAToken</code>
+  and preferably <code>http://127.0.0.1:5000/getAToken</code>.</li>
+<li>.env: <code>SESSION_COOKIE_SECURE=false</code>,
+  <code>REDIRECT_URI=http://localhost:5000/getAToken</code>, stable <code>SECRET_KEY</code>.</li>
+<li>Restart <code>python app.py</code>. Use a fresh Incognito window.</li>
+<li>Open <a href="/debug/session-test">/debug/session-test</a>, refresh once —
+  <code>session_working</code> must stay true and <code>pbi_session</code> cookie must appear.</li>
+</ol>
+<p><a href="/login">Try sign-in again</a> · <a href="/debug/env">/debug/env</a></p>
+</body></html>"""
+        return html, 400
 
     # Check for errors from Azure AD
     if "error" in request.args:
@@ -424,11 +490,12 @@ def authorized():
         print("\n🔐 ACQUIRING TOKEN WITH SCOPES:")
         for scope in SCOPE:
             print(f"   - {scope}")
+        print(f"   Using redirect_uri={redirect_uri}")
 
         result = msal_app.acquire_token_by_authorization_code(
             request.args['code'],
             scopes=SCOPE,
-            redirect_uri=REDIRECT_URI  # Use fixed redirect URI
+            redirect_uri=redirect_uri,
         )
 
         if "error" in result:
@@ -444,10 +511,13 @@ def authorized():
         print(f"   Token type: {result.get('token_type', 'N/A')}")
         print(f"   Expires in: {result.get('expires_in', 'N/A')} seconds")
 
-        # CRITICAL: Clear any existing session data before storing new user info
-        # This prevents cross-user session contamination
-        old_user_id = session.get('user', {}).get('oid')
-        session.clear()  # Clear ALL session data for fresh start
+        # Replace identity in-place — do NOT session.clear() (drops FS session
+        # continuity / cookie mapping and can loop login on localhost).
+        old_user_id = (session.get('user') or {}).get('oid')
+        for _k in list(session.keys()):
+            if _k not in ('state',):  # drop state after successful auth
+                session.pop(_k, None)
+        session.pop('state', None)
 
         # Non-permanent cookie → expires when browser is fully closed.
         # Absolute 12h bound enforced via login_at + login_required.
@@ -465,10 +535,12 @@ def authorized():
         }
         session["access_token"] = result.get("access_token")  # Power BI token
         session["login_at"] = datetime.now(timezone.utc).isoformat()
-        # Drop any stale multi-audience tokens from a prior broken session
-        session.pop("copilot_access_token", None)
-        session.pop("fabric_access_token", None)
+        session.modified = True
         _save_cache(cache)
+        print(f"   Session after login keys: {list(session.keys())}")
+        print(f"   User: {session['user'].get('preferred_username')}")
+        if old_user_id and old_user_id != session['user'].get('oid'):
+            print(f"   Previous oid was {old_user_id} (replaced)")
 
         # Best-effort: warm Power Platform token for AGENT_BRAIN=copilot
         # (needs CopilotStudio.Copilots.Invoke consented on the app).
