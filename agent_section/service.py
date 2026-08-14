@@ -444,21 +444,47 @@ def _auth_required(question: str, brain: str) -> Dict[str, Any]:
     snapshot is admin-collected metadata with no RLS -- answering from it would
     silently hand the user numbers they may not be entitled to see.
     """
-    return {
-        "brain": brain,
-        "plane": "live",
-        "answer": (
+    # Copilot Studio needs a Power Platform user token (separate from Power BI).
+    # The app exposes an interactive step-up at /login/copilot-consent.
+    if brain == BRAIN_COPILOT:
+        answer = (
+            "**Power Platform consent required.** Your web sign-in gave this app "
+            "a Power BI token, but Copilot Studio needs a separate delegated token "
+            "for `api.powerplatform.com` (permission "
+            "`CopilotStudio.Copilots.Invoke`).\n\n"
+            "1. Open **[Grant Copilot access](/login/copilot-consent?next=/agent/)** "
+            "and accept the consent prompt.\n"
+            "2. Confirm an Entra admin has granted admin consent for "
+            "`CopilotStudio.Copilots.Invoke` on this app registration.\n"
+            "3. Return here and ask again.\n\n"
+            "I will not answer from the governance snapshot (no RLS)."
+        )
+        warnings = [
+            "no Power Platform (Copilot) delegated user token on the request",
+            "use /login/copilot-consent to step-up",
+        ]
+        consent_url = "/login/copilot-consent?next=/agent/"
+    else:
+        answer = (
             "**Sign-in required.** This is a data question, so it has to run "
             "against the semantic model using *your* credentials — that is what "
             "makes row-level security apply.\n\n"
             "I will not answer it from the governance snapshot: that snapshot "
             "is admin-collected metadata with no RLS, so using it here would "
             "bypass your organisation's data access rules."
-        ),
+        )
+        warnings = ["no delegated user token on the request"]
+        consent_url = "/login"
+
+    return {
+        "brain": brain,
+        "plane": "live",
+        "answer": answer,
         "rows": [], "row_count": 0, "citations": [], "dax": None,
         "requires_approval": False, "plan": None,
-        "warnings": ["no delegated user token on the request"],
+        "warnings": warnings,
         "auth_required": True,
+        "consent_url": consent_url,
     }
 
 

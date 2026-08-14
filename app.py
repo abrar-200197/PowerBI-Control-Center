@@ -222,12 +222,47 @@ COPILOT_SCOPE = [
 # Optional: If you also need Graph API access, request it separately
 GRAPH_SCOPE = ["User.Read"]
 
-# MSAL instance
+# Base MSAL app (no per-request cache). Prefer _msal_for_request() when
+# acquiring/refreshing tokens so the session token_cache is actually used.
 msal_app = msal.ConfidentialClientApplication(
     CLIENT_ID,
     authority=AUTHORITY,
     client_credential=CLIENT_SECRET,
 )
+
+
+def _load_cache():
+    """Load MSAL token cache from the Flask session."""
+    cache = msal.SerializableTokenCache()
+    if session.get("token_cache"):
+        cache.deserialize(session["token_cache"])
+    return cache
+
+
+def _save_cache(cache):
+    """Persist MSAL token cache back into the Flask session."""
+    if cache is not None and cache.has_state_changed:
+        session["token_cache"] = cache.serialize()
+        session.modified = True
+
+
+def _msal_for_request(cache=None):
+    """Confidential client bound to this request's serialized token cache.
+
+    Without binding the cache, acquire_token_silent / get_accounts see an empty
+    in-memory cache on every worker, so Copilot / Fabric step-up always fails
+    and /agent gets no delegated user token.
+    """
+    if cache is None:
+        cache = _load_cache()
+    app_cca = msal.ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=AUTHORITY,
+        client_credential=CLIENT_SECRET,
+        token_cache=cache,
+    )
+    return app_cca, cache
+
 
 
 
@@ -485,16 +520,21 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
 
     # Exchange authorization code for access token
     if request.args.get('code'):
-        cache = _load_cache()
+        oauth_purpose = session.pop("oauth_purpose", None) or "login"
+        oauth_next = session.pop("oauth_next", None) or ""
+        # Bind MSAL to the session token_cache so refresh tokens persist.
+        cca, cache = _msal_for_request()
+        code_scopes = COPILOT_SCOPE if oauth_purpose == "copilot" else SCOPE
 
         print("\n🔐 ACQUIRING TOKEN WITH SCOPES:")
-        for scope in SCOPE:
+        for scope in code_scopes:
             print(f"   - {scope}")
         print(f"   Using redirect_uri={redirect_uri}")
+        print(f"   oauth_purpose={oauth_purpose}")
 
-        result = msal_app.acquire_token_by_authorization_code(
+        result = cca.acquire_token_by_authorization_code(
             request.args['code'],
-            scopes=SCOPE,
+            scopes=code_scopes,
             redirect_uri=redirect_uri,
         )
 
@@ -504,6 +544,8 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
             print(f"   Description: {result.get('error_description')}")
             print(f"   Correlation ID: {result.get('correlation_id')}")
             flash(f'Authentication failed: {result.get("error_description")}', 'error')
+            if oauth_purpose == "copilot":
+                return redirect(oauth_next or "/agent/")
             return redirect(url_for("login"))
 
         print("\n✅ TOKEN ACQUIRED SUCCESSFULLY")
@@ -511,11 +553,24 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
         print(f"   Token type: {result.get('token_type', 'N/A')}")
         print(f"   Expires in: {result.get('expires_in', 'N/A')} seconds")
 
+        # ----- Step-up: Power Platform / Copilot only (keep existing SSO) -----
+        if oauth_purpose == "copilot":
+            session.pop("state", None)
+            if result.get("access_token"):
+                session["copilot_access_token"] = result["access_token"]
+            _save_cache(cache)
+            session.modified = True
+            print("✅ Copilot / Power Platform token stored (step-up consent)")
+            dest = oauth_next if (oauth_next or "").startswith("/") else "/agent/"
+            return redirect(dest)
+
+        # ----- Full login (Power BI) -----
         # Replace identity in-place — do NOT session.clear() (drops FS session
         # continuity / cookie mapping and can loop login on localhost).
         old_user_id = (session.get('user') or {}).get('oid')
+        keep_keys = {"state", "oauth_redirect_uri"}
         for _k in list(session.keys()):
-            if _k not in ('state',):  # drop state after successful auth
+            if _k not in keep_keys:
                 session.pop(_k, None)
         session.pop('state', None)
 
@@ -545,23 +600,29 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
         # Best-effort: warm Power Platform token for AGENT_BRAIN=copilot
         # (needs CopilotStudio.Copilots.Invoke consented on the app).
         try:
-            accounts = msal_app.get_accounts(
+            cca2, cache2 = _msal_for_request()
+            accounts = cca2.get_accounts(
                 username=session.get("user", {}).get("preferred_username")
             )
             if not accounts:
-                accounts = msal_app.get_accounts()
+                accounts = cca2.get_accounts()
             if accounts:
-                c_res = msal_app.acquire_token_silent(
+                c_res = cca2.acquire_token_silent(
                     COPILOT_SCOPE, account=accounts[0]
                 )
                 if c_res and "access_token" in c_res and "error" not in c_res:
                     session["copilot_access_token"] = c_res["access_token"]
-                    _save_cache(cache)
+                    _save_cache(cache2)
                     print("✅ Copilot / Power Platform token warmed at login")
                 elif c_res and c_res.get("error"):
                     print(
                         "⚠️ Copilot token at login: "
                         f"{c_res.get('error_description', c_res.get('error'))}"
+                    )
+                else:
+                    print(
+                        "ℹ️ Copilot token not available silently after login — "
+                        "user can use /login/copilot-consent from Agent"
                     )
         except Exception as _c_warm_err:
             print(f"⚠️ Copilot token warm skipped: {_c_warm_err}")
@@ -583,6 +644,60 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
 
     flash('No authorization code received', 'error')
     return redirect(url_for("login"))
+
+
+@app.route('/login/copilot-consent')
+def login_copilot_consent():
+    """Interactive step-up for Power Platform / Copilot Studio scope.
+
+    Login only requests Power BI. Copilot Studio needs a separate audience
+    (api.powerplatform.com). Silent/OBO often cannot mint that token until the
+    user consents once (and the app has CopilotStudio.Copilots.Invoke + admin
+    consent). After this round-trip, get_user_copilot_token() can refresh quietly.
+    """
+    if "user" not in session or _session_expired():
+        session["next"] = "/agent/"
+        return redirect(url_for("login"))
+
+    # Already have a usable Copilot token?
+    existing = session.get("copilot_access_token")
+    if existing:
+        left = _jwt_seconds_left(existing)
+        if left is not None and left > 300:
+            return redirect(request.args.get("next") or "/agent/")
+
+    # Try silent first (after MSAL cache fix this often works post-admin-consent)
+    try:
+        tok = get_user_copilot_token()
+        if tok:
+            return redirect(request.args.get("next") or "/agent/")
+    except Exception as exc:
+        print(f"⚠️ copilot-consent silent attempt: {exc}")
+
+    redirect_uri = REDIRECT_URI
+    if not os.getenv("WEBSITE_HOSTNAME"):
+        root = (request.url_root or "http://localhost:5000/").rstrip("/")
+        redirect_uri = f"{root}{REDIRECT_PATH}"
+
+    session["state"] = str(uuid.uuid4())
+    session["oauth_purpose"] = "copilot"
+    session["oauth_next"] = request.args.get("next") or "/agent/"
+    session["oauth_redirect_uri"] = redirect_uri
+    session.modified = True
+    session.permanent = True
+
+    cca, _cache = _msal_for_request()
+    # login_hint reduces account picker friction for the signed-in user
+    login_hint = (session.get("user") or {}).get("preferred_username") or None
+    auth_url = cca.get_authorization_request_url(
+        COPILOT_SCOPE,
+        state=session["state"],
+        redirect_uri=redirect_uri,
+        login_hint=login_hint,
+        prompt="consent",  # force consent UI once for Power Platform API
+    )
+    print(f"🔐 Copilot step-up consent → {auth_url[:120]}...")
+    return redirect(auth_url)
 
 
 @app.route('/logout')
@@ -621,20 +736,6 @@ def debug_token():
         })
 
 
-def _load_cache():
-    """Load token cache from session"""
-    cache = msal.SerializableTokenCache()
-    if session.get("token_cache"):
-        cache.deserialize(session["token_cache"])
-    return cache
-
-
-def _save_cache(cache):
-    """Save token cache to session"""
-    if cache.has_state_changed:
-        session["token_cache"] = cache.serialize()
-
-
 def _jwt_seconds_left(token):
     """Return seconds until JWT exp, or None if unreadable."""
     try:
@@ -668,15 +769,17 @@ def get_user_powerbi_token():
             print(f"⚠️ Session Power BI token expiring in {int(left)}s — refreshing…")
             session.pop("access_token", None)
 
-    # 2) MSAL silent refresh only when needed
-    cache = _load_cache()
-    accounts = msal_app.get_accounts(username=session.get('user', {}).get('preferred_username'))
+    # 2) MSAL silent refresh only when needed (session-bound cache)
+    cca, cache = _msal_for_request()
+    accounts = cca.get_accounts(
+        username=session.get("user", {}).get("preferred_username")
+    )
     if not accounts:
-        accounts = msal_app.get_accounts()
+        accounts = cca.get_accounts()
 
     if accounts:
         print("🔄 Acquiring Power BI token silently (MSAL)…")
-        result = msal_app.acquire_token_silent(SCOPE, account=accounts[0])
+        result = cca.acquire_token_silent(SCOPE, account=accounts[0])
         if result and "access_token" in result and "error" not in result:
             print("✅ Power BI token acquired/refreshed")
             session["access_token"] = result["access_token"]
@@ -702,15 +805,15 @@ def get_user_copilot_token():
         if left is not None and left <= 300:
             session.pop("copilot_access_token", None)
 
-    cache = _load_cache()
-    accounts = msal_app.get_accounts(
+    cca, cache = _msal_for_request()
+    accounts = cca.get_accounts(
         username=session.get("user", {}).get("preferred_username")
     )
     if not accounts:
-        accounts = msal_app.get_accounts()
+        accounts = cca.get_accounts()
 
     if accounts:
-        result = msal_app.acquire_token_silent(COPILOT_SCOPE, account=accounts[0])
+        result = cca.acquire_token_silent(COPILOT_SCOPE, account=accounts[0])
         if result and "access_token" in result and "error" not in result:
             print("✅ Copilot / Power Platform token acquired (silent)")
             session["copilot_access_token"] = result["access_token"]
@@ -726,7 +829,7 @@ def get_user_copilot_token():
     pbi_token = get_user_powerbi_token()
     if pbi_token:
         try:
-            result = msal_app.acquire_token_on_behalf_of(
+            result = cca.acquire_token_on_behalf_of(
                 user_assertion=pbi_token,
                 scopes=COPILOT_SCOPE,
             )
@@ -793,9 +896,13 @@ if app.config["ENABLE_AGENT"]:
                 or "unknown@local"
             )
             brain = (os.getenv("AGENT_BRAIN") or "auto").lower()
+            # Direct-connect URL alone is enough (same rule as agent_section.service)
             studio_ready = bool(
-                os.getenv("COPILOTSTUDIOAGENT__ENVIRONMENTID")
-                and os.getenv("COPILOTSTUDIOAGENT__SCHEMANAME")
+                (os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL") or "").strip()
+                or (
+                    os.getenv("COPILOTSTUDIOAGENT__ENVIRONMENTID")
+                    and os.getenv("COPILOTSTUDIOAGENT__SCHEMANAME")
+                )
             )
             want_copilot = brain == "copilot" or (brain == "auto" and studio_ready)
 
@@ -805,11 +912,13 @@ if app.config["ENABLE_AGENT"]:
                     token = get_user_copilot_token()
                 except Exception:
                     token = session.get("copilot_access_token")
-            if not token:
-                try:
-                    token = get_user_powerbi_token()
-                except Exception:
-                    token = session.get("access_token")
+                # Do NOT fall back to Power BI JWT for Copilot Studio — wrong
+                # audience (analysis.windows.net vs api.powerplatform.com).
+                return upn, token
+            try:
+                token = get_user_powerbi_token()
+            except Exception:
+                token = session.get("access_token")
             return upn, token
 
         set_token_resolver(_agent_identity)
@@ -852,14 +961,16 @@ def get_user_fabric_token():
         if left is not None and left <= 300:
             session.pop("fabric_access_token", None)
 
-    # 2) Silent acquire with Fabric scope
-    cache = _load_cache()
-    accounts = msal_app.get_accounts(username=session.get('user', {}).get('preferred_username'))
+    # 2) Silent acquire with Fabric scope (session-bound MSAL cache)
+    cca, cache = _msal_for_request()
+    accounts = cca.get_accounts(
+        username=session.get("user", {}).get("preferred_username")
+    )
     if not accounts:
-        accounts = msal_app.get_accounts()
+        accounts = cca.get_accounts()
 
     if accounts:
-        result = msal_app.acquire_token_silent(FABRIC_SCOPE, account=accounts[0])
+        result = cca.acquire_token_silent(FABRIC_SCOPE, account=accounts[0])
         if result and "access_token" in result and "error" not in result:
             print("✅ Fabric token acquired (silent)")
             session["fabric_access_token"] = result["access_token"]
@@ -870,13 +981,14 @@ def get_user_fabric_token():
     pbi_token = get_user_powerbi_token()
     if pbi_token:
         try:
-            result = msal_app.acquire_token_on_behalf_of(
+            result = cca.acquire_token_on_behalf_of(
                 user_assertion=pbi_token,
                 scopes=FABRIC_SCOPE
             )
             if result and "access_token" in result and "error" not in result:
                 print("✅ Fabric token acquired (OBO)")
                 session["fabric_access_token"] = result["access_token"]
+                _save_cache(cache)
                 return result["access_token"]
             else:
                 error = result.get('error', 'unknown') if result else 'no result'

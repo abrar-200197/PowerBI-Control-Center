@@ -323,12 +323,23 @@ async function send(){
 
   try{
     const r=await fetch('/agent/api/ask',{method:'POST',
+      credentials:'same-origin',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({question:q,dataset_id:SEL.dataset_id,
                            conversation_id:CONV})});
     const j=await r.json();
-    if(!r.ok){card.innerHTML='<div class="blk">'+esc(j.error||'Request failed')+'</div>';}
-    else{ CONV=j.conversation_id||CONV; renderAnswer(card,j,q); }
+    if(r.status===401 || j.auth_required){
+      const href=j.consent_url||j.redirect||'/login/copilot-consent?next=/agent/';
+      card.innerHTML='<div class="blk">'+md(j.answer||j.error||'Sign-in required')+
+        '</div><div class="acts" style="margin-top:12px">'+
+        '<a class="bdl" href="'+esc(href)+'" style="display:inline-block;text-decoration:none;padding:8px 14px">'+
+        'Grant Copilot access</a>'+
+        '<span class="meta">one-time Power Platform consent, then ask again</span></div>';
+    }else if(!r.ok){
+      card.innerHTML='<div class="blk">'+esc(j.error||'Request failed')+'</div>';
+    }else{
+      CONV=j.conversation_id||CONV; renderAnswer(card,j,q);
+    }
   }catch(e){card.innerHTML='<div class="blk">'+esc(e)+'</div>';}
 
   $('q').disabled=false; $('send').disabled=false; $('q').focus();
@@ -339,6 +350,13 @@ function renderAnswer(card,j,question){
   const plane=j.plane||'snapshot';
   let h='<span class="badge b-'+esc(plane)+'">'+esc(plane)+'</span>';
   h+='<div>'+md(j.answer||'')+'</div>';
+  if(j.auth_required){
+    const href=j.consent_url||'/login/copilot-consent?next=/agent/';
+    h+='<div class="acts" style="margin-top:12px">'+
+      '<a class="bdl" href="'+esc(href)+'" style="display:inline-block;text-decoration:none;padding:8px 14px">'+
+      'Grant Copilot access</a>'+
+      '<span class="meta">one-time Power Platform consent, then ask again</span></div>';
+  }
   if(j.rows&&j.rows.length)h+=rowsTable(j.rows);
   if(j.dax)h+='<details><summary>DAX executed</summary><pre><code>'+
     esc(j.dax)+'</code></pre></details>';
