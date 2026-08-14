@@ -643,67 +643,96 @@ def get_user_copilot_token():
 
 
 # ---------------------------------------------------------------------------
-# Agent section (/agent) — after get_user_powerbi_token so identity can refresh.
+# Agent section (/agent) — OPT-IN only (default OFF).
+#
+# Prod Control Center (afi-powerbi-documentation-prod-app via Azure DevOps)
+# must NOT show Agent until ready. Test on IT Financials App Service first:
+#   ENABLE_AGENT=true
+#   AGENT_BRAIN=copilot
+#   COPILOTSTUDIOAGENT__ENVIRONMENTID=...
+#   COPILOTSTUDIOAGENT__SCHEMANAME=...
+#
 # Uses the SIGNED-IN USER token (RLS). Never answers with service principal.
 # When AGENT_BRAIN=copilot, pass Power Platform token (not Power BI).
 # ---------------------------------------------------------------------------
-try:
-    from agent_section.blueprint import agent_bp, set_token_resolver
+def _env_flag_true(name: str, default: str = "false") -> bool:
+    return (os.getenv(name, default) or default).strip().lower() in (
+        "1", "true", "yes", "y", "on",
+    )
 
-    def _agent_identity():
-        """Return (user_upn, access_token) for the current request.
 
-        Copilot Studio needs a Power Platform-scoped user token.
-        loop/mcp/local live DAX needs the Power BI user token.
-        """
-        user = session.get("user") or {}
-        upn = (
-            user.get("preferred_username")
-            or user.get("upn")
-            or user.get("userPrincipalName")
-            or user.get("email")
-            or "unknown@local"
-        )
-        brain = (os.getenv("AGENT_BRAIN") or "auto").lower()
-        studio_ready = bool(
-            os.getenv("COPILOTSTUDIOAGENT__ENVIRONMENTID")
-            and os.getenv("COPILOTSTUDIOAGENT__SCHEMANAME")
-        )
-        want_copilot = brain == "copilot" or (brain == "auto" and studio_ready)
+# Exposed to Jinja (base.html nav). Default False = hidden on prod.
+app.config["ENABLE_AGENT"] = _env_flag_true("ENABLE_AGENT", "false")
 
-        token = None
-        if want_copilot:
-            try:
-                token = get_user_copilot_token()
-            except Exception:
-                token = session.get("copilot_access_token")
-        if not token:
-            try:
-                token = get_user_powerbi_token()
-            except Exception:
-                token = session.get("access_token")
-        return upn, token
 
-    set_token_resolver(_agent_identity)
+@app.context_processor
+def _inject_feature_flags():
+    return {
+        "enable_agent": bool(app.config.get("ENABLE_AGENT")),
+    }
 
-    @agent_bp.before_request
-    def _agent_require_login():
-        if 'user' not in session or _session_expired():
-            if 'user' in session:
-                session.clear()
-            if request.path.startswith('/agent/api/') or '/api/' in (request.path or ''):
-                return jsonify({
-                    'success': False,
-                    'error': 'Not authenticated or session expired',
-                    'redirect': url_for('login'),
-                    'auth_required': True,
-                }), 401
-            return redirect(url_for('login'))
 
-    app.register_blueprint(agent_bp)
-    print("✅ Agent section registered at /agent")
-except Exception as _agent_import_err:
-    print(f"⚠️ Agent section not available: {_agent_import_err}")
+if app.config["ENABLE_AGENT"]:
+    try:
+        from agent_section.blueprint import agent_bp, set_token_resolver
+
+        def _agent_identity():
+            """Return (user_upn, access_token) for the current request.
+
+            Copilot Studio needs a Power Platform-scoped user token.
+            loop/mcp/local live DAX needs the Power BI user token.
+            """
+            user = session.get("user") or {}
+            upn = (
+                user.get("preferred_username")
+                or user.get("upn")
+                or user.get("userPrincipalName")
+                or user.get("email")
+                or "unknown@local"
+            )
+            brain = (os.getenv("AGENT_BRAIN") or "auto").lower()
+            studio_ready = bool(
+                os.getenv("COPILOTSTUDIOAGENT__ENVIRONMENTID")
+                and os.getenv("COPILOTSTUDIOAGENT__SCHEMANAME")
+            )
+            want_copilot = brain == "copilot" or (brain == "auto" and studio_ready)
+
+            token = None
+            if want_copilot:
+                try:
+                    token = get_user_copilot_token()
+                except Exception:
+                    token = session.get("copilot_access_token")
+            if not token:
+                try:
+                    token = get_user_powerbi_token()
+                except Exception:
+                    token = session.get("access_token")
+            return upn, token
+
+        set_token_resolver(_agent_identity)
+
+        @agent_bp.before_request
+        def _agent_require_login():
+            if 'user' not in session or _session_expired():
+                if 'user' in session:
+                    session.clear()
+                if request.path.startswith('/agent/api/') or '/api/' in (request.path or ''):
+                    return jsonify({
+                        'success': False,
+                        'error': 'Not authenticated or session expired',
+                        'redirect': url_for('login'),
+                        'auth_required': True,
+                    }), 401
+                return redirect(url_for('login'))
+
+        app.register_blueprint(agent_bp)
+        print("✅ Agent section registered at /agent (ENABLE_AGENT=true)")
+    except Exception as _agent_import_err:
+        app.config["ENABLE_AGENT"] = False
+        print(f"⚠️ Agent section not available: {_agent_import_err}")
+else:
+    print("ℹ️ Agent section disabled (set ENABLE_AGENT=true on test app only)")
 
 
 def get_user_fabric_token():
