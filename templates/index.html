@@ -2058,11 +2058,25 @@
                 console.log(`✅ Got usage metrics for ${Object.keys(result.report_views || {}).length} reports`);
                 console.log(`   Days analyzed: ${result.days_analyzed}`);
                 console.log(`   Note: ${result.note}`);
+                console.log(`   Source: ${result.source || 'unknown'}`);
+
+                // Case-insensitive id maps (Activity vs catalog may differ in GUID casing)
+                const viewsById = {};
+                const lastById = {};
+                Object.entries(result.report_views || {}).forEach(([k, v]) => {
+                    viewsById[String(k).toLowerCase()] = v;
+                });
+                Object.entries(result.last_viewed || {}).forEach(([k, v]) => {
+                    lastById[String(k).toLowerCase()] = v;
+                });
 
                 // Update reports with view counts AND last viewed info
                 reports.forEach((report, index) => {
-                    const viewCount = result.report_views ? result.report_views[report.id] || 0 : 0;
-                    const lv = result.last_viewed ? result.last_viewed[report.id] : null;
+                    const rid = String(report.id || '').toLowerCase();
+                    const viewCount = Object.prototype.hasOwnProperty.call(viewsById, rid)
+                        ? (Number(viewsById[rid]) || 0)
+                        : 0;
+                    const lv = lastById[rid] || null;
 
                     reports[index] = {
                         ...reports[index],
@@ -2978,13 +2992,20 @@
             btn.innerHTML = 'Saving…';
         }
 
-        showAlert('info', `Archiving "${reportName}" to SharePoint decommission folder…`);
+        showAlert('info', `Archiving "${reportName}" to SharePoint… Large reports can take several minutes.`);
+
+        // 15 min client abort — server export timeout is ~15 min with retries
+        const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        const abortTimer = controller
+            ? setTimeout(() => controller.abort(), 15 * 60 * 1000)
+            : null;
 
         try {
             const res = await fetch('/api/reports/archive-to-sharepoint', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
+                signal: controller ? controller.signal : undefined,
                 body: JSON.stringify({
                     workspace_id: currentWorkspaceId,
                     workspace_name: workspaceName,
@@ -3010,9 +3031,13 @@
             );
             console.log('📦 Archive OK', body);
         } catch (e) {
-            showAlert('error', 'Archive failed: ' + (e.message || e));
+            const msg = (e && e.name === 'AbortError')
+                ? 'Archive timed out after 15 minutes. Try again or download from Power BI Service.'
+                : ('Archive failed: ' + (e.message || e));
+            showAlert('error', msg);
             console.error('archive-to-sharepoint exception', e);
         } finally {
+            if (abortTimer) clearTimeout(abortTimer);
             if (btn) {
                 btn.disabled = false;
                 btn.innerHTML = prevHtml || 'Download';

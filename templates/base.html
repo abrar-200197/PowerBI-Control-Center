@@ -714,6 +714,11 @@
             <a href="/similarity-analysis" class="nav-item {% if request.endpoint == 'similarity_analysis_page' %}active{% endif %}">
                 <span>Similarity Analysis</span>
             </a>
+            {% if enable_agent %}
+            <a href="/agent/" class="nav-item {% if request.endpoint and request.endpoint.startswith('agent.') %}active{% endif %}" title="Ask questions against catalog + live Power BI (user token / RLS)">
+                <span>Agent</span>
+            </a>
+            {% endif %}
             <a href="/logout" class="nav-item">
                 <span>Sign out</span>
                 <span class="nav-item-icon">→</span>

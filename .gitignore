@@ -21,10 +21,14 @@ data/catalog_cache/
 data/catalog_output/
 data/catalog_latest/
 data/usage_cache/
+data/catalog.sqlite
+data/catalog.duckdb
 logs/
 *.log
 *.pkl
 *.db
+*.sqlite
+*.duckdb
 
 # Local tooling junk
 temp_*/
@@ -52,3 +56,5 @@ htmlcov/
 
 # OneDrive / Office noise
 ~$*
+
+data/flask_sessions/

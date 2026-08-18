@@ -57,31 +57,84 @@ except Exception:
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'powerbi-doc-generator-secret-key-2024')
 
-# Session configuration - CRITICAL for preventing cross-user session issues
-# Use Flask's built-in client-side sessions (works in all environments including Azure)
-#
-# Policy (production):
-#   - Non-permanent session cookie → cleared when the browser is fully closed
-#   - Absolute max age 12 hours from login (even if browser stays open)
+# Session configuration
+# IMPORTANT: Client-side signed cookies overflow (~4KB) once we store Power BI
+# + Copilot JWTs + the MSAL token_cache. Browsers then drop the cookie → endless
+# login loop. Use server-side filesystem sessions (cookie only holds a small id).
 SESSION_MAX_HOURS = int(os.getenv('SESSION_MAX_HOURS', '12'))
-app.config['SESSION_PERMANENT'] = False  # no Max-Age / no persistent cookie
+app.config['SESSION_PERMANENT'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=SESSION_MAX_HOURS)
 app.config['SESSION_REFRESH_EACH_REQUEST'] = False
 
-# Session cookie configuration for production (Azure App Service with TLS termination)
-# Prefer Secure cookies when running on Azure HTTPS
 _on_azure = bool(os.getenv('WEBSITE_HOSTNAME'))
-app.config['SESSION_COOKIE_SECURE'] = _on_azure or os.getenv('SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes')
-app.config['SESSION_COOKIE_HTTPONLY'] = True  # Prevent JavaScript access
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # Allow cross-site requests for OAuth redirect
-app.config['SESSION_COOKIE_NAME'] = 'pbi_session'  # Custom session cookie name
+# Secure cookies only work over HTTPS. On localhost (http://) they are dropped by
+# the browser → OAuth state missing on /getAToken → endless login loop.
+# Force insecure cookies for local dev unless you explicitly serve local HTTPS.
+_secure_env = (os.getenv('SESSION_COOKIE_SECURE') or '').strip().lower()
+if _on_azure:
+    app.config['SESSION_COOKIE_SECURE'] = True
+elif _secure_env in ('1', 'true', 'yes', 'on'):
+    app.config['SESSION_COOKIE_SECURE'] = True
+    print("⚠️ SESSION_COOKIE_SECURE=true on non-Azure — only use with local HTTPS")
+else:
+    app.config['SESSION_COOKIE_SECURE'] = False
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_NAME'] = 'pbi_session'
+
+# Server-side session store (Flask-Session).
+# Local: prefer %TEMP% (or FLASK_SESSION_DIR). Sessions under OneDrive paths often
+# fail to read back the OAuth "state" → endless /login loop.
+def _pick_session_dir() -> str:
+    env = (os.getenv('FLASK_SESSION_DIR') or '').strip()
+    candidates = []
+    if env:
+        candidates.append(env)
+    if _on_azure:
+        candidates.append('/home/data/flask_sessions')
+    # Local non-synced dirs first
+    candidates.append(os.path.join(os.environ.get('TEMP') or os.environ.get('TMP') or '/tmp', 'pbi_cc_flask_sessions'))
+    candidates.append(os.path.join(os.getcwd(), 'data', 'flask_sessions'))
+    last_err = None
+    for cand in candidates:
+        try:
+            os.makedirs(cand, exist_ok=True)
+            probe = os.path.join(cand, '.write_probe')
+            with open(probe, 'w', encoding='utf-8') as f:
+                f.write('ok')
+            os.remove(probe)
+            return cand
+        except Exception as exc:
+            last_err = exc
+            continue
+    raise RuntimeError(f"No writable Flask session directory (last error: {last_err})")
+
+
+_sess_dir = _pick_session_dir()
+
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['SESSION_FILE_DIR'] = _sess_dir
+app.config['SESSION_FILE_THRESHOLD'] = 500
+app.config['SESSION_USE_SIGNER'] = True
+app.config['SESSION_KEY_PREFIX'] = 'pbi_cc:'
+# Ensure Flask always saves session after login/callback
+app.config['SESSION_PERMANENT'] = False
+
+try:
+    from flask_session import Session as _FlaskSession
+    _FlaskSession(app)
+    _session_backend = f'filesystem:{_sess_dir}'
+except Exception as _sess_err:
+    _session_backend = f'cookie-fallback ({_sess_err})'
+    print(f"⚠️ Flask-Session unavailable, cookie sessions may overflow: {_sess_err}")
 
 print(f"Session configuration:")
 print(f"   SECRET_KEY: {'Set from environment' if os.getenv('SECRET_KEY') else 'Using default (set SECRET_KEY in production!)'}")
-print(f"   Session type: Client-side cookie | permanent=False (browser-close expires)")
+print(f"   Session backend: {_session_backend}")
 print(f"   Absolute max age: {SESSION_MAX_HOURS}h from login")
 print(f"   Cookie secure: {app.config['SESSION_COOKIE_SECURE']}")
 print(f"   Cookie SameSite: {app.config['SESSION_COOKIE_SAMESITE']}")
+print(f"   REDIRECT will log after auth constants load")
 
 # ============================================================================
 # CACHE CONTROL - Prevent stale content after deployments
@@ -128,18 +181,28 @@ REDIRECT_PATH = "/getAToken"  # Must match redirect URI in Azure AD app registra
 
 
 
-# Auto-detect environment and set appropriate redirect URI
-# Priority: Environment variable > Auto-detection
-if os.getenv('REDIRECT_URI'):
-    # Use explicitly set redirect URI from environment
-    REDIRECT_URI = os.getenv('REDIRECT_URI')
-elif os.getenv('WEBSITE_HOSTNAME'):
-    # Running on Azure App Service - use production URL
-    REDIRECT_URI = f"https://{os.getenv('WEBSITE_HOSTNAME')}{REDIRECT_PATH}"
+# Auto-detect environment and set appropriate redirect URI.
+# Localhost must NOT keep a production https://… REDIRECT_URI from .env —
+# that causes Azure AD to bounce to the wrong host or drop the local session.
+_env_redirect = (os.getenv('REDIRECT_URI') or '').strip()
+if os.getenv('WEBSITE_HOSTNAME'):
+    # Azure App Service — prefer explicit env, else hostname
+    if _env_redirect and 'localhost' not in _env_redirect.lower():
+        REDIRECT_URI = _env_redirect
+    else:
+        REDIRECT_URI = f"https://{os.getenv('WEBSITE_HOSTNAME')}{REDIRECT_PATH}"
     print(f"🌐 Running on Azure App Service: {REDIRECT_URI}")
 else:
-    # Running locally - use localhost
-    REDIRECT_URI = f'http://localhost:5000{REDIRECT_PATH}'
+    # Local dev — always http://localhost:5000 unless env is already localhost
+    if _env_redirect and 'localhost' in _env_redirect.lower():
+        REDIRECT_URI = _env_redirect
+    else:
+        if _env_redirect:
+            print(
+                f"⚠️ Ignoring REDIRECT_URI={_env_redirect!r} on local run "
+                f"(use http://localhost:5000{REDIRECT_PATH})"
+            )
+        REDIRECT_URI = f'http://localhost:5000{REDIRECT_PATH}'
     print(f"💻 Running locally: {REDIRECT_URI}")
 
 # Scopes for user-delegated permissions
@@ -150,15 +213,56 @@ SCOPE = ["https://analysis.windows.net/powerbi/api/.default"]
 # Fabric API scope - needed for getDefinition and other Fabric-specific endpoints
 FABRIC_SCOPE = ["https://api.fabric.microsoft.com/.default"]
 
+# Power Platform / Copilot Studio (delegated CopilotStudio.Copilots.Invoke).
+# Separate audience from Power BI — must silent-acquire; do not reuse PBI JWT.
+COPILOT_SCOPE = [
+    (os.getenv("COPILOT_TOKEN_SCOPE") or "https://api.powerplatform.com/.default").strip()
+]
+
 # Optional: If you also need Graph API access, request it separately
 GRAPH_SCOPE = ["User.Read"]
 
-# MSAL instance
+# Base MSAL app (no per-request cache). Prefer _msal_for_request() when
+# acquiring/refreshing tokens so the session token_cache is actually used.
 msal_app = msal.ConfidentialClientApplication(
     CLIENT_ID,
     authority=AUTHORITY,
     client_credential=CLIENT_SECRET,
 )
+
+
+def _load_cache():
+    """Load MSAL token cache from the Flask session."""
+    cache = msal.SerializableTokenCache()
+    if session.get("token_cache"):
+        cache.deserialize(session["token_cache"])
+    return cache
+
+
+def _save_cache(cache):
+    """Persist MSAL token cache back into the Flask session."""
+    if cache is not None and cache.has_state_changed:
+        session["token_cache"] = cache.serialize()
+        session.modified = True
+
+
+def _msal_for_request(cache=None):
+    """Confidential client bound to this request's serialized token cache.
+
+    Without binding the cache, acquire_token_silent / get_accounts see an empty
+    in-memory cache on every worker, so Copilot / Fabric step-up always fails
+    and /agent gets no delegated user token.
+    """
+    if cache is None:
+        cache = _load_cache()
+    app_cca = msal.ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=AUTHORITY,
+        client_credential=CLIENT_SECRET,
+        token_cache=cache,
+    )
+    return app_cca, cache
+
 
 
 
@@ -302,30 +406,59 @@ def session_test():
     })
 
 
+def _oauth_redirect_uri() -> str:
+    """Must match the browser host (localhost vs 127.0.0.1) and Entra registration."""
+    if os.getenv('WEBSITE_HOSTNAME'):
+        return REDIRECT_URI
+    # Prefer URI stored on /login so code exchange matches authorize request
+    stored = session.get('oauth_redirect_uri')
+    if stored:
+        return stored
+    root = (request.url_root or 'http://localhost:5000/').rstrip('/')
+    return f"{root}{REDIRECT_PATH}"
+
+
 @app.route('/login')
 def login():
     """Initiate Azure AD SSO login"""
-    # CRITICAL: Clear any existing session data to ensure fresh login
-    # This prevents auto-login with stale/other user's session
-    session.clear()
+    # Drop prior auth data but keep the filesystem session identity stable so the
+    # browser cookie still maps to the same server-side file after AAD returns.
+    for _k in (
+        'user', 'access_token', 'copilot_access_token', 'fabric_access_token',
+        'token_cache', 'login_at', 'next', 'test_key',
+    ):
+        session.pop(_k, None)
 
     # Generate a unique state token to prevent CSRF attacks
     session["state"] = str(uuid.uuid4())
+    # Use the host the user opened (localhost ≠ 127.0.0.1 cookies)
+    redirect_uri = REDIRECT_URI
+    if not os.getenv('WEBSITE_HOSTNAME'):
+        root = (request.url_root or 'http://localhost:5000/').rstrip('/')
+        redirect_uri = f"{root}{REDIRECT_PATH}"
+    session["oauth_redirect_uri"] = redirect_uri
+    session.modified = True
+    session.permanent = True  # keep cookie across the AAD round-trip
 
     print("\n🔐 LOGIN INITIATED:")
-    print(f"   Redirect URI: {REDIRECT_URI}")
+    print(f"   Redirect URI: {redirect_uri}")
+    print(f"   Config REDIRECT_URI: {REDIRECT_URI}")
+    print(f"   Request host: {request.host}")
     print(f"   State token: {session['state']}")
-    print(f"   Session ID: {id(session)}")
+    print(f"   Cookie secure: {app.config.get('SESSION_COOKIE_SECURE')}")
+    print(f"   Session dir: {app.config.get('SESSION_FILE_DIR')}")
+    print(f"   Session keys: {list(session.keys())}")
+    print(f"   Cookies in: {list(request.cookies.keys())}")
 
     # Build authorization URL with prompt=select_account to force account selection
     auth_url = msal_app.get_authorization_request_url(
         SCOPE,
         state=session["state"],
-        redirect_uri=REDIRECT_URI,
+        redirect_uri=redirect_uri,
         prompt="select_account"  # Force user to select account (no auto-login)
     )
 
-    print(f"   Auth URL: {auth_url[:100]}...")
+    print(f"   Auth URL: {auth_url[:120]}...")
 
     return redirect(auth_url)
 
@@ -334,24 +467,50 @@ def login():
 def authorized():
     """Handle the redirect from Azure AD after authentication"""
 
+    redirect_uri = _oauth_redirect_uri()
+
     # Debug logging for production troubleshooting
     print(f"\n🔍 SSO CALLBACK RECEIVED:")
     print(f"   Request URL: {request.url}")
+    print(f"   Request host: {request.host}")
     print(f"   Request state: {request.args.get('state')}")
     print(f"   Session state: {session.get('state')}")
     print(f"   Session keys: {list(session.keys())}")
+    print(f"   oauth_redirect_uri: {redirect_uri}")
+    print(f"   Cookies: {list(request.cookies.keys())}")
     print(f"   Has code: {bool(request.args.get('code'))}")
     print(f"   Has error: {bool(request.args.get('error'))}")
 
-    # Verify state to prevent CSRF
+    # Verify state — show error page (do NOT redirect /login forever)
     if request.args.get('state') != session.get("state"):
         print(f"❌ STATE MISMATCH - Session may not be persisting!")
-        print(f"   This usually means:")
-        print(f"   1. Browser cache issue (try incognito mode)")
-        print(f"   2. Session cookies not working in production")
-        print(f"   3. SECRET_KEY not set in production environment")
-        flash('Invalid state parameter. Please try again.', 'error')
-        return redirect(url_for("login"))
+        print(f"   SESSION_COOKIE_SECURE={app.config.get('SESSION_COOKIE_SECURE')}")
+        print(f"   REDIRECT_URI config={REDIRECT_URI}")
+        html = f"""<!doctype html><html><body style="font-family:Segoe UI,sans-serif;max-width:740px;margin:40px auto;padding:0 16px;line-height:1.45">
+<h2>Sign-in session lost (OAuth state mismatch)</h2>
+<p>Azure AD returned, but this browser did not send back the session cookie that held the CSRF <code>state</code>.</p>
+<pre style="background:#f4f4f4;padding:12px;overflow:auto">request_state = {request.args.get('state')!r}
+session_state = {session.get('state')!r}
+cookies = {list(request.cookies.keys())!r}
+host = {request.host!r}
+redirect_uri = {redirect_uri!r}
+cookie_secure = {app.config.get('SESSION_COOKIE_SECURE')!r}
+session_dir = {app.config.get('SESSION_FILE_DIR')!r}
+</pre>
+<ol>
+<li>Always open <b>http://localhost:5000</b> (not 127.0.0.1) unless both URIs are in Entra.</li>
+<li>Entra app → Authentication → Redirect URIs must include
+  <code>http://localhost:5000/getAToken</code>
+  and preferably <code>http://127.0.0.1:5000/getAToken</code>.</li>
+<li>.env: <code>SESSION_COOKIE_SECURE=false</code>,
+  <code>REDIRECT_URI=http://localhost:5000/getAToken</code>, stable <code>SECRET_KEY</code>.</li>
+<li>Restart <code>python app.py</code>. Use a fresh Incognito window.</li>
+<li>Open <a href="/debug/session-test">/debug/session-test</a>, refresh once —
+  <code>session_working</code> must stay true and <code>pbi_session</code> cookie must appear.</li>
+</ol>
+<p><a href="/login">Try sign-in again</a> · <a href="/debug/env">/debug/env</a></p>
+</body></html>"""
+        return html, 400
 
     # Check for errors from Azure AD
     if "error" in request.args:
@@ -361,16 +520,22 @@ def authorized():
 
     # Exchange authorization code for access token
     if request.args.get('code'):
-        cache = _load_cache()
+        oauth_purpose = session.pop("oauth_purpose", None) or "login"
+        oauth_next = session.pop("oauth_next", None) or ""
+        # Bind MSAL to the session token_cache so refresh tokens persist.
+        cca, cache = _msal_for_request()
+        code_scopes = COPILOT_SCOPE if oauth_purpose == "copilot" else SCOPE
 
         print("\n🔐 ACQUIRING TOKEN WITH SCOPES:")
-        for scope in SCOPE:
+        for scope in code_scopes:
             print(f"   - {scope}")
+        print(f"   Using redirect_uri={redirect_uri}")
+        print(f"   oauth_purpose={oauth_purpose}")
 
-        result = msal_app.acquire_token_by_authorization_code(
+        result = cca.acquire_token_by_authorization_code(
             request.args['code'],
-            scopes=SCOPE,
-            redirect_uri=REDIRECT_URI  # Use fixed redirect URI
+            scopes=code_scopes,
+            redirect_uri=redirect_uri,
         )
 
         if "error" in result:
@@ -379,6 +544,8 @@ def authorized():
             print(f"   Description: {result.get('error_description')}")
             print(f"   Correlation ID: {result.get('correlation_id')}")
             flash(f'Authentication failed: {result.get("error_description")}', 'error')
+            if oauth_purpose == "copilot":
+                return redirect(oauth_next or "/agent/")
             return redirect(url_for("login"))
 
         print("\n✅ TOKEN ACQUIRED SUCCESSFULLY")
@@ -386,18 +553,79 @@ def authorized():
         print(f"   Token type: {result.get('token_type', 'N/A')}")
         print(f"   Expires in: {result.get('expires_in', 'N/A')} seconds")
 
-        # CRITICAL: Clear any existing session data before storing new user info
-        # This prevents cross-user session contamination
-        old_user_id = session.get('user', {}).get('oid')
-        session.clear()  # Clear ALL session data for fresh start
+        # ----- Step-up: Power Platform / Copilot only (keep existing SSO) -----
+        if oauth_purpose == "copilot":
+            session.pop("state", None)
+            if result.get("access_token"):
+                session["copilot_access_token"] = result["access_token"]
+            _save_cache(cache)
+            session.modified = True
+            print("✅ Copilot / Power Platform token stored (step-up consent)")
+            dest = oauth_next if (oauth_next or "").startswith("/") else "/agent/"
+            return redirect(dest)
+
+        # ----- Full login (Power BI) -----
+        # Replace identity in-place — do NOT session.clear() (drops FS session
+        # continuity / cookie mapping and can loop login on localhost).
+        old_user_id = (session.get('user') or {}).get('oid')
+        keep_keys = {"state", "oauth_redirect_uri"}
+        for _k in list(session.keys()):
+            if _k not in keep_keys:
+                session.pop(_k, None)
+        session.pop('state', None)
 
         # Non-permanent cookie → expires when browser is fully closed.
         # Absolute 12h bound enforced via login_at + login_required.
         session.permanent = False
-        session["user"] = result.get("id_token_claims")
-        session["access_token"] = result.get("access_token")  # Store Power BI access token
+        # Keep only fields we use — full id_token_claims can be large
+        _claims = result.get("id_token_claims") or {}
+        session["user"] = {
+            "oid": _claims.get("oid"),
+            "name": _claims.get("name"),
+            "preferred_username": _claims.get("preferred_username")
+                or _claims.get("upn")
+                or _claims.get("email"),
+            "email": _claims.get("email") or _claims.get("preferred_username"),
+            "tid": _claims.get("tid"),
+        }
+        session["access_token"] = result.get("access_token")  # Power BI token
         session["login_at"] = datetime.now(timezone.utc).isoformat()
+        session.modified = True
         _save_cache(cache)
+        print(f"   Session after login keys: {list(session.keys())}")
+        print(f"   User: {session['user'].get('preferred_username')}")
+        if old_user_id and old_user_id != session['user'].get('oid'):
+            print(f"   Previous oid was {old_user_id} (replaced)")
+
+        # Best-effort: warm Power Platform token for AGENT_BRAIN=copilot
+        # (needs CopilotStudio.Copilots.Invoke consented on the app).
+        try:
+            cca2, cache2 = _msal_for_request()
+            accounts = cca2.get_accounts(
+                username=session.get("user", {}).get("preferred_username")
+            )
+            if not accounts:
+                accounts = cca2.get_accounts()
+            if accounts:
+                c_res = cca2.acquire_token_silent(
+                    COPILOT_SCOPE, account=accounts[0]
+                )
+                if c_res and "access_token" in c_res and "error" not in c_res:
+                    session["copilot_access_token"] = c_res["access_token"]
+                    _save_cache(cache2)
+                    print("✅ Copilot / Power Platform token warmed at login")
+                elif c_res and c_res.get("error"):
+                    print(
+                        "⚠️ Copilot token at login: "
+                        f"{c_res.get('error_description', c_res.get('error'))}"
+                    )
+                else:
+                    print(
+                        "ℹ️ Copilot token not available silently after login — "
+                        "user can use /login/copilot-consent from Agent"
+                    )
+        except Exception as _c_warm_err:
+            print(f"⚠️ Copilot token warm skipped: {_c_warm_err}")
 
         # Get the new user ID and clear their old cache if any
         new_user_id = session.get('user', {}).get('oid')
@@ -416,6 +644,72 @@ def authorized():
 
     flash('No authorization code received', 'error')
     return redirect(url_for("login"))
+
+
+@app.route('/login/copilot-consent')
+def login_copilot_consent():
+    """Acquire Power Platform token for Copilot Studio (step-up if needed).
+
+    Login only requests the Power BI audience. Copilot Studio needs
+    api.powerplatform.com (CopilotStudio.Copilots.Invoke). With admin consent
+    already granted on the app, silent acquire from the MSAL session cache
+    usually works after a normal SSO. Do NOT use prompt=consent here — that
+    forces the Entra consent UI and triggers "Approval required" even when
+    admin consent is already Granted.
+    """
+    if "user" not in session or _session_expired():
+        session["next"] = "/agent/"
+        return redirect(url_for("login"))
+
+    dest = request.args.get("next") or "/agent/"
+    force = (request.args.get("force") or "").strip().lower() in (
+        "1", "true", "yes", "consent",
+    )
+
+    # Already have a usable Copilot token?
+    existing = session.get("copilot_access_token")
+    if existing and not force:
+        left = _jwt_seconds_left(existing)
+        if left is not None and left > 300:
+            return redirect(dest)
+
+    # Silent first — works when admin consent is Granted + session RT is cached
+    if not force:
+        try:
+            tok = get_user_copilot_token()
+            if tok:
+                print("✅ Copilot token via silent (no interactive consent needed)")
+                return redirect(dest)
+        except Exception as exc:
+            print(f"⚠️ copilot step-up silent attempt: {exc}")
+
+    redirect_uri = REDIRECT_URI
+    if not os.getenv("WEBSITE_HOSTNAME"):
+        root = (request.url_root or "http://localhost:5000/").rstrip("/")
+        redirect_uri = f"{root}{REDIRECT_PATH}"
+
+    session["state"] = str(uuid.uuid4())
+    session["oauth_purpose"] = "copilot"
+    session["oauth_next"] = dest
+    session["oauth_redirect_uri"] = redirect_uri
+    session.modified = True
+    session.permanent = True
+
+    cca, _cache = _msal_for_request()
+    login_hint = (session.get("user") or {}).get("preferred_username") or None
+    # No prompt=consent (avoids Approval required when admin consent exists).
+    # Optional ?force=1 uses select_account only if silent keeps failing.
+    auth_kwargs = {
+        "scopes": COPILOT_SCOPE,
+        "state": session["state"],
+        "redirect_uri": redirect_uri,
+        "login_hint": login_hint,
+    }
+    if force:
+        auth_kwargs["prompt"] = "select_account"
+    auth_url = cca.get_authorization_request_url(**auth_kwargs)
+    print(f"🔐 Copilot Power Platform authorize (force={force}) → {auth_url[:120]}...")
+    return redirect(auth_url)
 
 
 @app.route('/logout')
@@ -454,20 +748,6 @@ def debug_token():
         })
 
 
-def _load_cache():
-    """Load token cache from session"""
-    cache = msal.SerializableTokenCache()
-    if session.get("token_cache"):
-        cache.deserialize(session["token_cache"])
-    return cache
-
-
-def _save_cache(cache):
-    """Save token cache to session"""
-    if cache.has_state_changed:
-        session["token_cache"] = cache.serialize()
-
-
 def _jwt_seconds_left(token):
     """Return seconds until JWT exp, or None if unreadable."""
     try:
@@ -501,15 +781,17 @@ def get_user_powerbi_token():
             print(f"⚠️ Session Power BI token expiring in {int(left)}s — refreshing…")
             session.pop("access_token", None)
 
-    # 2) MSAL silent refresh only when needed
-    cache = _load_cache()
-    accounts = msal_app.get_accounts(username=session.get('user', {}).get('preferred_username'))
+    # 2) MSAL silent refresh only when needed (session-bound cache)
+    cca, cache = _msal_for_request()
+    accounts = cca.get_accounts(
+        username=session.get("user", {}).get("preferred_username")
+    )
     if not accounts:
-        accounts = msal_app.get_accounts()
+        accounts = cca.get_accounts()
 
     if accounts:
         print("🔄 Acquiring Power BI token silently (MSAL)…")
-        result = msal_app.acquire_token_silent(SCOPE, account=accounts[0])
+        result = cca.acquire_token_silent(SCOPE, account=accounts[0])
         if result and "access_token" in result and "error" not in result:
             print("✅ Power BI token acquired/refreshed")
             session["access_token"] = result["access_token"]
@@ -520,6 +802,160 @@ def get_user_powerbi_token():
 
     print("❌ No valid Power BI token — user needs to re-authenticate")
     return None
+
+
+def get_user_copilot_token():
+    """Delegated token for Power Platform / Copilot Studio invoke.
+
+    Requires CopilotStudio.Copilots.Invoke on the app registration and admin
+    consent. Audience is api.powerplatform.com — never reuse the Power BI JWT.
+    """
+    if "copilot_access_token" in session:
+        left = _jwt_seconds_left(session["copilot_access_token"])
+        if left is not None and left > 300:
+            return session["copilot_access_token"]
+        if left is not None and left <= 300:
+            session.pop("copilot_access_token", None)
+
+    cca, cache = _msal_for_request()
+    accounts = cca.get_accounts(
+        username=session.get("user", {}).get("preferred_username")
+    )
+    if not accounts:
+        accounts = cca.get_accounts()
+
+    if accounts:
+        result = cca.acquire_token_silent(COPILOT_SCOPE, account=accounts[0])
+        if result and "access_token" in result and "error" not in result:
+            print("✅ Copilot / Power Platform token acquired (silent)")
+            session["copilot_access_token"] = result["access_token"]
+            _save_cache(cache)
+            return result["access_token"]
+        if result and "error" in result:
+            print(
+                "⚠️ Copilot token silent fail: "
+                f"{result.get('error_description', result.get('error'))}"
+            )
+
+    # OBO from Power BI assertion (may fail if audiences cannot bridge)
+    pbi_token = get_user_powerbi_token()
+    if pbi_token:
+        try:
+            result = cca.acquire_token_on_behalf_of(
+                user_assertion=pbi_token,
+                scopes=COPILOT_SCOPE,
+            )
+            if result and "access_token" in result and "error" not in result:
+                print("✅ Copilot token acquired (OBO)")
+                session["copilot_access_token"] = result["access_token"]
+                _save_cache(cache)
+                return result["access_token"]
+            err = (result or {}).get("error_description") or (result or {}).get("error")
+            print(f"⚠️ Copilot OBO failed: {str(err)[:160]}")
+        except Exception as exc:
+            print(f"⚠️ Copilot OBO error: {exc}")
+
+    print("⚠️ Could not acquire Copilot / Power Platform token")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Agent section (/agent) — OPT-IN only (default OFF).
+#
+# Prod Control Center (afi-powerbi-documentation-prod-app via Azure DevOps)
+# must NOT show Agent until ready. Test on IT Financials App Service first:
+#   ENABLE_AGENT=true
+#   AGENT_BRAIN=copilot
+#   COPILOTSTUDIOAGENT__ENVIRONMENTID=...
+#   COPILOTSTUDIOAGENT__SCHEMANAME=...
+#
+# Uses the SIGNED-IN USER token (RLS). Never answers with service principal.
+# When AGENT_BRAIN=copilot, pass Power Platform token (not Power BI).
+# ---------------------------------------------------------------------------
+def _env_flag_true(name: str, default: str = "false") -> bool:
+    return (os.getenv(name, default) or default).strip().lower() in (
+        "1", "true", "yes", "y", "on",
+    )
+
+
+# Exposed to Jinja (base.html nav). Default False = hidden on prod.
+app.config["ENABLE_AGENT"] = _env_flag_true("ENABLE_AGENT", "false")
+
+
+@app.context_processor
+def _inject_feature_flags():
+    return {
+        "enable_agent": bool(app.config.get("ENABLE_AGENT")),
+    }
+
+
+if app.config["ENABLE_AGENT"]:
+    try:
+        from agent_section.blueprint import agent_bp, set_token_resolver
+
+        def _agent_identity():
+            """Return (user_upn, access_token) for the current request.
+
+            Copilot Studio needs a Power Platform-scoped user token.
+            loop/mcp/local live DAX needs the Power BI user token.
+            """
+            user = session.get("user") or {}
+            upn = (
+                user.get("preferred_username")
+                or user.get("upn")
+                or user.get("userPrincipalName")
+                or user.get("email")
+                or "unknown@local"
+            )
+            brain = (os.getenv("AGENT_BRAIN") or "auto").lower()
+            # Direct-connect URL alone is enough (same rule as agent_section.service)
+            studio_ready = bool(
+                (os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL") or "").strip()
+                or (
+                    os.getenv("COPILOTSTUDIOAGENT__ENVIRONMENTID")
+                    and os.getenv("COPILOTSTUDIOAGENT__SCHEMANAME")
+                )
+            )
+            want_copilot = brain == "copilot" or (brain == "auto" and studio_ready)
+
+            token = None
+            if want_copilot:
+                try:
+                    token = get_user_copilot_token()
+                except Exception:
+                    token = session.get("copilot_access_token")
+                # Do NOT fall back to Power BI JWT for Copilot Studio — wrong
+                # audience (analysis.windows.net vs api.powerplatform.com).
+                return upn, token
+            try:
+                token = get_user_powerbi_token()
+            except Exception:
+                token = session.get("access_token")
+            return upn, token
+
+        set_token_resolver(_agent_identity)
+
+        @agent_bp.before_request
+        def _agent_require_login():
+            if 'user' not in session or _session_expired():
+                if 'user' in session:
+                    session.clear()
+                if request.path.startswith('/agent/api/') or '/api/' in (request.path or ''):
+                    return jsonify({
+                        'success': False,
+                        'error': 'Not authenticated or session expired',
+                        'redirect': url_for('login'),
+                        'auth_required': True,
+                    }), 401
+                return redirect(url_for('login'))
+
+        app.register_blueprint(agent_bp)
+        print("✅ Agent section registered at /agent (ENABLE_AGENT=true)")
+    except Exception as _agent_import_err:
+        app.config["ENABLE_AGENT"] = False
+        print(f"⚠️ Agent section not available: {_agent_import_err}")
+else:
+    print("ℹ️ Agent section disabled (set ENABLE_AGENT=true on test app only)")
 
 
 def get_user_fabric_token():
@@ -537,14 +973,16 @@ def get_user_fabric_token():
         if left is not None and left <= 300:
             session.pop("fabric_access_token", None)
 
-    # 2) Silent acquire with Fabric scope
-    cache = _load_cache()
-    accounts = msal_app.get_accounts(username=session.get('user', {}).get('preferred_username'))
+    # 2) Silent acquire with Fabric scope (session-bound MSAL cache)
+    cca, cache = _msal_for_request()
+    accounts = cca.get_accounts(
+        username=session.get("user", {}).get("preferred_username")
+    )
     if not accounts:
-        accounts = msal_app.get_accounts()
+        accounts = cca.get_accounts()
 
     if accounts:
-        result = msal_app.acquire_token_silent(FABRIC_SCOPE, account=accounts[0])
+        result = cca.acquire_token_silent(FABRIC_SCOPE, account=accounts[0])
         if result and "access_token" in result and "error" not in result:
             print("✅ Fabric token acquired (silent)")
             session["fabric_access_token"] = result["access_token"]
@@ -555,13 +993,14 @@ def get_user_fabric_token():
     pbi_token = get_user_powerbi_token()
     if pbi_token:
         try:
-            result = msal_app.acquire_token_on_behalf_of(
+            result = cca.acquire_token_on_behalf_of(
                 user_assertion=pbi_token,
                 scopes=FABRIC_SCOPE
             )
             if result and "access_token" in result and "error" not in result:
                 print("✅ Fabric token acquired (OBO)")
                 session["fabric_access_token"] = result["access_token"]
+                _save_cache(cache)
                 return result["access_token"]
             else:
                 error = result.get('error', 'unknown') if result else 'no result'
@@ -7345,9 +7784,16 @@ def export_inactive_reports(workspace_id):
                 last_viewed_map[rid] = info
 
         # c) usage_snapshot.json overlay (catalog ops)
+        data_as_of_raw = None  # when usage / ops data is current through
         if CATALOG_AVAILABLE:
             try:
                 usage_snap = catalog_service.get_json('usage_snapshot.json') or {}
+                data_as_of_raw = (
+                    usage_snap.get('generatedAt')
+                    or usage_snap.get('opsEnrichedAt')
+                    or usage_snap.get('asOf')
+                    or usage_snap.get('endDate')
+                )
                 for rid, cnt in (usage_snap.get('report_views') or {}).items():
                     # don't wipe known values with empty snapshot
                     if rid not in report_views or report_views.get(rid) in (None,):
@@ -7359,6 +7805,62 @@ def export_inactive_reports(workspace_id):
                     last_viewed_map.setdefault(rid, info)
             except Exception as e:
                 print(f"   ⚠️ usage_snapshot overlay failed: {e}")
+
+        # ops / catalog timestamps for "as of" day math when usage has none
+        if not data_as_of_raw and pack:
+            data_as_of_raw = (
+                (pack.get('catalog_meta') or {}).get('opsEnrichedAt')
+                or pack.get('opsEnrichedAt')
+                or (pack.get('catalog_meta') or {}).get('generatedAt')
+                or pack.get('generatedAt')
+            )
+        if not data_as_of_raw and CATALOG_AVAILABLE:
+            try:
+                summary = catalog_service.get_summary() or {}
+                data_as_of_raw = summary.get('opsEnrichedAt') or summary.get('generatedAt')
+            except Exception:
+                pass
+
+        data_as_of_dt = _parse_dt(data_as_of_raw) or datetime.now(timezone.utc)
+        # Calendar date label for column header (local US style MM-DD-YYYY)
+        data_as_of_label = data_as_of_dt.strftime('%m-%d-%Y')
+
+        # Folder path map (best-effort) for Sub Folder column
+        folder_path_by_report = {}
+        try:
+            folder_meta = _fetch_workspace_folder_meta(workspace_id) or {}
+            report_folder_map = folder_meta.get('report_folder_map') or {}
+            folder_names_map = folder_meta.get('folder_names_map') or {}
+
+            def _build_folder_path(folder_id):
+                if not folder_id or folder_id not in folder_names_map:
+                    return None
+                parts = []
+                cur = folder_id
+                seen = set()
+                while cur and cur not in seen:
+                    seen.add(cur)
+                    info = folder_names_map.get(cur) or {}
+                    nm = info.get('name')
+                    if nm:
+                        parts.insert(0, nm)
+                    cur = info.get('parentFolderId')
+                return ' / '.join(parts) if parts else None
+
+            for rid, fid in report_folder_map.items():
+                path = _build_folder_path(fid)
+                if path:
+                    folder_path_by_report[rid] = path
+        except Exception as folder_err:
+            print(f"   ⚠️ folder map for decomm export skipped: {folder_err}")
+            folder_path_by_report = {}
+
+        def _days_until_as_of(value):
+            """Days from last refresh to catalog/usage data-as-of date."""
+            dt = _parse_dt(value)
+            if not dt:
+                return None
+            return max(0, (data_as_of_dt - dt).days)
 
         # ---------- 3) Evaluate each report ----------
         def evaluate_report(report):
@@ -7376,7 +7878,11 @@ def export_inactive_reports(workspace_id):
             except Exception:
                 days = None
             last_ref = report.get('last_refreshed') or report.get('lastRefresh') or ''
-            if days is None and last_ref:
+            # Prefer days relative to data-as-of (not wall-clock now) for the export column
+            days_as_of = _days_until_as_of(last_ref) if last_ref else None
+            if days_as_of is not None:
+                days = days_as_of
+            elif days is None and last_ref:
                 days = _days_since(last_ref)
 
             refresh_status = (
@@ -7385,7 +7891,6 @@ def export_inactive_reports(workspace_id):
                 or ''
             )
             refresh_type = report.get('refresh_type') or report.get('refreshType') or ''
-            refresh_note = report.get('refresh_note') or ''
 
             # Views (60-day window when snapshot provides it)
             if rid in report_views:
@@ -7403,10 +7908,7 @@ def export_inactive_reports(workspace_id):
             if days is not None and days > REFRESH_STALE_DAYS:
                 reasons.append(f'Days since refresh > {REFRESH_STALE_DAYS} ({days}d)')
 
-            # Rule 2: no refresh history
-            # - no last_refreshed timestamp and days unknown
-            # - DirectQuery/Live: no import history is expected → do NOT flag on rule 2 alone
-            #   (still flagged by rule 1 if stale metrics exist, or rule 3 if 0 views)
+            # Rule 2: no refresh history (import models only)
             no_history = False
             if not live_dq:
                 if (not last_ref) and (days is None):
@@ -7417,28 +7919,12 @@ def export_inactive_reports(workspace_id):
                 reasons.append('No refresh history')
 
             # Rule 3: last 60 days views == 0
-            # Apply when we have an explicit view_count / usage value (including 0).
+            zero_views = False
             if (views_known or report.get('view_count') is not None) and int(views or 0) == 0:
+                zero_views = True
                 reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
 
             is_candidate = len(reasons) > 0
-
-            # Risk from strongest signal
-            risk = 'Low'
-            if any('Days since refresh' in r for r in reasons) and days is not None:
-                if days > 180:
-                    risk = 'Critical'
-                elif days > 90:
-                    risk = 'High'
-            if any(r.startswith('0 views') for r in reasons):
-                risk = 'High' if risk == 'Low' else risk
-            if any('No refresh history' in r for r in reasons):
-                risk = 'High' if risk in {'Low', 'Medium'} else risk
-            if len(reasons) >= 2:
-                if risk == 'High':
-                    risk = 'Critical'
-                elif risk == 'Low':
-                    risk = 'Medium'
 
             owner = _clean_person(
                 report.get('dataset_owner'),
@@ -7448,42 +7934,50 @@ def export_inactive_reports(workspace_id):
                 report.get('modifiedBy'),
                 report.get('modified_by'),
             )
-            created_by = _clean_person(report.get('createdBy'), report.get('created_by')) or '—'
-            modified_by = _clean_person(report.get('modifiedBy'), report.get('modified_by')) or '—'
 
-            last_viewed = last_viewed_map.get(rid) or report.get('last_viewed')
-            if isinstance(last_viewed, dict):
-                last_viewed_str = last_viewed.get('timestamp') or last_viewed.get('user') or '—'
-            else:
-                last_viewed_str = last_viewed or '—'
+            # Sub folder: root = NA
+            sub_folder = (
+                report.get('folderPath')
+                or report.get('folder_path')
+                or report.get('folderName')
+                or report.get('folder_name')
+                or folder_path_by_report.get(rid)
+                or ''
+            )
+            sub_folder = str(sub_folder).strip() if sub_folder else ''
+            if not sub_folder or sub_folder.lower() in {'root', 'workspace', 'none', 'n/a', 'na', '—'}:
+                sub_folder = 'NA'
+
+            model_name = (
+                report.get('datasetName')
+                or report.get('dataset_name')
+                or ''
+            ).strip() or 'NA'
+
+            last_ref_disp = ''
+            if last_ref and str(last_ref) not in {'—', '-', 'Unknown', 'None'}:
+                last_ref_disp = str(last_ref)[:19].replace('T', ' ')
+
+            # Comments: note zero views (no Views column in export)
+            comments = ''
+            if zero_views:
+                comments = f'Zero views in last {VIEW_LOOKBACK_LABEL}'
 
             return {
-                'report_id': rid,
+                'workspace_name': workspace_name,
+                'sub_folder': sub_folder,
                 'report_name': name,
-                'dataset_name': report.get('datasetName') or report.get('dataset_name') or '—',
-                'dataset_id': report.get('datasetId') or '',
-                'owner': owner or '—',
-                'created_by': created_by,
-                'modified_by': modified_by,
-                'views_30d': views if views_known or report.get('view_count') is not None else None,
-                'views_known': views_known or report.get('view_count') is not None,
-                'last_viewed': str(last_viewed_str)[:40],
-                'last_refreshed': last_ref or '—',
-                'days_since_refresh': days,
-                'refresh_status': refresh_status or ('DirectQuery/Live' if live_dq else '—'),
-                'refresh_type': refresh_type or ('directquery/live' if live_dq else '—'),
-                'is_live_dq': live_dq,
+                'model_name': model_name,
+                'last_refreshed_on': last_ref_disp or 'NA',
+                'days_since_refresh': days if days is not None else '',
+                'contact_owner': owner or 'NA',
+                'archived_status': '',
+                'comments': comments,
+                'can_decommission': '',
+                'review_comments': '',
                 'is_candidate': is_candidate,
                 'reasons': reasons,
-                'risk_level': risk if is_candidate else '—',
-                'recommendation': (
-                    'Review with owner — decommission candidate'
-                    if is_candidate else 'Keep / monitor'
-                ),
-                'action': (
-                    'Email owner for approval to archive/delete'
-                    if is_candidate else 'No action'
-                ),
+                'zero_views': zero_views,
             }
 
         evaluated = []
@@ -7494,147 +7988,116 @@ def export_inactive_reports(workspace_id):
 
         candidates = [r for r in evaluated if r['is_candidate']]
         candidates.sort(key=lambda x: (
-            {'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3}.get(x['risk_level'], 9),
-            -(x['days_since_refresh'] or -1),
-            (x['report_name'] or '').lower(),
+            (x.get('workspace_name') or '').lower(),
+            (x.get('sub_folder') or '').lower(),
+            (x.get('report_name') or '').lower(),
         ))
-        evaluated.sort(key=lambda x: (x['report_name'] or '').lower())
 
         print(
             f"   ✅ total={len(evaluated)} candidates={len(candidates)} "
-            f"source={source} views_keys={len(report_views)}"
+            f"source={source} views_keys={len(report_views)} as_of={data_as_of_label}"
         )
 
-        # ---------- 4) Excel ----------
+        # ---------- 4) Excel (single sheet — requested columns only) ----------
         wb = Workbook()
-        ws_inactive = wb.active
-        ws_inactive.title = 'Decommission Candidates'
-        ws_summary = wb.create_sheet('All Reports')
-        ws_rules = wb.create_sheet('Rules & Workflow')
+        ws_out = wb.active
+        ws_out.title = 'Decommission List'
 
         header_fill = PatternFill(start_color='2B6CB0', end_color='2B6CB0', fill_type='solid')
         header_font = Font(color='FFFFFF', bold=True, size=11)
-        warning_fill = PatternFill(start_color='FED7D7', end_color='FED7D7', fill_type='solid')
-        critical_fill = PatternFill(start_color='FEB2B2', end_color='FEB2B2', fill_type='solid')
-        safe_fill = PatternFill(start_color='C6F6D5', end_color='C6F6D5', fill_type='solid')
         center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
         left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        def style_header(ws, headers):
-            ws.append(headers)
-            for col_num, _h in enumerate(headers, 1):
-                cell = ws.cell(row=1, column=col_num)
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = center_align
-            ws.auto_filter.ref = f'A1:{chr(64+len(headers))}1'
-            ws.freeze_panes = 'A2'
-
-        def autosize(ws, max_width=48):
-            for col in ws.columns:
-                max_length = 0
-                letter = col[0].column_letter
-                for cell in col:
-                    try:
-                        max_length = max(max_length, len(str(cell.value or '')))
-                    except Exception:
-                        pass
-                ws.column_dimensions[letter].width = min(max_length + 2, max_width)
-
-        # Sheet 1 — candidates
-        cand_headers = [
-            'Report Name', 'Report ID', 'Dataset', 'Owner',
-            'Views (Last 60 Days)', 'Last Viewed',
-            'Last Refreshed', 'Days Since Refresh', 'Refresh Type', 'Refresh Status',
-            'Decommission Reasons', 'Risk Level', 'Recommendation', 'Action Required',
+        days_header = f'LastRefresh in days till {data_as_of_label}'
+        headers = [
+            'Workspace Name',
+            'Sub Folder',
+            'Report Name',
+            'Model Name',
+            'LastRefreshedOn',
+            days_header,
+            'Contact/Owner',
+            'Archived Status',
+            'Comments',
+            'Can Decommission',
+            'Review Comments',
         ]
-        style_header(ws_inactive, cand_headers)
+
+        ws_out.append(headers)
+        for col_num, _h in enumerate(headers, 1):
+            cell = ws_out.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_align
+        # AutoFilter + freeze
+        last_col_letter = chr(ord('A') + len(headers) - 1) if len(headers) <= 26 else 'K'
+        ws_out.auto_filter.ref = f'A1:{last_col_letter}1'
+        ws_out.freeze_panes = 'A2'
+        # Note in header comment on days column
+        ws_out.cell(row=1, column=6).comment = None
+        try:
+            from openpyxl.comments import Comment
+            ws_out.cell(row=1, column=6).comment = Comment(
+                f'Days from LastRefreshedOn through data-as-of date ({data_as_of_label}). '
+                f'Source: catalog/ops usage extract.',
+                'Power BI Control Center',
+            )
+        except Exception:
+            pass
 
         for r in candidates:
-            views_disp = r['views_30d'] if r['views_known'] else 'Unknown'
-            days_disp = r['days_since_refresh'] if r['days_since_refresh'] is not None else '—'
-            ws_inactive.append([
+            ws_out.append([
+                r['workspace_name'],
+                r['sub_folder'],
                 r['report_name'],
-                r['report_id'],
-                r['dataset_name'],
-                r['owner'],
-                views_disp,
-                r['last_viewed'],
-                str(r['last_refreshed'])[:19] if r['last_refreshed'] != '—' else '—',
-                days_disp,
-                r['refresh_type'],
-                r['refresh_status'],
-                '; '.join(r['reasons']),
-                r['risk_level'],
-                r['recommendation'],
-                r['action'],
+                r['model_name'],
+                r['last_refreshed_on'],
+                r['days_since_refresh'] if r['days_since_refresh'] != '' else 'NA',
+                r['contact_owner'],
+                r['archived_status'],  # empty for reviewers
+                r['comments'],
+                r['can_decommission'],  # empty
+                r['review_comments'],  # empty
             ])
-            rn = ws_inactive.max_row
-            fill = critical_fill if r['risk_level'] == 'Critical' else warning_fill
-            ws_inactive.cell(row=rn, column=11).fill = fill  # reasons
-            ws_inactive.cell(row=rn, column=12).fill = fill  # risk
+            # Left-align text columns
+            rn = ws_out.max_row
+            for c in range(1, 12):
+                ws_out.cell(row=rn, column=c).alignment = left_align if c != 6 else center_align
 
         if not candidates:
-            ws_inactive.append(['No decommission candidates under current rules'] + [''] * (len(cand_headers) - 1))
+            ws_out.append(
+                [workspace_name, 'NA', 'No decommission candidates under current rules',
+                 'NA', 'NA', 'NA', 'NA', '', '', '', '']
+            )
 
-        autosize(ws_inactive)
+        # Column widths
+        widths = {
+            'A': 28, 'B': 22, 'C': 36, 'D': 28, 'E': 18, 'F': 28,
+            'G': 28, 'H': 16, 'I': 32, 'J': 16, 'K': 22,
+        }
+        for letter, w in widths.items():
+            ws_out.column_dimensions[letter].width = w
 
-        # Sheet 2 — all reports
-        all_headers = [
-            'Report Name', 'Candidate?', 'Views (30d)', 'Days Since Refresh',
-            'Last Refreshed', 'Refresh Type', 'Owner', 'Reasons', 'Risk',
-        ]
-        style_header(ws_summary, all_headers)
-        for r in evaluated:
-            views_disp = r['views_30d'] if r['views_known'] else 'Unknown'
-            days_disp = r['days_since_refresh'] if r['days_since_refresh'] is not None else '—'
-            ws_summary.append([
-                r['report_name'],
-                'YES' if r['is_candidate'] else 'No',
-                views_disp,
-                days_disp,
-                str(r['last_refreshed'])[:19] if r['last_refreshed'] != '—' else '—',
-                r['refresh_type'],
-                r['owner'],
-                '; '.join(r['reasons']) if r['reasons'] else '—',
-                r['risk_level'],
-            ])
-            rn = ws_summary.max_row
-            if r['is_candidate']:
-                ws_summary.cell(row=rn, column=2).fill = warning_fill
-            else:
-                ws_summary.cell(row=rn, column=2).fill = safe_fill
-        autosize(ws_summary)
-
-        # Sheet 3 — rules
-        ws_rules.append(['DECOMMISSION RULES (this export)'])
-        ws_rules.append([])
+        # Thin Rules sheet (optional reference — not the main list)
+        ws_rules = wb.create_sheet('Rules')
+        ws_rules.append(['Decommission list export'])
         ws_rules.append(['Workspace', workspace_name])
-        ws_rules.append(['Workspace ID', workspace_id])
         ws_rules.append(['Generated (UTC)', datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')])
+        ws_rules.append(['Data as of', data_as_of_label])
         ws_rules.append(['Data source', source])
-        ws_rules.append(['Total reports (excl. [App])', len(evaluated)])
-        ws_rules.append(['Decommission candidates', len(candidates)])
+        ws_rules.append(['Candidates', len(candidates)])
         ws_rules.append([])
-        ws_rules.append(['A report is a candidate if ANY rule matches:'])
-        ws_rules.append(['1', f'Days since last refresh > {REFRESH_STALE_DAYS}'])
-        ws_rules.append(['2', 'No import refresh history (import/scheduled models only; DirectQuery/Live excluded from this rule)'])
+        ws_rules.append(['Candidate if ANY:'])
+        ws_rules.append(['1', f'Days since last refresh > {REFRESH_STALE_DAYS} (through {data_as_of_label})'])
+        ws_rules.append(['2', 'No import refresh history (not applied alone to DirectQuery/Live)'])
         ws_rules.append(['3', f'Views in last {VIEW_LOOKBACK_LABEL} == 0'])
         ws_rules.append([])
-        ws_rules.append(['Notes'])
-        ws_rules.append(['•', 'Views come from catalog ops / usage snapshot / usage cache (Activity Events when available).'])
-        ws_rules.append(['•', 'Refresh age comes from catalog ops (refresh_snapshot) when present.'])
-        ws_rules.append(['•', 'DirectQuery/Live are not flagged only because they lack import refresh history.'])
-        ws_rules.append(['•', 'Published [App] report copies are excluded.'])
-        ws_rules.append([])
-        ws_rules.append(['Suggested workflow'])
-        ws_rules.append(['1', 'Review candidates with workspace owners'])
-        ws_rules.append(['2', 'Notify owners (Keep / Archive / Delete) — 30 day response window'])
-        ws_rules.append(['3', 'Archive non-responsive / approved items'])
-        ws_rules.append(['4', 'Delete after retention period (e.g. 90 days in archive)'])
-        ws_rules.column_dimensions['A'].width = 18
-        ws_rules.column_dimensions['B'].width = 100
-        ws_rules.cell(row=1, column=1).font = Font(bold=True, size=14, color='FFFFFF')
+        ws_rules.append(['Comments column', f'Pre-filled with "Zero views in last {VIEW_LOOKBACK_LABEL}" when views known and == 0'])
+        ws_rules.append(['Archived Status / Can Decommission / Review Comments', 'Left blank for reviewers'])
+        ws_rules.append(['Excluded', 'Usage Metrics Report, Report Usage Metrics Report, [App] copies'])
+        ws_rules.column_dimensions['A'].width = 40
+        ws_rules.column_dimensions['B'].width = 80
+        ws_rules.cell(row=1, column=1).font = Font(bold=True, size=13, color='FFFFFF')
         ws_rules.cell(row=1, column=1).fill = header_fill
 
         output = io.BytesIO()
@@ -7642,8 +8105,8 @@ def export_inactive_reports(workspace_id):
         output.seek(0)
 
         safe_ws = ''.join(c if c.isalnum() or c in ('-', '_') else '_' for c in workspace_name)[:60]
-        filename = f'Decommission_Report_{safe_ws}_{datetime.now(timezone.utc).strftime("%Y%m%d")}.xlsx'
-        print(f"   📁 {filename} candidates={len(candidates)}/{len(evaluated)}")
+        filename = f'Decommission_List_{safe_ws}_{datetime.now(timezone.utc).strftime("%Y%m%d")}.xlsx'
+        print(f"   📁 {filename} candidates={len(candidates)}/{len(evaluated)} as_of={data_as_of_label}")
 
         return send_file(
             output,
@@ -7659,17 +8122,114 @@ def export_inactive_reports(workspace_id):
         return jsonify({'error': str(e)}), 500
 
 
+def _usage_cache_path(workspace_id: str) -> str:
+    """Disk path for per-workspace Activity Events day cache."""
+    root = (os.getenv("USAGE_CACHE_DIR") or "").strip()
+    if not root:
+        # Prefer durable App Service path; fall back to repo-local .usage_cache
+        if os.getenv("WEBSITE_HOSTNAME"):
+            root = os.path.join("/home", "data", "usage_cache")
+        else:
+            root = os.path.join(os.getcwd(), ".usage_cache")
+    return os.path.join(root, f"usage_{workspace_id}.json")
+
+
+def _aggregate_usage_days(daily_data: dict):
+    """Sum report_views / last_viewed across day buckets."""
+    report_views = {}
+    last_viewed = {}
+    for _date_key, day_data in (daily_data or {}).items():
+        if not isinstance(day_data, dict):
+            continue
+        for report_id, count in (day_data.get("report_views") or {}).items():
+            try:
+                report_views[report_id] = report_views.get(report_id, 0) + int(count or 0)
+            except (TypeError, ValueError):
+                continue
+        for report_id, view_info in (day_data.get("last_viewed") or {}).items():
+            if not isinstance(view_info, dict):
+                continue
+            ts = view_info.get("timestamp") or ""
+            prev = last_viewed.get(report_id)
+            if not prev or ts > (prev.get("timestamp") or ""):
+                last_viewed[report_id] = view_info
+    return report_views, last_viewed
+
+
+def _usage_from_catalog_snapshot(workspace_id: str = None):
+    """
+    Fast path: precomputed usage_snapshot.json (ops extract).
+    Tenant-wide report_views / last_viewed — optionally filtered to workspace
+    report ids when known. Returns None when snapshot unavailable.
+    """
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return None
+    try:
+        snap = catalog_service.get_json("usage_snapshot.json")
+    except Exception as exc:
+        print(f"   ⚠️ Catalog usage_snapshot unavailable: {exc}")
+        return None
+    if not isinstance(snap, dict):
+        return None
+    report_views = snap.get("report_views") if isinstance(snap.get("report_views"), dict) else {}
+    last_viewed = snap.get("last_viewed") if isinstance(snap.get("last_viewed"), dict) else {}
+    if not report_views and not last_viewed:
+        return None
+
+    # Optionally narrow to reports present in this workspace (catalog or thin pack)
+    ws_report_ids = None
+    if workspace_id:
+        try:
+            pack = catalog_service.get_workspace_reports(workspace_id)
+            if pack and isinstance(pack.get("reports"), list):
+                ws_report_ids = {
+                    str(r.get("id") or r.get("reportId") or "").lower()
+                    for r in pack["reports"]
+                    if (r.get("id") or r.get("reportId"))
+                }
+                ws_report_ids.discard("")
+        except Exception:
+            ws_report_ids = None
+
+    if ws_report_ids:
+        # Keep original casing from snapshot keys
+        report_views = {
+            rid: cnt for rid, cnt in report_views.items()
+            if str(rid).lower() in ws_report_ids
+        }
+        last_viewed = {
+            rid: info for rid, info in last_viewed.items()
+            if str(rid).lower() in ws_report_ids
+        }
+
+    days = int(snap.get("lookbackDays") or os.getenv("USAGE_LOOKBACK_DAYS", "60") or 60)
+    return {
+        "success": True,
+        "workspace_id": workspace_id,
+        "days_analyzed": days,
+        "report_views": report_views,
+        "last_viewed": last_viewed,
+        "source": "catalog_usage_snapshot",
+        "generatedAt": snap.get("generatedAt"),
+        "note": (
+            f"Catalog usage snapshot"
+            f"{(' @ ' + str(snap.get('generatedAt'))) if snap.get('generatedAt') else ''}"
+            f" ({len(report_views)} reports with views)"
+        ),
+    }
+
+
 @app.route('/api/report-usage/<workspace_id>')
 @login_required
 def get_report_usage(workspace_id):
     """
-    Get report usage metrics (view counts) for the last 60 days using Activity Events API
-    Returns view counts per report AND last viewed info (user + timestamp)
+    Get report usage metrics (view counts) for the last 60 days.
 
-    NOTE: This endpoint requires service principal authentication with Power BI Admin permissions.
-    User-delegated tokens are not supported by the Activity Events API.
-
-    If admin permissions are not available, returns graceful N/A values.
+    Priority:
+      1) Catalog usage_snapshot.json (ops extract — fast, reliable)
+      2) Non-empty per-workspace Activity Events day cache (< 24h)
+      3) Live Admin Activity Events fetch (service principal)
+      4) Stale / empty cache last resort
     """
     try:
         from datetime import datetime, timedelta, timezone
@@ -7677,69 +8237,100 @@ def get_report_usage(workspace_id):
         from scanner_connector import PowerBIScanner
 
         print(f"\n📊 FETCHING REPORT USAGE METRICS FOR WORKSPACE: {workspace_id}")
-        print(f"   ⚠️  NOTE: This requires Service Principal to have Power BI Admin role")
+        print(f"   ⚠️  NOTE: Live Activity Events requires Service Principal with Power BI Admin role")
 
-        # === PERSISTENT CACHE IMPLEMENTATION (like usage_tracker_90day.py) ===
-        # Load persistent cache from disk
-        cache_file = os.path.join(".usage_cache", f"usage_{workspace_id}.json")
+        days_back = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))  # default 60-day views
+        max_workers = 30
+        force_live = str(request.args.get("force") or request.args.get("refresh") or "").strip().lower() in (
+            "1", "true", "yes", "live"
+        )
+
+        # --- 1) Catalog snapshot first (instant, pre-aggregated by ops job) ---
+        if not force_live:
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage and (
+                cat_usage.get("report_views") or cat_usage.get("last_viewed")
+            ):
+                print(
+                    f"   ✅ Using catalog usage_snapshot "
+                    f"({len(cat_usage.get('report_views') or {})} reports, "
+                    f"generatedAt={cat_usage.get('generatedAt')})"
+                )
+                return jsonify(cat_usage)
+
+        # === PERSISTENT CACHE (Activity Events incremental) ===
+        cache_file = _usage_cache_path(workspace_id)
         persistent_cache = {'daily_data': {}, 'last_updated': None}
 
         if os.path.exists(cache_file):
             try:
-                with open(cache_file, 'r') as f:
+                with open(cache_file, 'r', encoding='utf-8') as f:
                     persistent_cache = json.load(f)
-                    print(f"   📂 Loaded persistent cache from disk")
+                    print(f"   📂 Loaded persistent cache from disk: {cache_file}")
             except Exception as e:
                 print(f"   ⚠️ Cache load error: {e}")
         else:
-            print(f"   🔍 No persistent cache found, will fetch all 60 days")
+            print(f"   🔍 No persistent cache found at {cache_file}")
 
-        # Determine which days are missing from cache
-        days_back = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))  # default 60-day views
-        max_workers = 30
-
-        cached_dates = set(persistent_cache.get('daily_data', {}).keys())
+        cached_dates = set((persistent_cache.get('daily_data') or {}).keys())
         all_dates_needed = [
             (datetime.now(timezone.utc) - timedelta(days=i)).strftime('%Y-%m-%d')
             for i in range(days_back)
         ]
         missing_dates = [d for d in all_dates_needed if d not in cached_dates]
 
-        print(f"   📅 Period: {days_back} days | Cached: {len(cached_dates)} | To fetch: {len(missing_dates)}")
+        cached_views, cached_last = _aggregate_usage_days(persistent_cache.get('daily_data') or {})
+        cached_total_views = sum(cached_views.values()) if cached_views else 0
+        print(
+            f"   📅 Period: {days_back} days | Cached days: {len(cached_dates)} | "
+            f"Missing: {len(missing_dates)} | Cached views: {cached_total_views}"
+        )
 
-        # If all data is cached and fresh (within 24 hours), return immediately
+        # Only short-circuit on cache when it actually has view data (avoid empty poison).
         last_updated = persistent_cache.get('last_updated')
-        if last_updated and len(missing_dates) == 0:
-            last_updated_dt = datetime.fromisoformat(last_updated)
-            cache_age_hours = (datetime.now(timezone.utc) - last_updated_dt).total_seconds() / 3600
+        if (
+            not force_live
+            and last_updated
+            and len(missing_dates) == 0
+            and cached_total_views > 0
+        ):
+            try:
+                last_updated_dt = datetime.fromisoformat(last_updated)
+                if last_updated_dt.tzinfo is None:
+                    last_updated_dt = last_updated_dt.replace(tzinfo=timezone.utc)
+                cache_age_hours = (datetime.now(timezone.utc) - last_updated_dt).total_seconds() / 3600
+            except Exception:
+                cache_age_hours = 999
 
             if cache_age_hours < 24:
-                print(f"   ✅ Using cached data (age: {cache_age_hours:.1f} hours, 0 days to fetch)")
-
-                # Aggregate from cache
-                report_views = {}
-                last_viewed = {}
-
-                for date_key, day_data in persistent_cache.get('daily_data', {}).items():
-                    for report_id, count in day_data.get('report_views', {}).items():
-                        report_views[report_id] = report_views.get(report_id, 0) + count
-
-                    for report_id, view_info in day_data.get('last_viewed', {}).items():
-                        if report_id not in last_viewed or view_info['timestamp'] > last_viewed[report_id]['timestamp']:
-                            last_viewed[report_id] = view_info
-
-                result = {
+                print(
+                    f"   ✅ Using non-empty Activity cache "
+                    f"(age: {cache_age_hours:.1f}h, views={cached_total_views})"
+                )
+                return jsonify({
                     'success': True,
                     'workspace_id': workspace_id,
                     'days_analyzed': days_back,
-                    'report_views': report_views,
-                    'last_viewed': last_viewed,
-                    'note': f'Loaded from cache (age: {cache_age_hours:.1f}h)'
-                }
-                return jsonify(result)
+                    'report_views': cached_views,
+                    'last_viewed': cached_last,
+                    'source': 'activity_cache',
+                    'note': f'Loaded from cache (age: {cache_age_hours:.1f}h, views={cached_total_views})'
+                })
+
+        # Empty full cache is useless — drop it so we re-fetch rather than serving zeros forever
+        if len(missing_dates) == 0 and cached_total_views == 0 and cached_dates:
+            print("   🗑️ Discarding empty Activity day-cache (0 total views) — will re-fetch")
+            missing_dates = list(all_dates_needed)
+            persistent_cache = {'daily_data': {}, 'last_updated': None}
+            cached_dates = set()
+            try:
+                if os.path.exists(cache_file):
+                    os.remove(cache_file)
+            except Exception:
+                pass
 
         # Only fetch missing days (incremental update)
-        print(f"   🚀 Fetching {len(missing_dates)} missing days...")
+        print(f"   🚀 Fetching {len(missing_dates)} missing Activity days...")
 
         report_views = {}  # Dictionary to store view counts per report_id
 
@@ -7749,6 +8340,20 @@ def get_report_usage(workspace_id):
         service_principal_token = scanner.get_access_token()
 
         if not service_principal_token:
+            # Fall back to whatever non-empty cache / catalog we still have
+            if cached_total_views > 0:
+                return jsonify({
+                    'success': True,
+                    'workspace_id': workspace_id,
+                    'days_analyzed': days_back,
+                    'report_views': cached_views,
+                    'last_viewed': cached_last,
+                    'source': 'activity_cache_stale',
+                    'note': 'Service principal token unavailable; serving Activity cache',
+                })
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage:
+                return jsonify(cat_usage)
             return jsonify({
                 'success': False,
                 'error': 'Unable to obtain service principal token for Activity Events API'
@@ -7971,64 +8576,79 @@ def get_report_usage(workspace_id):
                     date_str = current_date.strftime('%Y-%m-%d')
 
                     if error:
-                        # Only log significant errors (skip HTTP 400 - it's expected for days with no data)
+                        # Do NOT cache failed days — empty error days poison the 24h short-circuit
                         if "429" in str(error):
                             print(f"      ⚠️  {date_str}: Rate limit - {error}")
                         elif "400" not in str(error) and error != "HTTP 200":
                             print(f"      ⚠️  {date_str}: {error}")
-                    else:
-                        if day_views:
-                            print(f"      ✅ {date_str}: {sum(day_views.values())} views")
+                        continue
 
-                    # Store in new_daily_data for caching
+                    if day_views:
+                        print(f"      ✅ {date_str}: {sum(day_views.values())} views")
+
+                    # Successful API day (may legitimately have 0 views)
                     with views_lock:
                         new_daily_data[date_str] = {
-                            'report_views': day_views,
-                            'last_viewed': day_last_viewed
+                            'report_views': day_views or {},
+                            'last_viewed': day_last_viewed or {},
                         }
 
-        # Merge cached data + newly fetched data
+        # Merge only successfully fetched days into cache
+        if 'daily_data' not in persistent_cache or not isinstance(persistent_cache.get('daily_data'), dict):
+            persistent_cache['daily_data'] = {}
         persistent_cache['daily_data'].update(new_daily_data)
 
         # Aggregate from ALL data (cached + new)
-        for date_key, day_data in persistent_cache.get('daily_data', {}).items():
-            for report_id, count in day_data.get('report_views', {}).items():
-                report_views[report_id] = report_views.get(report_id, 0) + count
-
-            for report_id, view_info in day_data.get('last_viewed', {}).items():
-                if report_id not in last_viewed or view_info['timestamp'] > last_viewed[report_id]['timestamp']:
-                    last_viewed[report_id] = view_info
+        report_views, last_viewed = _aggregate_usage_days(persistent_cache.get('daily_data') or {})
 
         print(f"\n✅ Report usage summary:")
         print(f"   Total reports with views: {len(report_views)}")
-        print(f"   Total views across all reports: {sum(report_views.values())}")
+        print(f"   Total views across all reports: {sum(report_views.values()) if report_views else 0}")
 
         # Debug: Show sample of last viewed users to verify email resolution
         if last_viewed:
-            sample_users = list(set([info['user'] for info in last_viewed.values()]))[:5]
-            print(f"   📧 Sample users: {', '.join(sample_users)}")
+            sample_users = list(set([info.get('user', '') for info in last_viewed.values() if isinstance(info, dict)]))[:5]
+            print(f"   📧 Sample users: {', '.join(str(u) for u in sample_users if u)}")
+
+        total_views = sum(report_views.values()) if report_views else 0
+
+        # If live Activity Events produced nothing, fall back to catalog snapshot
+        if total_views == 0:
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage and (cat_usage.get("report_views") or cat_usage.get("last_viewed")):
+                print(
+                    f"   ↩️ Live Activity returned 0 views — serving catalog usage_snapshot "
+                    f"({len(cat_usage.get('report_views') or {})} reports)"
+                )
+                return jsonify(cat_usage)
 
         result = {
             'success': True,
             'workspace_id': workspace_id,
             'days_analyzed': days_back,
-            'report_views': report_views,  # Dictionary: {report_id: view_count}
-            'last_viewed': last_viewed,  # Dictionary: {report_id: {'timestamp': '...', 'user': '...'}}
-            'note': f'Activity data: {days_back} days (fetched {len(missing_dates)} new, loaded {len(cached_dates)} from cache)'
+            'report_views': report_views,
+            'last_viewed': last_viewed,
+            'source': 'activity_events',
+            'note': (
+                f'Activity data: {days_back} days '
+                f'(fetched {len(new_daily_data)} new, '
+                f'had {len(cached_dates)} cached days)'
+            ),
         }
 
-        # Save persistent cache to disk (survives app restarts)
-        persistent_cache['last_updated'] = datetime.now(timezone.utc).isoformat()
-        persistent_cache['workspace_id'] = workspace_id
-
-        try:
-            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-            with open(cache_file, 'w') as f:
-                json.dump(persistent_cache, f, indent=2)
-            print(f"   💾 Persistent cache saved: {cache_file}")
-            print(f"   ⚡ Next load will be INSTANT (if within 24 hours)")
-        except Exception as e:
-            print(f"   ⚠️ Cache save error: {e}")
+        # Save cache only when we have successful day data (avoid empty poison files)
+        if persistent_cache.get('daily_data'):
+            persistent_cache['last_updated'] = datetime.now(timezone.utc).isoformat()
+            persistent_cache['workspace_id'] = workspace_id
+            try:
+                os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(persistent_cache, f, indent=2)
+                print(f"   💾 Persistent cache saved: {cache_file}")
+            except Exception as e:
+                print(f"   ⚠️ Cache save error: {e}")
+        else:
+            print("   ℹ️ Skipping cache save (no successful Activity day buckets)")
 
         return jsonify(result)
 
@@ -8036,6 +8656,14 @@ def get_report_usage(workspace_id):
         print(f"❌ Error fetching report usage: {str(e)}")
         import traceback
         traceback.print_exc()
+        # Last-chance catalog fallback on unexpected errors
+        try:
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage:
+                cat_usage["note"] = (cat_usage.get("note") or "") + f" (fallback after error: {e})"
+                return jsonify(cat_usage)
+        except Exception:
+            pass
         return jsonify({
             'success': False,
             'error': str(e)
@@ -9404,28 +10032,36 @@ def api_archive_report_to_sharepoint():
         if not workspace_name:
             workspace_name = workspace_id[:8]
 
-        # Prefer user delegated token (same access as UI); fall back service principal
+        # Prefer user delegated token (same access as UI). Also acquire SP token as
+        # fallback — REST Export sometimes 500s on large PBIX with one principal
+        # and succeeds with the other (Service UI download uses a different path).
         token = None
+        sp_token = None
         try:
             token = get_user_powerbi_token()
         except Exception:
             token = None
+        try:
+            from scanner_connector import PowerBIScanner
+            sc = PowerBIScanner()
+            sp_token = sc.get_access_token()
+        except Exception as ex:
+            print(f"   ⚠️ SP token for export fallback unavailable: {ex}")
+            sp_token = None
         if not token:
-            try:
-                from scanner_connector import PowerBIScanner
-                sc = PowerBIScanner()
-                token = sc.get_access_token()
-            except Exception as ex:
-                return jsonify({
-                    'success': False,
-                    'error': f'Unable to obtain Power BI token: {ex}',
-                }), 401
+            token = sp_token
+        if not token:
+            return jsonify({
+                'success': False,
+                'error': 'Unable to obtain Power BI token for Export',
+            }), 401
 
         print(f"\n📦 ARCHIVE TO SHAREPOINT")
         print(f"   User: {email}")
         print(f"   Workspace: {workspace_name} ({workspace_id[:8]}…)")
         print(f"   Report: {report_name} ({report_id[:8]}…)")
         print(f"   PBI folder: {folder_name or '(root)'}")
+        print(f"   Tokens: user={'yes' if token and token != sp_token else 'no'} sp={'yes' if sp_token else 'no'}")
 
         result = archive_report_to_sharepoint(
             access_token=token,
@@ -9435,6 +10071,7 @@ def api_archive_report_to_sharepoint():
             report_name=report_name,
             folder_name=folder_name,
             folder_id=folder_id,
+            fallback_token=sp_token if (sp_token and sp_token != token) else None,
         )
         if result.get('success'):
             print(f"   ✅ ARCHIVE OK → {result.get('remotePath')}")

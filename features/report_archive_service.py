@@ -132,86 +132,251 @@ def _guess_ext(content_type: str, content_disp: str, report_name: str) -> str:
     return ".pbix"
 
 
+def _parse_export_error_body(resp: requests.Response) -> str:
+    """Best-effort parse of Power BI Export error payload."""
+    detail = (getattr(resp, "text", None) or "")[:800]
+    try:
+        j = resp.json()
+    except Exception:
+        return detail or f"HTTP {getattr(resp, 'status_code', '?')}"
+    if not isinstance(j, dict):
+        return detail
+    # Shapes: {Message}, {error:{message,code,pbi.error}}, {error:{message}}
+    if j.get("Message"):
+        detail = str(j.get("Message"))
+    err = j.get("error") or j
+    if isinstance(err, dict):
+        detail = (
+            err.get("message")
+            or err.get("Message")
+            or err.get("code")
+            or detail
+        )
+        pe = err.get("pbi.error") or err.get("pbiError")
+        if isinstance(pe, dict):
+            detail = pe.get("message") or pe.get("code") or detail
+            details = pe.get("details")
+            if isinstance(details, list) and details:
+                bits = []
+                for d in details[:3]:
+                    if isinstance(d, dict):
+                        bits.append(
+                            str(d.get("message") or d.get("detail") or d.get("code") or d)
+                        )
+                    else:
+                        bits.append(str(d))
+                if bits:
+                    detail = f"{detail} ({'; '.join(bits)})"
+    return str(detail or "")[:600]
+
+
+def _export_once(
+    access_token: str,
+    url: str,
+    *,
+    timeout: int,
+    attempt: int,
+    max_attempts: int,
+) -> Dict[str, Any]:
+    """Single streaming Export attempt."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/zip, application/octet-stream, application/xml, */*",
+        # Avoid intermediate caches on App Service / proxies
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    print(f"   ⬇️ Export GET attempt {attempt}/{max_attempts}: {url}")
+    try:
+        # Stream large PBIX — buffering whole body can OOM / break on App Service
+        with requests.get(
+            url,
+            headers=headers,
+            timeout=(60, timeout),
+            stream=True,
+        ) as resp:
+            status = resp.status_code
+            if status != 200:
+                # Consume a little of the body for the error message
+                try:
+                    # Prefer decoded text for JSON errors (small)
+                    _ = resp.content  # materialize small error body
+                except Exception:
+                    pass
+                detail = _parse_export_error_body(resp)
+                print(f"   ❌ Export HTTP {status}: {detail[:300]}")
+                return {
+                    "ok": False,
+                    "error": f"Export HTTP {status}: {detail}",
+                    "status_code": status,
+                    "retryable": status in (408, 429, 500, 502, 503, 504),
+                }
+
+            chunks: list[bytes] = []
+            total = 0
+            # 1 MB chunks; no hard cap — large models can exceed 1GB
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+                if total and total % (25 * 1024 * 1024) < 1024 * 1024:
+                    print(f"      … downloaded {total / (1024 * 1024):.1f} MB")
+
+            content = b"".join(chunks)
+            if not content:
+                print("   ❌ Export empty body")
+                return {
+                    "ok": False,
+                    "error": "Export returned empty body",
+                    "status_code": 200,
+                    "retryable": True,
+                }
+
+            ctype = resp.headers.get("Content-Type") or ""
+            cdisp = resp.headers.get("Content-Disposition") or ""
+            print(
+                f"   ✅ Export OK bytes={len(content)} "
+                f"type={ctype} disp={cdisp[:80]}"
+            )
+            return {
+                "ok": True,
+                "content": content,
+                "content_type": ctype,
+                "content_disposition": cdisp,
+                "status_code": 200,
+            }
+    except requests.Timeout:
+        print(f"   ❌ Export timed out after {timeout}s")
+        return {
+            "ok": False,
+            "error": (
+                f"Export timed out after {timeout}s. "
+                "Large reports can take several minutes — retry or download from Power BI Service."
+            ),
+            "status_code": 0,
+            "retryable": True,
+        }
+    except requests.RequestException as ex:
+        print(f"   ❌ Export request error: {ex}")
+        return {
+            "ok": False,
+            "error": f"Export request failed: {ex}",
+            "status_code": 0,
+            "retryable": True,
+        }
+
+
 def export_report_bytes(
     access_token: str,
     workspace_id: str,
     report_id: str,
-    timeout: int = 300,
+    timeout: int = 900,
+    max_attempts: int = 3,
+    fallback_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Download report binary via Power BI Export API.
+    Download report binary via Power BI Export API with retries + streaming.
+
+    Power BI Service UI download uses a different pipeline than REST Export;
+    REST occasionally returns generic HTTP 500 for large / flaky models.
+    We retry transient failures and optionally try a second token (SP vs user).
+
     Returns {ok, content, content_type, content_disposition, error, status_code}.
     """
+    import time as _time
+
+    # Allow env override for very large reports on slow networks
+    try:
+        timeout = int(os.getenv("PBI_EXPORT_TIMEOUT_SEC") or timeout)
+    except ValueError:
+        pass
+    try:
+        max_attempts = int(os.getenv("PBI_EXPORT_MAX_ATTEMPTS") or max_attempts)
+    except ValueError:
+        pass
+    max_attempts = max(1, min(max_attempts, 5))
+    timeout = max(120, timeout)
+
     url = (
         f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}"
         f"/reports/{report_id}/Export"
     )
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/zip, application/octet-stream, */*",
-    }
-    print(f"   ⬇️ Export GET {url}")
-    try:
-        # connect timeout short; read can be large for PBIX
-        resp = requests.get(url, headers=headers, timeout=(30, timeout))
-    except requests.Timeout:
-        print("   ❌ Export timed out")
-        return {
-            "ok": False,
-            "error": f"Export timed out after {timeout}s. Report may be too large or API hung.",
-            "status_code": 0,
-        }
-    except requests.RequestException as ex:
-        print(f"   ❌ Export request error: {ex}")
-        return {"ok": False, "error": f"Export request failed: {ex}", "status_code": 0}
 
-    if resp.status_code != 200:
-        detail = (resp.text or "")[:600]
-        # Prefer Power BI JSON error message when present
-        try:
-            j = resp.json()
-            err = j.get("error") or j
-            if isinstance(err, dict):
-                detail = err.get("message") or err.get("code") or detail
-                if err.get("pbi.error"):
-                    pe = err["pbi.error"]
-                    detail = pe.get("message") or pe.get("code") or detail
-        except Exception:
-            pass
-        print(f"   ❌ Export HTTP {resp.status_code}: {detail[:300]}")
-        hint = ""
-        if resp.status_code in (401, 403):
-            hint = " Check Report.Read.All + Dataset.Read.All and workspace access."
-        elif resp.status_code == 404:
-            hint = " Report not found or Export not supported for this item type."
-        elif resp.status_code == 400:
-            hint = (
-                " Often blocked for live/DirectQuery-only downloads, "
-                "sensitivity labels, or reports that cannot be downloaded as PBIX."
+    tokens: list[tuple[str, str]] = []
+    if access_token:
+        tokens.append(("primary", access_token))
+    if fallback_token and fallback_token != access_token:
+        tokens.append(("fallback", fallback_token))
+
+    if not tokens:
+        return {"ok": False, "error": "No access token for Export", "status_code": 0}
+
+    last: Dict[str, Any] = {"ok": False, "error": "Export failed", "status_code": 0}
+
+    for token_label, token in tokens:
+        for attempt in range(1, max_attempts + 1):
+            result = _export_once(
+                token,
+                url,
+                timeout=timeout,
+                attempt=attempt,
+                max_attempts=max_attempts,
             )
-        return {
-            "ok": False,
-            "error": f"Export HTTP {resp.status_code}: {detail}{hint}",
-            "status_code": resp.status_code,
-        }
+            if result.get("ok"):
+                if token_label != "primary" or attempt > 1:
+                    result["via"] = f"{token_label}/attempt{attempt}"
+                return result
 
-    content = resp.content or b""
-    if not content:
-        print("   ❌ Export empty body")
-        return {"ok": False, "error": "Export returned empty body", "status_code": 200}
+            last = result
+            status = int(result.get("status_code") or 0)
+            retryable = bool(result.get("retryable"))
 
-    print(
-        f"   ✅ Export OK bytes={len(content)} "
-        f"type={resp.headers.get('Content-Type')} "
-        f"disp={(resp.headers.get('Content-Disposition') or '')[:80]}"
-    )
-    return {
-        "ok": True,
-        "content": content,
-        "content_type": resp.headers.get("Content-Type") or "",
-        "content_disposition": resp.headers.get("Content-Disposition") or "",
-        "status_code": 200,
-    }
+            # Auth failures: try fallback token immediately (don't burn retries)
+            if status in (401, 403):
+                print(f"   ⚠️ Export auth failed with {token_label} token (HTTP {status})")
+                break
+
+            # Permanent client errors (except flaky 400s on some large models)
+            if status == 404:
+                break
+            if status == 400 and attempt >= 2:
+                break
+
+            if not retryable and status not in (0, 400, 500):
+                break
+
+            if attempt < max_attempts:
+                # Backoff: 2s, 5s, 10s…
+                delay = min(30, 2 * (2 ** (attempt - 1))) + (attempt * 0.5)
+                print(f"   🔁 Retrying export in {delay:.1f}s (token={token_label})…")
+                _time.sleep(delay)
+
+    # Enrich final error with actionable hints
+    status = int(last.get("status_code") or 0)
+    detail = last.get("error") or "Export failed"
+    hint = ""
+    if status in (401, 403):
+        hint = (
+            " Check Report.Read.All + Dataset.Read.All (delegated) and workspace Member/"
+            "Contributor access. Download in Service uses your interactive session."
+        )
+    elif status == 404:
+        hint = " Report not found or Export not supported for this item type."
+    elif status == 400:
+        hint = (
+            " Often blocked for live/DirectQuery-only, CDM, sensitivity labels, "
+            "or reports that cannot be downloaded as PBIX via REST."
+        )
+    elif status == 500 or status == 0:
+        hint = (
+            " Power BI REST Export returned a transient/server error (common on large "
+            "PBIX). Retries exhausted. Try again later, or download from Power BI Service "
+            "File → Download this file (uses a different pipeline)."
+        )
+    last["error"] = f"{detail}{hint}"
+    last["hint"] = hint.strip() if hint else last.get("hint")
+    return last
 
 
 def resolve_decomm_latest_folder(sp_client) -> Dict[str, Any]:
@@ -258,6 +423,8 @@ def archive_report_to_sharepoint(
     report_name: str,
     folder_name: Optional[str] = None,
     folder_id: Optional[str] = None,
+    fallback_token: Optional[str] = None,
+    export_timeout: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Export report from Power BI and upload under:
@@ -266,6 +433,9 @@ def archive_report_to_sharepoint(
     folder_name: PBI workspace folder display name (optional).
     Does not create the dated batch root — uses the newest existing child.
     Creates workspace (and optional PBI folder) under that batch if missing.
+
+    fallback_token: optional second Power BI token (e.g. service principal when
+    primary is user-delegated) used if Export fails with auth/transient errors.
     """
     from catalog_service.metadata_lib.sharepoint_client import SharePointClient
 
@@ -274,9 +444,21 @@ def archive_report_to_sharepoint(
     if not workspace_id or not report_id:
         return {"success": False, "error": "workspace_id and report_id are required"}
 
-    # 1) Export binary
+    # 1) Export binary (streamed + retries; dual-token when provided)
     print(f"   ⬇️ Starting Power BI Export for report {report_id[:8]}…")
-    exp = export_report_bytes(access_token, workspace_id, report_id)
+    timeout = 900
+    if export_timeout:
+        try:
+            timeout = int(export_timeout)
+        except (TypeError, ValueError):
+            pass
+    exp = export_report_bytes(
+        access_token,
+        workspace_id,
+        report_id,
+        timeout=timeout,
+        fallback_token=fallback_token,
+    )
     if not exp.get("ok"):
         err = exp.get("error") or "Export failed"
         print(f"   ❌ Archive aborted at export: {err}")
@@ -285,9 +467,10 @@ def archive_report_to_sharepoint(
             "error": err,
             "status_code": exp.get("status_code"),
             "stage": "export",
-            "hint": (
+            "hint": exp.get("hint") or (
                 "Export can fail for live-connected reports, sensitivity labels, "
-                "or missing Report.Read.All + Dataset.Read.All."
+                "large PBIX (REST 500), or missing Report.Read.All + Dataset.Read.All. "
+                "Service UI download uses a different pipeline and may still work."
             ),
         }
 
