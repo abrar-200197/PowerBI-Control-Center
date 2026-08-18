@@ -122,29 +122,100 @@ def clean_sharepoint_latest(names: Optional[List[str]] = None) -> List[str]:
 
 
 def load_catalog_from_sharepoint() -> dict:
-    """Force-load workspace_catalog.json from SharePoint (no local)."""
+    """
+    Force-load workspace_catalog.json from SharePoint.
+
+    Uses SharePointClient.download_file directly (handles Graph size=0 via
+    streaming GET). Falls back to CatalogService disk/SP path if needed.
+    """
     if not cfg.sharepoint_configured():
         raise RuntimeError("SharePoint is not configured (SHAREPOINT_* env vars).")
-    from catalog_service import catalog_service
 
-    catalog_service.invalidate()
-    cat = catalog_service.get_workspace_catalog(force_refresh=True)
-    if not cat:
+    cfg.validate_sharepoint_config()
+    from catalog_service.metadata_lib.sharepoint_client import SharePointClient
+
+    remote = f"{sharepoint_latest_remote()}/workspace_catalog.json"
+    sp = SharePointClient()
+    sp.resolve_site_and_drive()
+    print(f"Downloading catalog from SharePoint: {remote}")
+    try:
+        raw = sp.download_file(remote, max_attempts=3, timeout=1800)
+    except FileNotFoundError as exc:
         raise FileNotFoundError(
-            "SharePoint latest/workspace_catalog.json missing.\n"
+            "SharePoint latest/workspace_catalog.json missing (404).\n"
             "Run a fresh extract first:\n"
-            "  python run_catalog_extract.py --fresh -v"
+            "  python run_catalog_extract.py --fresh -v\n"
+            f"Detail: {exc}"
+        ) from exc
+    except Exception as exc:
+        # Last try via CatalogService (disk mirror / alternate path)
+        print(f"  direct download failed ({exc}); trying CatalogService…")
+        try:
+            from catalog_service import catalog_service
+            catalog_service.invalidate()
+            cat = catalog_service.get_workspace_catalog(force_refresh=True)
+            if cat:
+                print("Loaded workspace_catalog.json via CatalogService fallback")
+                return cat
+        except Exception as exc2:
+            print(f"  CatalogService fallback also failed: {exc2}")
+        raise FileNotFoundError(
+            "SharePoint latest/workspace_catalog.json could not be downloaded.\n"
+            "Graph may report size=0 for a corrupt/empty upload, or the file is missing.\n"
+            "Run a fresh extract:\n"
+            "  python run_catalog_extract.py --fresh -v\n"
+            f"Detail: {exc}"
+        ) from exc
+
+    if not raw or len(raw) < 50:
+        raise FileNotFoundError(
+            f"SharePoint workspace_catalog.json is empty/tiny ({len(raw or b'')} bytes). "
+            "File is corrupt — run: python run_catalog_extract.py --fresh -v"
         )
-    print("Loaded workspace_catalog.json from SharePoint")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8-sig")
+    cat = json.loads(text)
+    if not isinstance(cat, dict) or not (cat.get("workspaces") or cat.get("datasets")):
+        raise FileNotFoundError(
+            "SharePoint workspace_catalog.json parsed but has no workspaces/datasets. "
+            "Run: python run_catalog_extract.py --fresh -v"
+        )
+    print(
+        f"Loaded workspace_catalog.json from SharePoint "
+        f"({len(raw) / (1024 * 1024):.1f} MB, "
+        f"workspaces={len(cat.get('workspaces') or [])})"
+    )
     return cat
 
 
-def publish_temp_latest(latest_dir: Path, *, include_inventory: bool = False) -> None:
-    """Clean SharePoint latest/ then upload from temp latest/. """
+def publish_temp_latest(
+    latest_dir: Path,
+    *,
+    include_inventory: bool = False,
+    clean_first: bool = True,
+) -> None:
+    """
+    Upload temp latest/ JSON to SharePoint latest/.
+
+    clean_first=True  → wipe named/JSON then upload (use on --fresh).
+    clean_first=False → overlay only files produced this run (safer for --ops-only
+    so a partial ops run cannot wipe workspace_catalog / impact packs).
+    """
     cfg.validate_sharepoint_config()
     from catalog_service.metadata_lib.sharepoint_client import SharePointClient
 
     names = publish_names(include_inventory=include_inventory)
+    # Also publish thin UI packs if present
+    for thin in (
+        "ui_home_index.json",
+        "ui_impact_tables.json",
+        "ui_impact_reports.json",
+        "ui_report_directory.json",
+    ):
+        if thin not in names:
+            names.append(thin)
     existing = [n for n in names if (latest_dir / n).is_file()]
     missing = [n for n in names if n not in existing]
     if missing:
@@ -154,12 +225,15 @@ def publish_temp_latest(latest_dir: Path, *, include_inventory: bool = False) ->
 
     remote = sharepoint_latest_remote()
     sp = SharePointClient()
-    print(f"Publishing temp -> SharePoint {remote}")
+    print(
+        f"Publishing temp -> SharePoint {remote} "
+        f"(clean_first={clean_first}, files={len(existing)})"
+    )
     results = sp.replace_directory(
         latest_dir,
         remote_folder=remote,
         names=existing,
-        clean_first=True,
+        clean_first=clean_first,
     )
     for r in results:
         print(" ", r.get("webUrl") or r.get("remote") or r)
@@ -339,8 +413,13 @@ def main(argv=None) -> int:
         except Exception as exc:
             print(f"WARNING: thin pack build failed (UI can fall back): {exc}")
 
-        # Always publish then drop temp
-        publish_temp_latest(latest, include_inventory=args.include_inventory)
+        # Fresh: wipe then replace. Ops-only: overlay produced files only so a
+        # partial ops run cannot delete workspace_catalog / impact packs.
+        publish_temp_latest(
+            latest,
+            include_inventory=args.include_inventory,
+            clean_first=bool(args.fresh) or not args.ops_only,
+        )
         print("Published to SharePoint latest/ (source of truth).")
         return 0
     except Exception:

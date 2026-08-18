@@ -482,39 +482,58 @@ class SharePointClient:
             content_url = graph_url
             use_preauth = False
 
-        # Graph occasionally returns size=0/missing on large driveItems. Fall back
-        # to a single streaming GET (no Range) rather than failing hard — disk
-        # mirror recovery in CatalogService still covers the worst case.
+        # Graph occasionally returns size=0/missing on large driveItems (still HTTP 200
+        # on meta). Prefer Content-Length from the content response; stream body.
         if expected <= 0:
             logger.warning(
                 "driveItem size missing/zero for %s — streaming full GET (mode=%s)",
                 remote_relative, mode,
             )
-            headers: Dict[str, str] = {}
+            headers: Dict[str, str] = {"Accept-Encoding": "identity"}
             if not use_preauth:
                 headers.update(self.auth.headers())
             resp = requests.get(
                 content_url,
                 headers=headers,
-                timeout=timeout,
+                timeout=(60, timeout),
                 stream=True,
             )
-            if resp.status_code >= 400:
-                raise IOError(
-                    f"Stream download HTTP {resp.status_code} for {remote_relative}: "
-                    f"{(resp.text or '')[:200]}"
+            try:
+                if resp.status_code >= 400:
+                    raise IOError(
+                        f"Stream download HTTP {resp.status_code} for {remote_relative}: "
+                        f"{(resp.text or '')[:200]}"
+                    )
+                # Trust Content-Length when Graph driveItem.size lied
+                try:
+                    cl = int(resp.headers.get("Content-Length") or 0)
+                except ValueError:
+                    cl = 0
+                buf = bytearray()
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        buf.extend(chunk)
+                if not buf:
+                    raise IOError(
+                        f"Empty stream download for {remote_relative} "
+                        f"(Graph size=0 — file may be corrupt/empty on SharePoint; "
+                        f"re-run extract --fresh)"
+                    )
+                if cl and len(buf) != cl:
+                    raise IOError(
+                        f"Stream size mismatch for {remote_relative}: "
+                        f"got {len(buf)}, Content-Length {cl}"
+                    )
+                logger.info(
+                    "Downloaded %s (%.1f MB, mode=%s, size-unknown stream, cl=%s)",
+                    remote_relative, len(buf) / (1024 * 1024), mode, cl or "n/a",
                 )
-            buf = bytearray()
-            for chunk in resp.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    buf.extend(chunk)
-            if not buf:
-                raise IOError(f"Empty stream download for {remote_relative}")
-            logger.info(
-                "Downloaded %s (%.1f MB, mode=%s, size-unknown stream)",
-                remote_relative, len(buf) / (1024 * 1024), mode,
-            )
-            return bytes(buf)
+                return bytes(buf)
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
 
         # Small files: single GET
         if expected <= chunk_size:

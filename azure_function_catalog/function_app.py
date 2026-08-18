@@ -130,6 +130,29 @@ def catalog_extract_timer(mytimer: func.TimerRequest) -> None:
         logger.exception("Catalog extract failed to start")
         raise
 
+    # If ops-only cannot load workspace_catalog (empty/size-0/missing on SP),
+    # auto-escalate to a full Scanner rebuild once. Opt out with
+    # CATALOG_AUTO_FRESH_ON_OPS_FAIL=false
+    auto_fresh = os.getenv("CATALOG_AUTO_FRESH_ON_OPS_FAIL", "true").lower() in (
+        "1", "true", "yes", "y",
+    )
+    if code != 0 and mode == "ops-only" and auto_fresh:
+        logger.warning(
+            "ops-only failed (exit=%s) — auto-escalating to --fresh once "
+            "(set CATALOG_AUTO_FRESH_ON_OPS_FAIL=false to disable)",
+            code,
+        )
+        verbose = os.getenv("CATALOG_EXTRACT_VERBOSE", "true").lower() in (
+            "1", "true", "yes", "y",
+        )
+        fresh_argv = ["--fresh"] + (["-v"] if verbose else [])
+        try:
+            code = run_extract(fresh_argv)
+            mode = "fresh-after-ops-fail"
+        except Exception:
+            logger.exception("Auto-fresh extract failed to start")
+            raise
+
     if code != 0:
         raise RuntimeError(
             f"run_catalog_extract exited with code {code} (mode={mode})"
