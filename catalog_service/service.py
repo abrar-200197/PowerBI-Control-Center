@@ -1482,41 +1482,50 @@ class CatalogService:
             sp = SharePointClient()
             sp.resolve_site_and_drive()
             remote = self._remote_path(name)
-            sp_meta = sp.get_item_meta(remote)
-            sp_size = int(sp_meta.get("size") or 0)
-            sp_mod = sp_meta.get("lastModifiedDateTime") or ""
-
             disk = self._disk_path(name)
             meta_file = self._meta_path(name)
             now = time.time()
-            checked = _disk_checked_at.get(name, 0)
+
+            sp_meta: Dict[str, Any] = {}
+            sp_size = 0
+            sp_mod = ""
+            try:
+                sp_meta = sp.get_item_meta(remote) or {}
+                sp_size = int(sp_meta.get("size") or 0)
+                sp_mod = sp_meta.get("lastModifiedDateTime") or ""
+            except Exception as meta_exc:
+                # Graph sometimes fails meta for large files; still try disk / download
+                logger.warning("Catalog meta failed for %s: %s", name, meta_exc)
 
             use_disk = False
-            if (
-                not force_refresh
-                and disk.is_file()
-                and sp_size > 0
-                and disk.stat().st_size == sp_size
-            ):
-                # If we revalidated recently, trust disk without another Graph hit next time
-                # (we already hit Graph for meta this call).
-                use_disk = True
-                # Optional: also verify sidecar meta matches
-                try:
-                    if meta_file.is_file():
-                        side = json.loads(meta_file.read_text(encoding="utf-8"))
-                        if int(side.get("size") or 0) != sp_size:
-                            use_disk = False
-                except Exception:
-                    pass
+            if not force_refresh and disk.is_file() and disk.stat().st_size > 0:
+                if sp_size > 0 and disk.stat().st_size == sp_size:
+                    use_disk = True
+                    try:
+                        if meta_file.is_file():
+                            side = json.loads(meta_file.read_text(encoding="utf-8"))
+                            if int(side.get("size") or 0) not in (0, sp_size):
+                                use_disk = False
+                    except Exception:
+                        pass
+                elif sp_size <= 0:
+                    # Graph returned size missing/zero (common flaky case). Prefer a
+                    # non-empty local mirror over a doomed ranged download.
+                    use_disk = True
+                    logger.warning(
+                        "Catalog %s: SP size missing/zero — using disk mirror (%.1f MB)",
+                        name,
+                        disk.stat().st_size / (1024 * 1024),
+                    )
 
             if use_disk:
                 data = self._read_disk_json(name)
                 if data is not None:
                     _disk_checked_at[name] = now
                     logger.info(
-                        "Catalog %s loaded from disk mirror (%.1f MB, sp_size match)",
-                        name, sp_size / (1024 * 1024),
+                        "Catalog %s loaded from disk mirror (%.1f MB)",
+                        name,
+                        disk.stat().st_size / (1024 * 1024),
                     )
                     return data, "disk-mirror"
 
@@ -1534,8 +1543,10 @@ class CatalogService:
             if not isinstance(data, dict):
                 raise ValueError(f"{name} root JSON is {type(data).__name__}, expected object")
 
-            # Persist verified mirror + sidecar
-            self._write_disk_mirror(name, raw, sp_size=sp_size, sp_modified=sp_mod)
+            # Persist verified mirror + sidecar (use actual length when meta size is 0)
+            self._write_disk_mirror(
+                name, raw, sp_size=(sp_size or len(raw)), sp_modified=sp_mod
+            )
             _disk_checked_at[name] = now
             logger.info(
                 "Catalog %s loaded from SharePoint (%.1f MB verified) → disk mirror",

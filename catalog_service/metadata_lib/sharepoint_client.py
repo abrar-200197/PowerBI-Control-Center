@@ -454,8 +454,6 @@ class SharePointClient:
     ) -> bytes:
         meta = self.get_item_meta(remote_relative)
         expected = int(meta.get("size") or 0)
-        if expected <= 0:
-            raise IOError(f"driveItem size missing/zero for {remote_relative}")
 
         graph_url = f"{GRAPH}/drives/{self._drive_id}/root:/{quote(remote_relative)}:/content"
         download_url = meta.get("@microsoft.graph.downloadUrl")
@@ -467,6 +465,40 @@ class SharePointClient:
         else:
             content_url = graph_url
             use_preauth = False
+
+        # Graph occasionally returns size=0/missing on large driveItems. Fall back
+        # to a single streaming GET (no Range) rather than failing hard — disk
+        # mirror recovery in CatalogService still covers the worst case.
+        if expected <= 0:
+            logger.warning(
+                "driveItem size missing/zero for %s — streaming full GET (mode=%s)",
+                remote_relative, mode,
+            )
+            headers: Dict[str, str] = {}
+            if not use_preauth:
+                headers.update(self.auth.headers())
+            resp = requests.get(
+                content_url,
+                headers=headers,
+                timeout=timeout,
+                stream=True,
+            )
+            if resp.status_code >= 400:
+                raise IOError(
+                    f"Stream download HTTP {resp.status_code} for {remote_relative}: "
+                    f"{(resp.text or '')[:200]}"
+                )
+            buf = bytearray()
+            for chunk in resp.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    buf.extend(chunk)
+            if not buf:
+                raise IOError(f"Empty stream download for {remote_relative}")
+            logger.info(
+                "Downloaded %s (%.1f MB, mode=%s, size-unknown stream)",
+                remote_relative, len(buf) / (1024 * 1024), mode,
+            )
+            return bytes(buf)
 
         # Small files: single GET
         if expected <= chunk_size:

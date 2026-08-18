@@ -8122,17 +8122,114 @@ def export_inactive_reports(workspace_id):
         return jsonify({'error': str(e)}), 500
 
 
+def _usage_cache_path(workspace_id: str) -> str:
+    """Disk path for per-workspace Activity Events day cache."""
+    root = (os.getenv("USAGE_CACHE_DIR") or "").strip()
+    if not root:
+        # Prefer durable App Service path; fall back to repo-local .usage_cache
+        if os.getenv("WEBSITE_HOSTNAME"):
+            root = os.path.join("/home", "data", "usage_cache")
+        else:
+            root = os.path.join(os.getcwd(), ".usage_cache")
+    return os.path.join(root, f"usage_{workspace_id}.json")
+
+
+def _aggregate_usage_days(daily_data: dict):
+    """Sum report_views / last_viewed across day buckets."""
+    report_views = {}
+    last_viewed = {}
+    for _date_key, day_data in (daily_data or {}).items():
+        if not isinstance(day_data, dict):
+            continue
+        for report_id, count in (day_data.get("report_views") or {}).items():
+            try:
+                report_views[report_id] = report_views.get(report_id, 0) + int(count or 0)
+            except (TypeError, ValueError):
+                continue
+        for report_id, view_info in (day_data.get("last_viewed") or {}).items():
+            if not isinstance(view_info, dict):
+                continue
+            ts = view_info.get("timestamp") or ""
+            prev = last_viewed.get(report_id)
+            if not prev or ts > (prev.get("timestamp") or ""):
+                last_viewed[report_id] = view_info
+    return report_views, last_viewed
+
+
+def _usage_from_catalog_snapshot(workspace_id: str = None):
+    """
+    Fast path: precomputed usage_snapshot.json (ops extract).
+    Tenant-wide report_views / last_viewed — optionally filtered to workspace
+    report ids when known. Returns None when snapshot unavailable.
+    """
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return None
+    try:
+        snap = catalog_service.get_json("usage_snapshot.json")
+    except Exception as exc:
+        print(f"   ⚠️ Catalog usage_snapshot unavailable: {exc}")
+        return None
+    if not isinstance(snap, dict):
+        return None
+    report_views = snap.get("report_views") if isinstance(snap.get("report_views"), dict) else {}
+    last_viewed = snap.get("last_viewed") if isinstance(snap.get("last_viewed"), dict) else {}
+    if not report_views and not last_viewed:
+        return None
+
+    # Optionally narrow to reports present in this workspace (catalog or thin pack)
+    ws_report_ids = None
+    if workspace_id:
+        try:
+            pack = catalog_service.get_workspace_reports(workspace_id)
+            if pack and isinstance(pack.get("reports"), list):
+                ws_report_ids = {
+                    str(r.get("id") or r.get("reportId") or "").lower()
+                    for r in pack["reports"]
+                    if (r.get("id") or r.get("reportId"))
+                }
+                ws_report_ids.discard("")
+        except Exception:
+            ws_report_ids = None
+
+    if ws_report_ids:
+        # Keep original casing from snapshot keys
+        report_views = {
+            rid: cnt for rid, cnt in report_views.items()
+            if str(rid).lower() in ws_report_ids
+        }
+        last_viewed = {
+            rid: info for rid, info in last_viewed.items()
+            if str(rid).lower() in ws_report_ids
+        }
+
+    days = int(snap.get("lookbackDays") or os.getenv("USAGE_LOOKBACK_DAYS", "60") or 60)
+    return {
+        "success": True,
+        "workspace_id": workspace_id,
+        "days_analyzed": days,
+        "report_views": report_views,
+        "last_viewed": last_viewed,
+        "source": "catalog_usage_snapshot",
+        "generatedAt": snap.get("generatedAt"),
+        "note": (
+            f"Catalog usage snapshot"
+            f"{(' @ ' + str(snap.get('generatedAt'))) if snap.get('generatedAt') else ''}"
+            f" ({len(report_views)} reports with views)"
+        ),
+    }
+
+
 @app.route('/api/report-usage/<workspace_id>')
 @login_required
 def get_report_usage(workspace_id):
     """
-    Get report usage metrics (view counts) for the last 60 days using Activity Events API
-    Returns view counts per report AND last viewed info (user + timestamp)
+    Get report usage metrics (view counts) for the last 60 days.
 
-    NOTE: This endpoint requires service principal authentication with Power BI Admin permissions.
-    User-delegated tokens are not supported by the Activity Events API.
-
-    If admin permissions are not available, returns graceful N/A values.
+    Priority:
+      1) Catalog usage_snapshot.json (ops extract — fast, reliable)
+      2) Non-empty per-workspace Activity Events day cache (< 24h)
+      3) Live Admin Activity Events fetch (service principal)
+      4) Stale / empty cache last resort
     """
     try:
         from datetime import datetime, timedelta, timezone
@@ -8140,69 +8237,100 @@ def get_report_usage(workspace_id):
         from scanner_connector import PowerBIScanner
 
         print(f"\n📊 FETCHING REPORT USAGE METRICS FOR WORKSPACE: {workspace_id}")
-        print(f"   ⚠️  NOTE: This requires Service Principal to have Power BI Admin role")
+        print(f"   ⚠️  NOTE: Live Activity Events requires Service Principal with Power BI Admin role")
 
-        # === PERSISTENT CACHE IMPLEMENTATION (like usage_tracker_90day.py) ===
-        # Load persistent cache from disk
-        cache_file = os.path.join(".usage_cache", f"usage_{workspace_id}.json")
+        days_back = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))  # default 60-day views
+        max_workers = 30
+        force_live = str(request.args.get("force") or request.args.get("refresh") or "").strip().lower() in (
+            "1", "true", "yes", "live"
+        )
+
+        # --- 1) Catalog snapshot first (instant, pre-aggregated by ops job) ---
+        if not force_live:
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage and (
+                cat_usage.get("report_views") or cat_usage.get("last_viewed")
+            ):
+                print(
+                    f"   ✅ Using catalog usage_snapshot "
+                    f"({len(cat_usage.get('report_views') or {})} reports, "
+                    f"generatedAt={cat_usage.get('generatedAt')})"
+                )
+                return jsonify(cat_usage)
+
+        # === PERSISTENT CACHE (Activity Events incremental) ===
+        cache_file = _usage_cache_path(workspace_id)
         persistent_cache = {'daily_data': {}, 'last_updated': None}
 
         if os.path.exists(cache_file):
             try:
-                with open(cache_file, 'r') as f:
+                with open(cache_file, 'r', encoding='utf-8') as f:
                     persistent_cache = json.load(f)
-                    print(f"   📂 Loaded persistent cache from disk")
+                    print(f"   📂 Loaded persistent cache from disk: {cache_file}")
             except Exception as e:
                 print(f"   ⚠️ Cache load error: {e}")
         else:
-            print(f"   🔍 No persistent cache found, will fetch all 60 days")
+            print(f"   🔍 No persistent cache found at {cache_file}")
 
-        # Determine which days are missing from cache
-        days_back = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))  # default 60-day views
-        max_workers = 30
-
-        cached_dates = set(persistent_cache.get('daily_data', {}).keys())
+        cached_dates = set((persistent_cache.get('daily_data') or {}).keys())
         all_dates_needed = [
             (datetime.now(timezone.utc) - timedelta(days=i)).strftime('%Y-%m-%d')
             for i in range(days_back)
         ]
         missing_dates = [d for d in all_dates_needed if d not in cached_dates]
 
-        print(f"   📅 Period: {days_back} days | Cached: {len(cached_dates)} | To fetch: {len(missing_dates)}")
+        cached_views, cached_last = _aggregate_usage_days(persistent_cache.get('daily_data') or {})
+        cached_total_views = sum(cached_views.values()) if cached_views else 0
+        print(
+            f"   📅 Period: {days_back} days | Cached days: {len(cached_dates)} | "
+            f"Missing: {len(missing_dates)} | Cached views: {cached_total_views}"
+        )
 
-        # If all data is cached and fresh (within 24 hours), return immediately
+        # Only short-circuit on cache when it actually has view data (avoid empty poison).
         last_updated = persistent_cache.get('last_updated')
-        if last_updated and len(missing_dates) == 0:
-            last_updated_dt = datetime.fromisoformat(last_updated)
-            cache_age_hours = (datetime.now(timezone.utc) - last_updated_dt).total_seconds() / 3600
+        if (
+            not force_live
+            and last_updated
+            and len(missing_dates) == 0
+            and cached_total_views > 0
+        ):
+            try:
+                last_updated_dt = datetime.fromisoformat(last_updated)
+                if last_updated_dt.tzinfo is None:
+                    last_updated_dt = last_updated_dt.replace(tzinfo=timezone.utc)
+                cache_age_hours = (datetime.now(timezone.utc) - last_updated_dt).total_seconds() / 3600
+            except Exception:
+                cache_age_hours = 999
 
             if cache_age_hours < 24:
-                print(f"   ✅ Using cached data (age: {cache_age_hours:.1f} hours, 0 days to fetch)")
-
-                # Aggregate from cache
-                report_views = {}
-                last_viewed = {}
-
-                for date_key, day_data in persistent_cache.get('daily_data', {}).items():
-                    for report_id, count in day_data.get('report_views', {}).items():
-                        report_views[report_id] = report_views.get(report_id, 0) + count
-
-                    for report_id, view_info in day_data.get('last_viewed', {}).items():
-                        if report_id not in last_viewed or view_info['timestamp'] > last_viewed[report_id]['timestamp']:
-                            last_viewed[report_id] = view_info
-
-                result = {
+                print(
+                    f"   ✅ Using non-empty Activity cache "
+                    f"(age: {cache_age_hours:.1f}h, views={cached_total_views})"
+                )
+                return jsonify({
                     'success': True,
                     'workspace_id': workspace_id,
                     'days_analyzed': days_back,
-                    'report_views': report_views,
-                    'last_viewed': last_viewed,
-                    'note': f'Loaded from cache (age: {cache_age_hours:.1f}h)'
-                }
-                return jsonify(result)
+                    'report_views': cached_views,
+                    'last_viewed': cached_last,
+                    'source': 'activity_cache',
+                    'note': f'Loaded from cache (age: {cache_age_hours:.1f}h, views={cached_total_views})'
+                })
+
+        # Empty full cache is useless — drop it so we re-fetch rather than serving zeros forever
+        if len(missing_dates) == 0 and cached_total_views == 0 and cached_dates:
+            print("   🗑️ Discarding empty Activity day-cache (0 total views) — will re-fetch")
+            missing_dates = list(all_dates_needed)
+            persistent_cache = {'daily_data': {}, 'last_updated': None}
+            cached_dates = set()
+            try:
+                if os.path.exists(cache_file):
+                    os.remove(cache_file)
+            except Exception:
+                pass
 
         # Only fetch missing days (incremental update)
-        print(f"   🚀 Fetching {len(missing_dates)} missing days...")
+        print(f"   🚀 Fetching {len(missing_dates)} missing Activity days...")
 
         report_views = {}  # Dictionary to store view counts per report_id
 
@@ -8212,6 +8340,20 @@ def get_report_usage(workspace_id):
         service_principal_token = scanner.get_access_token()
 
         if not service_principal_token:
+            # Fall back to whatever non-empty cache / catalog we still have
+            if cached_total_views > 0:
+                return jsonify({
+                    'success': True,
+                    'workspace_id': workspace_id,
+                    'days_analyzed': days_back,
+                    'report_views': cached_views,
+                    'last_viewed': cached_last,
+                    'source': 'activity_cache_stale',
+                    'note': 'Service principal token unavailable; serving Activity cache',
+                })
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage:
+                return jsonify(cat_usage)
             return jsonify({
                 'success': False,
                 'error': 'Unable to obtain service principal token for Activity Events API'
@@ -8434,64 +8576,79 @@ def get_report_usage(workspace_id):
                     date_str = current_date.strftime('%Y-%m-%d')
 
                     if error:
-                        # Only log significant errors (skip HTTP 400 - it's expected for days with no data)
+                        # Do NOT cache failed days — empty error days poison the 24h short-circuit
                         if "429" in str(error):
                             print(f"      ⚠️  {date_str}: Rate limit - {error}")
                         elif "400" not in str(error) and error != "HTTP 200":
                             print(f"      ⚠️  {date_str}: {error}")
-                    else:
-                        if day_views:
-                            print(f"      ✅ {date_str}: {sum(day_views.values())} views")
+                        continue
 
-                    # Store in new_daily_data for caching
+                    if day_views:
+                        print(f"      ✅ {date_str}: {sum(day_views.values())} views")
+
+                    # Successful API day (may legitimately have 0 views)
                     with views_lock:
                         new_daily_data[date_str] = {
-                            'report_views': day_views,
-                            'last_viewed': day_last_viewed
+                            'report_views': day_views or {},
+                            'last_viewed': day_last_viewed or {},
                         }
 
-        # Merge cached data + newly fetched data
+        # Merge only successfully fetched days into cache
+        if 'daily_data' not in persistent_cache or not isinstance(persistent_cache.get('daily_data'), dict):
+            persistent_cache['daily_data'] = {}
         persistent_cache['daily_data'].update(new_daily_data)
 
         # Aggregate from ALL data (cached + new)
-        for date_key, day_data in persistent_cache.get('daily_data', {}).items():
-            for report_id, count in day_data.get('report_views', {}).items():
-                report_views[report_id] = report_views.get(report_id, 0) + count
-
-            for report_id, view_info in day_data.get('last_viewed', {}).items():
-                if report_id not in last_viewed or view_info['timestamp'] > last_viewed[report_id]['timestamp']:
-                    last_viewed[report_id] = view_info
+        report_views, last_viewed = _aggregate_usage_days(persistent_cache.get('daily_data') or {})
 
         print(f"\n✅ Report usage summary:")
         print(f"   Total reports with views: {len(report_views)}")
-        print(f"   Total views across all reports: {sum(report_views.values())}")
+        print(f"   Total views across all reports: {sum(report_views.values()) if report_views else 0}")
 
         # Debug: Show sample of last viewed users to verify email resolution
         if last_viewed:
-            sample_users = list(set([info['user'] for info in last_viewed.values()]))[:5]
-            print(f"   📧 Sample users: {', '.join(sample_users)}")
+            sample_users = list(set([info.get('user', '') for info in last_viewed.values() if isinstance(info, dict)]))[:5]
+            print(f"   📧 Sample users: {', '.join(str(u) for u in sample_users if u)}")
+
+        total_views = sum(report_views.values()) if report_views else 0
+
+        # If live Activity Events produced nothing, fall back to catalog snapshot
+        if total_views == 0:
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage and (cat_usage.get("report_views") or cat_usage.get("last_viewed")):
+                print(
+                    f"   ↩️ Live Activity returned 0 views — serving catalog usage_snapshot "
+                    f"({len(cat_usage.get('report_views') or {})} reports)"
+                )
+                return jsonify(cat_usage)
 
         result = {
             'success': True,
             'workspace_id': workspace_id,
             'days_analyzed': days_back,
-            'report_views': report_views,  # Dictionary: {report_id: view_count}
-            'last_viewed': last_viewed,  # Dictionary: {report_id: {'timestamp': '...', 'user': '...'}}
-            'note': f'Activity data: {days_back} days (fetched {len(missing_dates)} new, loaded {len(cached_dates)} from cache)'
+            'report_views': report_views,
+            'last_viewed': last_viewed,
+            'source': 'activity_events',
+            'note': (
+                f'Activity data: {days_back} days '
+                f'(fetched {len(new_daily_data)} new, '
+                f'had {len(cached_dates)} cached days)'
+            ),
         }
 
-        # Save persistent cache to disk (survives app restarts)
-        persistent_cache['last_updated'] = datetime.now(timezone.utc).isoformat()
-        persistent_cache['workspace_id'] = workspace_id
-
-        try:
-            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-            with open(cache_file, 'w') as f:
-                json.dump(persistent_cache, f, indent=2)
-            print(f"   💾 Persistent cache saved: {cache_file}")
-            print(f"   ⚡ Next load will be INSTANT (if within 24 hours)")
-        except Exception as e:
-            print(f"   ⚠️ Cache save error: {e}")
+        # Save cache only when we have successful day data (avoid empty poison files)
+        if persistent_cache.get('daily_data'):
+            persistent_cache['last_updated'] = datetime.now(timezone.utc).isoformat()
+            persistent_cache['workspace_id'] = workspace_id
+            try:
+                os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(persistent_cache, f, indent=2)
+                print(f"   💾 Persistent cache saved: {cache_file}")
+            except Exception as e:
+                print(f"   ⚠️ Cache save error: {e}")
+        else:
+            print("   ℹ️ Skipping cache save (no successful Activity day buckets)")
 
         return jsonify(result)
 
@@ -8499,6 +8656,14 @@ def get_report_usage(workspace_id):
         print(f"❌ Error fetching report usage: {str(e)}")
         import traceback
         traceback.print_exc()
+        # Last-chance catalog fallback on unexpected errors
+        try:
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage:
+                cat_usage["note"] = (cat_usage.get("note") or "") + f" (fallback after error: {e})"
+                return jsonify(cat_usage)
+        except Exception:
+            pass
         return jsonify({
             'success': False,
             'error': str(e)
@@ -9867,28 +10032,36 @@ def api_archive_report_to_sharepoint():
         if not workspace_name:
             workspace_name = workspace_id[:8]
 
-        # Prefer user delegated token (same access as UI); fall back service principal
+        # Prefer user delegated token (same access as UI). Also acquire SP token as
+        # fallback — REST Export sometimes 500s on large PBIX with one principal
+        # and succeeds with the other (Service UI download uses a different path).
         token = None
+        sp_token = None
         try:
             token = get_user_powerbi_token()
         except Exception:
             token = None
+        try:
+            from scanner_connector import PowerBIScanner
+            sc = PowerBIScanner()
+            sp_token = sc.get_access_token()
+        except Exception as ex:
+            print(f"   ⚠️ SP token for export fallback unavailable: {ex}")
+            sp_token = None
         if not token:
-            try:
-                from scanner_connector import PowerBIScanner
-                sc = PowerBIScanner()
-                token = sc.get_access_token()
-            except Exception as ex:
-                return jsonify({
-                    'success': False,
-                    'error': f'Unable to obtain Power BI token: {ex}',
-                }), 401
+            token = sp_token
+        if not token:
+            return jsonify({
+                'success': False,
+                'error': 'Unable to obtain Power BI token for Export',
+            }), 401
 
         print(f"\n📦 ARCHIVE TO SHAREPOINT")
         print(f"   User: {email}")
         print(f"   Workspace: {workspace_name} ({workspace_id[:8]}…)")
         print(f"   Report: {report_name} ({report_id[:8]}…)")
         print(f"   PBI folder: {folder_name or '(root)'}")
+        print(f"   Tokens: user={'yes' if token and token != sp_token else 'no'} sp={'yes' if sp_token else 'no'}")
 
         result = archive_report_to_sharepoint(
             access_token=token,
@@ -9898,6 +10071,7 @@ def api_archive_report_to_sharepoint():
             report_name=report_name,
             folder_name=folder_name,
             folder_id=folder_id,
+            fallback_token=sp_token if (sp_token and sp_token != token) else None,
         )
         if result.get('success'):
             print(f"   ✅ ARCHIVE OK → {result.get('remotePath')}")
