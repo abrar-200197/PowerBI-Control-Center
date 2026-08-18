@@ -35,6 +35,19 @@ _lock = threading.RLock()
 _memory: Dict[str, Dict[str, Any]] = {}
 # name -> last time we compared disk mirror vs Graph meta
 _disk_checked_at: Dict[str, float] = {}
+# name -> epoch when SharePoint confirmed missing (404) — skip SP thrash
+_sp_missing_until: Dict[str, float] = {}
+_SP_MISSING_TTL_SEC = 300.0  # 5 min negative cache for itemNotFound
+
+# Thin UI packs: prefer disk mirror first (fast path). Safe even if slightly stale.
+_THIN_UI_PACKS = frozenset({
+    "ui_home_index.json",
+    "ui_impact_tables.json",
+    "ui_impact_reports.json",
+    "ui_report_directory.json",
+    "summary.json",
+    "ops_summary.json",
+})
 
 
 class CatalogService:
@@ -79,15 +92,36 @@ class CatalogService:
         }
 
     def is_available(self) -> bool:
-        """True when Home can answer from thin pack (never OOM-loads full catalog)."""
+        """
+        True when catalog fast-path is configured and usable.
+
+        IMPORTANT: Do NOT call get_json(ui_home_index) here. When the thin pack is
+        missing from SharePoint, that used to retry for ~20s and then return False,
+        which skipped build_home_summary entirely and left Home blank.
+
+        Availability = mode configured. Route handlers decide thin vs summary fallback.
+        Never OOM-loads workspace_catalog.json.
+        """
         if not cfg.CATALOG_FAST_PATH_ENABLED:
             return False
         if self._resolve_mode() != "sharepoint":
             return False
-        # Only thin home pack — loading workspace_catalog.json here caused
-        # Gunicorn SIGKILL (OOM) on App Service when pack was briefly missing.
-        thin = self.get_json("ui_home_index.json")
-        return bool(thin and thin.get("workspaces") is not None)
+        # Instant yes if thin pack already in memory or on disk
+        try:
+            mem = _memory.get("ui_home_index.json")
+            if mem and isinstance(mem.get("data"), dict):
+                if (mem["data"].get("workspaces")) is not None:
+                    return True
+            disk = self._read_disk_json("ui_home_index.json")
+            if disk and disk.get("workspaces") is not None:
+                return True
+            # summary.json alone is enough for KPI fallback
+            if self._disk_path("summary.json").is_file():
+                return True
+        except Exception:
+            pass
+        # SharePoint configured → routes may load packs / summary / report APIs
+        return bool(cfg.sharepoint_configured())
 
     # ------------------------------------------------------------------ loaders
     def get_json(self, name: str, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
@@ -101,6 +135,18 @@ class CatalogService:
                 mem = _memory.get(name)
                 if mem and (time.time() - mem["loaded_at"]) < cfg.CATALOG_CACHE_TTL_SEC:
                     return mem["data"]
+                # Thin packs: serve disk mirror instantly (no Graph round-trip).
+                # SharePoint is revalidated in background-ish load only when forced
+                # or when disk is missing. Prevents Home/Impact hanging on SP 404.
+                if name in _THIN_UI_PACKS:
+                    disk_data = self._read_disk_json(name)
+                    if disk_data is not None:
+                        _memory[name] = {
+                            "data": disk_data,
+                            "loaded_at": time.time(),
+                            "source": "disk-mirror-fast",
+                        }
+                        return disk_data
             data, source = self._load_catalog_file(name, force_refresh=force_refresh)
             if data is not None:
                 # Thin packs always memory-cached. Heavy blobs only if explicitly enabled
@@ -434,17 +480,64 @@ class CatalogService:
         Fast Home dashboard stats.
 
         Prefer precomputed ui_home_index.json (tiny) — no need for 300MB catalog.
-        Fall back to computing from workspace_catalog when pack is missing
-        (e.g. first run before next extract publishes the pack).
+        If missing on SharePoint but present on disk, get_json already served it.
+        Last resort: lightweight summary.json KPIs (no per-workspace rows) so the
+        UI is not a blank page. Never load full workspace_catalog on App Service.
         """
         thin = self.get_json("ui_home_index.json")
         if thin and isinstance(thin.get("workspaces"), list):
             return self._home_from_thin_index(thin, allowed_workspace_ids, inactive_days)
+
+        # summary.json is small and usually present even when thin packs lag extract
+        try:
+            summary = self.get_json("summary.json") or self.get_json("ops_summary.json")
+        except Exception:
+            summary = None
+        if isinstance(summary, dict) and summary:
+            logger.warning(
+                "ui_home_index.json unavailable — Home using summary.json KPIs only "
+                "(per-workspace table empty until thin pack is republished to SharePoint)"
+            )
+            try:
+                from catalog_service.thin_packs import USAGE_LOOKBACK_DAYS as _uld
+            except Exception:
+                _uld = 60
+            return {
+                "success": True,
+                "source": "summary-fallback",
+                "fallback": True,
+                "generatedAt": summary.get("generatedAt") or summary.get("opsEnrichedAt"),
+                "opsEnrichedAt": summary.get("opsEnrichedAt") or summary.get("generatedAt"),
+                "workspaceCount": int(
+                    summary.get("workspaceCount")
+                    or summary.get("workspaces")
+                    or 0
+                ),
+                "totalReports": int(
+                    summary.get("reportCount")
+                    or summary.get("totalReports")
+                    or summary.get("reports")
+                    or 0
+                ),
+                "activeReports": int(summary.get("activeReports") or 0),
+                "inactiveReports": int(summary.get("inactiveReports") or 0),
+                "orphanedReports": int(summary.get("orphanedReports") or 0),
+                "zeroViewsReports": int(summary.get("zeroViewsReports") or 0),
+                "failedRefreshReports": int(summary.get("failedRefreshReports") or 0),
+                "inactiveDaysThreshold": inactive_days,
+                "usageLookbackDays": int(summary.get("usageLookbackDays") or _uld),
+                "workspaces": [],
+                "note": (
+                    "ui_home_index.json missing from SharePoint latest/. "
+                    "Re-run catalog extract --fresh to publish thin packs."
+                ),
+            }
+
         # Do NOT fall back to full ~360MB workspace_catalog on App Service Home —
         # that path regularly SIGKILLs Gunicorn workers (OOM). Prefer offline UI.
         logger.warning(
-            "ui_home_index.json missing/unusable — skipping full-catalog Home fallback "
-            "(set CATALOG_KEEP_HEAVY_IN_MEMORY=true only on large SKUs if you must)"
+            "ui_home_index.json missing/unusable and no summary.json — Home offline. "
+            "Publish thin packs to SharePoint latest/ (run_catalog_extract --fresh)."
         )
         return None
 
@@ -1486,20 +1579,45 @@ class CatalogService:
             meta_file = self._meta_path(name)
             now = time.time()
 
+            # Negative cache: recent SP 404 — serve disk or give up quickly
+            miss_until = _sp_missing_until.get(name, 0.0)
+            if not force_refresh and miss_until > now:
+                data = self._read_disk_json(name)
+                if data is not None:
+                    logger.info(
+                        "Catalog %s: SP known-missing (neg-cache) — disk mirror",
+                        name,
+                    )
+                    return data, "disk-cache-sp-missing"
+                return None, "sharepoint-item-missing-cached"
+
             sp_meta: Dict[str, Any] = {}
             sp_size = 0
             sp_mod = ""
+            meta_missing = False
             try:
                 sp_meta = sp.get_item_meta(remote) or {}
                 sp_size = int(sp_meta.get("size") or 0)
                 sp_mod = sp_meta.get("lastModifiedDateTime") or ""
+                # Successful meta → clear negative cache
+                _sp_missing_until.pop(name, None)
+            except FileNotFoundError as meta_exc:
+                meta_missing = True
+                _sp_missing_until[name] = now + _SP_MISSING_TTL_SEC
+                logger.warning(
+                    "Catalog %s missing on SharePoint (404) — using disk if present: %s",
+                    name, meta_exc,
+                )
             except Exception as meta_exc:
                 # Graph sometimes fails meta for large files; still try disk / download
                 logger.warning("Catalog meta failed for %s: %s", name, meta_exc)
 
             use_disk = False
             if not force_refresh and disk.is_file() and disk.stat().st_size > 0:
-                if sp_size > 0 and disk.stat().st_size == sp_size:
+                if meta_missing:
+                    # Confirmed gone from SP — still serve last good mirror
+                    use_disk = True
+                elif sp_size > 0 and disk.stat().st_size == sp_size:
                     use_disk = True
                     try:
                         if meta_file.is_file():
@@ -1529,8 +1647,23 @@ class CatalogService:
                     )
                     return data, "disk-mirror"
 
+            # Confirmed missing and no disk — do not call download_file (would 404 again)
+            if meta_missing:
+                return None, "sharepoint-item-missing"
+
             # Download from SharePoint (source of truth)
-            raw = sp.download_file(remote, max_attempts=3, timeout=1800)
+            try:
+                raw = sp.download_file(remote, max_attempts=3, timeout=1800)
+            except FileNotFoundError as dn_exc:
+                _sp_missing_until[name] = now + _SP_MISSING_TTL_SEC
+                data = self._read_disk_json(name)
+                if data is not None:
+                    logger.warning(
+                        "Catalog %s download 404 — serving disk mirror: %s", name, dn_exc
+                    )
+                    return data, "disk-cache-stale"
+                return None, f"sharepoint-item-missing: {dn_exc}"
+
             if sp_size and len(raw) != sp_size:
                 raise IOError(
                     f"Download size mismatch for {name}: got {len(raw)}, meta {sp_size}"
@@ -1548,13 +1681,27 @@ class CatalogService:
                 name, raw, sp_size=(sp_size or len(raw)), sp_modified=sp_mod
             )
             _disk_checked_at[name] = now
+            _sp_missing_until.pop(name, None)
             logger.info(
                 "Catalog %s loaded from SharePoint (%.1f MB verified) → disk mirror",
                 name, len(raw) / (1024 * 1024),
             )
             return data, "sharepoint"
+        except FileNotFoundError as exc:
+            _sp_missing_until[name] = time.time() + _SP_MISSING_TTL_SEC
+            data = self._read_disk_json(name)
+            if data is not None:
+                logger.warning("Serving disk mirror for %s after SP 404: %s", name, exc)
+                return data, "disk-cache-stale"
+            return None, f"sharepoint-item-missing: {exc}"
         except Exception as exc:
-            logger.exception("Catalog load failed for %s", name)
+            # Don't log full traceback for expected missing thin packs
+            msg = str(exc).lower()
+            if "404" in msg or "itemnotfound" in msg or "item-missing" in msg:
+                logger.warning("Catalog load miss for %s: %s", name, exc)
+                _sp_missing_until[name] = time.time() + _SP_MISSING_TTL_SEC
+            else:
+                logger.exception("Catalog load failed for %s", name)
             # Stale disk recovery if download failed mid-way
             data = self._read_disk_json(name)
             if data is not None:
