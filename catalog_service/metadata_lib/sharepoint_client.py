@@ -392,6 +392,11 @@ class SharePointClient:
         # Do not $select — Graph only returns @microsoft.graph.downloadUrl on full item GETs.
         url = f"{GRAPH}/drives/{self._drive_id}/root:/{quote(remote_relative)}"
         resp = self._request("GET", url)
+        if resp.status_code == 404:
+            # Fail fast — missing files must not burn multi-mode retries
+            raise FileNotFoundError(
+                f"get_item_meta 404 itemNotFound for {remote_relative}"
+            )
         if resp.status_code != 200:
             raise RuntimeError(f"get_item_meta failed {resp.status_code}: {resp.text[:300]}")
         return resp.json()
@@ -413,6 +418,8 @@ class SharePointClient:
           1) Prefer Graph /content with Bearer + HTTP Range (8MB slices)
           2) Fall back to pre-auth downloadUrl + Range if Graph ranges fail
           3) Verify assembled byte length against driveItem.size
+
+        FileNotFoundError (Graph 404) fails immediately — no multi-attempt loop.
         """
         if self._drive_id is None:
             self.resolve_site_and_drive()
@@ -430,8 +437,17 @@ class SharePointClient:
                         chunk_size=chunk_size,
                         timeout=timeout,
                     )
+                except FileNotFoundError:
+                    # Missing on SharePoint — never retry
+                    raise
                 except Exception as exc:
                     last_err = exc
+                    # Treat wrapped 404 / itemNotFound as permanent
+                    msg = str(exc).lower()
+                    if "404" in msg or "itemnotfound" in msg or "not found" in msg:
+                        raise FileNotFoundError(
+                            f"download_file 404 for {remote_relative}: {exc}"
+                        ) from exc
                     logger.warning(
                         "Download mode=%s attempt=%s/%s failed for %s: %s",
                         mode, attempt, max_attempts, remote_relative, exc,
