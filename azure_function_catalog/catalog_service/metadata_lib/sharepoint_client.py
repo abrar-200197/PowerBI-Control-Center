@@ -193,6 +193,89 @@ class SharePointClient:
                 # conflictBehavior fail may 409; try rename ignore
                 logger.warning("ensure_folder %s: %s %s", current, resp.status_code, resp.text[:200])
 
+    def list_children(self, folder_path: str = "") -> List[Dict[str, Any]]:
+        """
+        List drive items directly under folder_path (relative to drive root).
+        Returns list of Graph driveItem dicts (files + folders).
+        """
+        if self._drive_id is None:
+            self.resolve_site_and_drive()
+        folder_path = (folder_path or "").replace("\\", "/").strip("/")
+        items: List[Dict[str, Any]] = []
+        if folder_path:
+            url = f"{GRAPH}/drives/{self._drive_id}/root:/{quote(folder_path)}:/children"
+        else:
+            url = f"{GRAPH}/drives/{self._drive_id}/root/children"
+        # Graph pages @odata.nextLink
+        while url:
+            resp = self._request("GET", url, params={"$top": "200"})
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"list_children failed {resp.status_code} path={folder_path!r}: {resp.text[:400]}"
+                )
+            body = resp.json() or {}
+            items.extend(body.get("value") or [])
+            url = body.get("@odata.nextLink")
+        return items
+
+    def list_folders(self, folder_path: str = "") -> List[Dict[str, Any]]:
+        """Return only child folders under folder_path."""
+        return [i for i in self.list_children(folder_path) if i.get("folder") is not None]
+
+    def list_files_recursive(
+        self,
+        folder_path: str = "",
+        *,
+        max_depth: int = 8,
+        _depth: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Recursively list files under folder_path.
+        Each item includes relativePath (path from folder_path root, posix).
+        """
+        if _depth > max_depth:
+            return []
+        folder_path = (folder_path or "").replace("\\", "/").strip("/")
+        out: List[Dict[str, Any]] = []
+        try:
+            children = self.list_children(folder_path)
+        except Exception as exc:
+            logger.warning("list_files_recursive failed at %s: %s", folder_path, exc)
+            return out
+        for it in children:
+            name = it.get("name") or ""
+            if not name:
+                continue
+            rel = f"{folder_path}/{name}" if folder_path else name
+            if it.get("folder") is not None:
+                out.extend(
+                    self.list_files_recursive(rel, max_depth=max_depth, _depth=_depth + 1)
+                )
+            elif it.get("file") is not None:
+                row = dict(it)
+                row["relativePath"] = rel
+                out.append(row)
+        return out
+
+    def latest_child_folder(self, folder_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Pick the newest child folder under folder_path by createdDateTime
+        (fallback lastModifiedDateTime, then name).
+        """
+        folders = self.list_folders(folder_path)
+        if not folders:
+            return None
+
+        def _key(item: Dict[str, Any]):
+            return (
+                item.get("createdDateTime")
+                or item.get("lastModifiedDateTime")
+                or item.get("name")
+                or ""
+            )
+
+        return max(folders, key=_key)
+
     def upload_file(self, local_path: Path, remote_relative: str) -> Dict[str, Any]:
         """
         Upload local file to drive path remote_relative (e.g. 'PowerBI Reports MetaData/latest/impact_index.json').
@@ -309,6 +392,11 @@ class SharePointClient:
         # Do not $select — Graph only returns @microsoft.graph.downloadUrl on full item GETs.
         url = f"{GRAPH}/drives/{self._drive_id}/root:/{quote(remote_relative)}"
         resp = self._request("GET", url)
+        if resp.status_code == 404:
+            # Fail fast — missing files must not burn multi-mode retries
+            raise FileNotFoundError(
+                f"get_item_meta 404 itemNotFound for {remote_relative}"
+            )
         if resp.status_code != 200:
             raise RuntimeError(f"get_item_meta failed {resp.status_code}: {resp.text[:300]}")
         return resp.json()
@@ -330,6 +418,8 @@ class SharePointClient:
           1) Prefer Graph /content with Bearer + HTTP Range (8MB slices)
           2) Fall back to pre-auth downloadUrl + Range if Graph ranges fail
           3) Verify assembled byte length against driveItem.size
+
+        FileNotFoundError (Graph 404) fails immediately — no multi-attempt loop.
         """
         if self._drive_id is None:
             self.resolve_site_and_drive()
@@ -347,8 +437,17 @@ class SharePointClient:
                         chunk_size=chunk_size,
                         timeout=timeout,
                     )
+                except FileNotFoundError:
+                    # Missing on SharePoint — never retry
+                    raise
                 except Exception as exc:
                     last_err = exc
+                    # Treat wrapped 404 / itemNotFound as permanent
+                    msg = str(exc).lower()
+                    if "404" in msg or "itemnotfound" in msg or "not found" in msg:
+                        raise FileNotFoundError(
+                            f"download_file 404 for {remote_relative}: {exc}"
+                        ) from exc
                     logger.warning(
                         "Download mode=%s attempt=%s/%s failed for %s: %s",
                         mode, attempt, max_attempts, remote_relative, exc,
@@ -371,8 +470,6 @@ class SharePointClient:
     ) -> bytes:
         meta = self.get_item_meta(remote_relative)
         expected = int(meta.get("size") or 0)
-        if expected <= 0:
-            raise IOError(f"driveItem size missing/zero for {remote_relative}")
 
         graph_url = f"{GRAPH}/drives/{self._drive_id}/root:/{quote(remote_relative)}:/content"
         download_url = meta.get("@microsoft.graph.downloadUrl")
@@ -384,6 +481,59 @@ class SharePointClient:
         else:
             content_url = graph_url
             use_preauth = False
+
+        # Graph occasionally returns size=0/missing on large driveItems (still HTTP 200
+        # on meta). Prefer Content-Length from the content response; stream body.
+        if expected <= 0:
+            logger.warning(
+                "driveItem size missing/zero for %s — streaming full GET (mode=%s)",
+                remote_relative, mode,
+            )
+            headers: Dict[str, str] = {"Accept-Encoding": "identity"}
+            if not use_preauth:
+                headers.update(self.auth.headers())
+            resp = requests.get(
+                content_url,
+                headers=headers,
+                timeout=(60, timeout),
+                stream=True,
+            )
+            try:
+                if resp.status_code >= 400:
+                    raise IOError(
+                        f"Stream download HTTP {resp.status_code} for {remote_relative}: "
+                        f"{(resp.text or '')[:200]}"
+                    )
+                # Trust Content-Length when Graph driveItem.size lied
+                try:
+                    cl = int(resp.headers.get("Content-Length") or 0)
+                except ValueError:
+                    cl = 0
+                buf = bytearray()
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        buf.extend(chunk)
+                if not buf:
+                    raise IOError(
+                        f"Empty stream download for {remote_relative} "
+                        f"(Graph size=0 — file may be corrupt/empty on SharePoint; "
+                        f"re-run extract --fresh)"
+                    )
+                if cl and len(buf) != cl:
+                    raise IOError(
+                        f"Stream size mismatch for {remote_relative}: "
+                        f"got {len(buf)}, Content-Length {cl}"
+                    )
+                logger.info(
+                    "Downloaded %s (%.1f MB, mode=%s, size-unknown stream, cl=%s)",
+                    remote_relative, len(buf) / (1024 * 1024), mode, cl or "n/a",
+                )
+                return bytes(buf)
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
 
         # Small files: single GET
         if expected <= chunk_size:

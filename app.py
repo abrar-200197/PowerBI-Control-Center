@@ -213,12 +213,6 @@ SCOPE = ["https://analysis.windows.net/powerbi/api/.default"]
 # Fabric API scope - needed for getDefinition and other Fabric-specific endpoints
 FABRIC_SCOPE = ["https://api.fabric.microsoft.com/.default"]
 
-# Power Platform / Copilot Studio (delegated CopilotStudio.Copilots.Invoke).
-# Separate audience from Power BI — must silent-acquire; do not reuse PBI JWT.
-COPILOT_SCOPE = [
-    (os.getenv("COPILOT_TOKEN_SCOPE") or "https://api.powerplatform.com/.default").strip()
-]
-
 # Optional: If you also need Graph API access, request it separately
 GRAPH_SCOPE = ["User.Read"]
 
@@ -250,8 +244,7 @@ def _msal_for_request(cache=None):
     """Confidential client bound to this request's serialized token cache.
 
     Without binding the cache, acquire_token_silent / get_accounts see an empty
-    in-memory cache on every worker, so Copilot / Fabric step-up always fails
-    and /agent gets no delegated user token.
+    in-memory cache on every worker, so Fabric step-up / token refresh fails.
     """
     if cache is None:
         cache = _load_cache()
@@ -424,7 +417,7 @@ def login():
     # Drop prior auth data but keep the filesystem session identity stable so the
     # browser cookie still maps to the same server-side file after AAD returns.
     for _k in (
-        'user', 'access_token', 'copilot_access_token', 'fabric_access_token',
+        'user', 'access_token', 'fabric_access_token',
         'token_cache', 'login_at', 'next', 'test_key',
     ):
         session.pop(_k, None)
@@ -518,23 +511,22 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
         flash(f'Authentication failed: {error_description}', 'error')
         return redirect(url_for("login"))
 
-    # Exchange authorization code for access token
+    # Exchange authorization code for Power BI access token
     if request.args.get('code'):
-        oauth_purpose = session.pop("oauth_purpose", None) or "login"
-        oauth_next = session.pop("oauth_next", None) or ""
+        # Drop any leftover step-up markers from older builds
+        session.pop("oauth_purpose", None)
+        session.pop("oauth_next", None)
         # Bind MSAL to the session token_cache so refresh tokens persist.
         cca, cache = _msal_for_request()
-        code_scopes = COPILOT_SCOPE if oauth_purpose == "copilot" else SCOPE
 
         print("\n🔐 ACQUIRING TOKEN WITH SCOPES:")
-        for scope in code_scopes:
+        for scope in SCOPE:
             print(f"   - {scope}")
         print(f"   Using redirect_uri={redirect_uri}")
-        print(f"   oauth_purpose={oauth_purpose}")
 
         result = cca.acquire_token_by_authorization_code(
             request.args['code'],
-            scopes=code_scopes,
+            scopes=SCOPE,
             redirect_uri=redirect_uri,
         )
 
@@ -544,8 +536,6 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
             print(f"   Description: {result.get('error_description')}")
             print(f"   Correlation ID: {result.get('correlation_id')}")
             flash(f'Authentication failed: {result.get("error_description")}', 'error')
-            if oauth_purpose == "copilot":
-                return redirect(oauth_next or "/agent/")
             return redirect(url_for("login"))
 
         print("\n✅ TOKEN ACQUIRED SUCCESSFULLY")
@@ -553,18 +543,6 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
         print(f"   Token type: {result.get('token_type', 'N/A')}")
         print(f"   Expires in: {result.get('expires_in', 'N/A')} seconds")
 
-        # ----- Step-up: Power Platform / Copilot only (keep existing SSO) -----
-        if oauth_purpose == "copilot":
-            session.pop("state", None)
-            if result.get("access_token"):
-                session["copilot_access_token"] = result["access_token"]
-            _save_cache(cache)
-            session.modified = True
-            print("✅ Copilot / Power Platform token stored (step-up consent)")
-            dest = oauth_next if (oauth_next or "").startswith("/") else "/agent/"
-            return redirect(dest)
-
-        # ----- Full login (Power BI) -----
         # Replace identity in-place — do NOT session.clear() (drops FS session
         # continuity / cookie mapping and can loop login on localhost).
         old_user_id = (session.get('user') or {}).get('oid')
@@ -597,36 +575,6 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
         if old_user_id and old_user_id != session['user'].get('oid'):
             print(f"   Previous oid was {old_user_id} (replaced)")
 
-        # Best-effort: warm Power Platform token for AGENT_BRAIN=copilot
-        # (needs CopilotStudio.Copilots.Invoke consented on the app).
-        try:
-            cca2, cache2 = _msal_for_request()
-            accounts = cca2.get_accounts(
-                username=session.get("user", {}).get("preferred_username")
-            )
-            if not accounts:
-                accounts = cca2.get_accounts()
-            if accounts:
-                c_res = cca2.acquire_token_silent(
-                    COPILOT_SCOPE, account=accounts[0]
-                )
-                if c_res and "access_token" in c_res and "error" not in c_res:
-                    session["copilot_access_token"] = c_res["access_token"]
-                    _save_cache(cache2)
-                    print("✅ Copilot / Power Platform token warmed at login")
-                elif c_res and c_res.get("error"):
-                    print(
-                        "⚠️ Copilot token at login: "
-                        f"{c_res.get('error_description', c_res.get('error'))}"
-                    )
-                else:
-                    print(
-                        "ℹ️ Copilot token not available silently after login — "
-                        "user can use /login/copilot-consent from Agent"
-                    )
-        except Exception as _c_warm_err:
-            print(f"⚠️ Copilot token warm skipped: {_c_warm_err}")
-
         # Get the new user ID and clear their old cache if any
         new_user_id = session.get('user', {}).get('oid')
         if new_user_id:
@@ -644,72 +592,6 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
 
     flash('No authorization code received', 'error')
     return redirect(url_for("login"))
-
-
-@app.route('/login/copilot-consent')
-def login_copilot_consent():
-    """Acquire Power Platform token for Copilot Studio (step-up if needed).
-
-    Login only requests the Power BI audience. Copilot Studio needs
-    api.powerplatform.com (CopilotStudio.Copilots.Invoke). With admin consent
-    already granted on the app, silent acquire from the MSAL session cache
-    usually works after a normal SSO. Do NOT use prompt=consent here — that
-    forces the Entra consent UI and triggers "Approval required" even when
-    admin consent is already Granted.
-    """
-    if "user" not in session or _session_expired():
-        session["next"] = "/agent/"
-        return redirect(url_for("login"))
-
-    dest = request.args.get("next") or "/agent/"
-    force = (request.args.get("force") or "").strip().lower() in (
-        "1", "true", "yes", "consent",
-    )
-
-    # Already have a usable Copilot token?
-    existing = session.get("copilot_access_token")
-    if existing and not force:
-        left = _jwt_seconds_left(existing)
-        if left is not None and left > 300:
-            return redirect(dest)
-
-    # Silent first — works when admin consent is Granted + session RT is cached
-    if not force:
-        try:
-            tok = get_user_copilot_token()
-            if tok:
-                print("✅ Copilot token via silent (no interactive consent needed)")
-                return redirect(dest)
-        except Exception as exc:
-            print(f"⚠️ copilot step-up silent attempt: {exc}")
-
-    redirect_uri = REDIRECT_URI
-    if not os.getenv("WEBSITE_HOSTNAME"):
-        root = (request.url_root or "http://localhost:5000/").rstrip("/")
-        redirect_uri = f"{root}{REDIRECT_PATH}"
-
-    session["state"] = str(uuid.uuid4())
-    session["oauth_purpose"] = "copilot"
-    session["oauth_next"] = dest
-    session["oauth_redirect_uri"] = redirect_uri
-    session.modified = True
-    session.permanent = True
-
-    cca, _cache = _msal_for_request()
-    login_hint = (session.get("user") or {}).get("preferred_username") or None
-    # No prompt=consent (avoids Approval required when admin consent exists).
-    # Optional ?force=1 uses select_account only if silent keeps failing.
-    auth_kwargs = {
-        "scopes": COPILOT_SCOPE,
-        "state": session["state"],
-        "redirect_uri": redirect_uri,
-        "login_hint": login_hint,
-    }
-    if force:
-        auth_kwargs["prompt"] = "select_account"
-    auth_url = cca.get_authorization_request_url(**auth_kwargs)
-    print(f"🔐 Copilot Power Platform authorize (force={force}) → {auth_url[:120]}...")
-    return redirect(auth_url)
 
 
 @app.route('/logout')
@@ -802,160 +684,6 @@ def get_user_powerbi_token():
 
     print("❌ No valid Power BI token — user needs to re-authenticate")
     return None
-
-
-def get_user_copilot_token():
-    """Delegated token for Power Platform / Copilot Studio invoke.
-
-    Requires CopilotStudio.Copilots.Invoke on the app registration and admin
-    consent. Audience is api.powerplatform.com — never reuse the Power BI JWT.
-    """
-    if "copilot_access_token" in session:
-        left = _jwt_seconds_left(session["copilot_access_token"])
-        if left is not None and left > 300:
-            return session["copilot_access_token"]
-        if left is not None and left <= 300:
-            session.pop("copilot_access_token", None)
-
-    cca, cache = _msal_for_request()
-    accounts = cca.get_accounts(
-        username=session.get("user", {}).get("preferred_username")
-    )
-    if not accounts:
-        accounts = cca.get_accounts()
-
-    if accounts:
-        result = cca.acquire_token_silent(COPILOT_SCOPE, account=accounts[0])
-        if result and "access_token" in result and "error" not in result:
-            print("✅ Copilot / Power Platform token acquired (silent)")
-            session["copilot_access_token"] = result["access_token"]
-            _save_cache(cache)
-            return result["access_token"]
-        if result and "error" in result:
-            print(
-                "⚠️ Copilot token silent fail: "
-                f"{result.get('error_description', result.get('error'))}"
-            )
-
-    # OBO from Power BI assertion (may fail if audiences cannot bridge)
-    pbi_token = get_user_powerbi_token()
-    if pbi_token:
-        try:
-            result = cca.acquire_token_on_behalf_of(
-                user_assertion=pbi_token,
-                scopes=COPILOT_SCOPE,
-            )
-            if result and "access_token" in result and "error" not in result:
-                print("✅ Copilot token acquired (OBO)")
-                session["copilot_access_token"] = result["access_token"]
-                _save_cache(cache)
-                return result["access_token"]
-            err = (result or {}).get("error_description") or (result or {}).get("error")
-            print(f"⚠️ Copilot OBO failed: {str(err)[:160]}")
-        except Exception as exc:
-            print(f"⚠️ Copilot OBO error: {exc}")
-
-    print("⚠️ Could not acquire Copilot / Power Platform token")
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Agent section (/agent) — OPT-IN only (default OFF).
-#
-# Prod Control Center (afi-powerbi-documentation-prod-app via Azure DevOps)
-# must NOT show Agent until ready. Test on IT Financials App Service first:
-#   ENABLE_AGENT=true
-#   AGENT_BRAIN=copilot
-#   COPILOTSTUDIOAGENT__ENVIRONMENTID=...
-#   COPILOTSTUDIOAGENT__SCHEMANAME=...
-#
-# Uses the SIGNED-IN USER token (RLS). Never answers with service principal.
-# When AGENT_BRAIN=copilot, pass Power Platform token (not Power BI).
-# ---------------------------------------------------------------------------
-def _env_flag_true(name: str, default: str = "false") -> bool:
-    return (os.getenv(name, default) or default).strip().lower() in (
-        "1", "true", "yes", "y", "on",
-    )
-
-
-# Exposed to Jinja (base.html nav). Default False = hidden on prod.
-app.config["ENABLE_AGENT"] = _env_flag_true("ENABLE_AGENT", "false")
-
-
-@app.context_processor
-def _inject_feature_flags():
-    return {
-        "enable_agent": bool(app.config.get("ENABLE_AGENT")),
-    }
-
-
-if app.config["ENABLE_AGENT"]:
-    try:
-        from agent_section.blueprint import agent_bp, set_token_resolver
-
-        def _agent_identity():
-            """Return (user_upn, access_token) for the current request.
-
-            Copilot Studio needs a Power Platform-scoped user token.
-            loop/mcp/local live DAX needs the Power BI user token.
-            """
-            user = session.get("user") or {}
-            upn = (
-                user.get("preferred_username")
-                or user.get("upn")
-                or user.get("userPrincipalName")
-                or user.get("email")
-                or "unknown@local"
-            )
-            brain = (os.getenv("AGENT_BRAIN") or "auto").lower()
-            # Direct-connect URL alone is enough (same rule as agent_section.service)
-            studio_ready = bool(
-                (os.getenv("COPILOTSTUDIOAGENT__DIRECTCONNECTURL") or "").strip()
-                or (
-                    os.getenv("COPILOTSTUDIOAGENT__ENVIRONMENTID")
-                    and os.getenv("COPILOTSTUDIOAGENT__SCHEMANAME")
-                )
-            )
-            want_copilot = brain == "copilot" or (brain == "auto" and studio_ready)
-
-            token = None
-            if want_copilot:
-                try:
-                    token = get_user_copilot_token()
-                except Exception:
-                    token = session.get("copilot_access_token")
-                # Do NOT fall back to Power BI JWT for Copilot Studio — wrong
-                # audience (analysis.windows.net vs api.powerplatform.com).
-                return upn, token
-            try:
-                token = get_user_powerbi_token()
-            except Exception:
-                token = session.get("access_token")
-            return upn, token
-
-        set_token_resolver(_agent_identity)
-
-        @agent_bp.before_request
-        def _agent_require_login():
-            if 'user' not in session or _session_expired():
-                if 'user' in session:
-                    session.clear()
-                if request.path.startswith('/agent/api/') or '/api/' in (request.path or ''):
-                    return jsonify({
-                        'success': False,
-                        'error': 'Not authenticated or session expired',
-                        'redirect': url_for('login'),
-                        'auth_required': True,
-                    }), 401
-                return redirect(url_for('login'))
-
-        app.register_blueprint(agent_bp)
-        print("✅ Agent section registered at /agent (ENABLE_AGENT=true)")
-    except Exception as _agent_import_err:
-        app.config["ENABLE_AGENT"] = False
-        print(f"⚠️ Agent section not available: {_agent_import_err}")
-else:
-    print("ℹ️ Agent section disabled (set ENABLE_AGENT=true on test app only)")
 
 
 def get_user_fabric_token():
