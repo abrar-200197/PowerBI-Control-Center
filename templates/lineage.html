@@ -560,6 +560,42 @@
         background: #A0AEC0;
     }
 
+    /* Table dictionary: allow outer page + inner panels to scroll when columns expand */
+    #tableSearchResults.panel {
+        overflow: visible;
+    }
+    #tableSearchContent {
+        max-height: calc(100vh - 220px);
+        overflow: auto;
+        overscroll-behavior: contain;
+    }
+    .dictionary-table-wrap.table-container {
+        overflow: auto !important;
+        max-height: none !important;
+    }
+    /* Expanded "View Columns" list (40+ rows) scrolls inside the row */
+    .column-details-scroll {
+        max-height: min(50vh, 420px);
+        overflow: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+        border: 1px solid var(--border, #E2E8F0);
+        border-radius: 6px;
+        background: var(--bg-surface, #fff);
+    }
+    .column-details-scroll table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+    }
+    .column-details-scroll thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #EDF2F7;
+        box-shadow: 0 1px 0 #E2E8F0;
+    }
+
     /* Column details table */
     .column-details-table {
         width: 100%;
@@ -3193,7 +3229,7 @@
                     <h3 style="margin: 0 0 12px 0; padding: 8px 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 6px; font-size: 16px;">
                         🌍 ${wsName} (${tablesByWorkspace[wsName].length} table${tablesByWorkspace[wsName].length !== 1 ? 's' : ''})
                     </h3>
-                    <div class="table-container" style="background: white; border-radius: 8px; border: 1px solid #E2E8F0; overflow: hidden; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);">
+                    <div class="table-container dictionary-table-wrap" style="background: white; border-radius: 8px; border: 1px solid #E2E8F0; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);">
                         <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
                             <thead style="background: #F7FAFC; border-bottom: 2px solid #E2E8F0;">
                                 <tr>
@@ -3207,7 +3243,9 @@
                             <tbody>`;
 
                 tablesByWorkspace[wsName].forEach((table, index) => {
-                    html += buildTableCard(table, `${wsName}_${index}`, table.workspace_id);
+                    // HTML ids cannot contain spaces (e.g. "Ashley BI") — break expand/scroll targeting
+                    const safeIdx = `${String(wsName).replace(/[^a-zA-Z0-9_-]/g, '_')}_${index}`;
+                    html += buildTableCard(table, safeIdx, table.workspace_id);
                 });
 
                 html += `
@@ -3219,7 +3257,7 @@
         } else {
             // Single workspace - display in table format
             html += `
-                <div class="table-container" style="background: white; border-radius: 8px; border: 1px solid #E2E8F0; overflow: hidden; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);">
+                <div class="table-container dictionary-table-wrap" style="background: white; border-radius: 8px; border: 1px solid #E2E8F0; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);">
                     <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
                         <thead style="background: #F7FAFC; border-bottom: 2px solid #E2E8F0;">
                             <tr>
@@ -3341,15 +3379,15 @@
             console.log('✅ Received column data:', result);
 
             if (result.success && result.columns && result.columns.length > 0) {
-                // Build column table
+                // Build column table (scrollable — overflow:hidden parents used to clip long lists)
                 let columnsHtml = `
                     <div style="padding: 20px; background: #F7FAFC;">
                         <h4 style="margin: 0 0 12px 0; color: #2D3748; font-size: 14px; font-weight: 600;">
                             📋 Column Details (${result.columns.length} columns)
                         </h4>
-                        <div style="background: white; border: 1px solid #E2E8F0; border-radius: 6px; overflow: hidden;">
-                            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
-                                <thead style="background: #EDF2F7;">
+                        <div class="column-details-scroll">
+                            <table class="column-details-table" style="margin-top: 0;">
+                                <thead>
                                     <tr>
                                         <th style="padding: 10px 12px; text-align: left; font-weight: 600; color: #2D3748; border-bottom: 1px solid #E2E8F0;">Column Name</th>
                                         <th style="padding: 10px 12px; text-align: left; font-weight: 600; color: #2D3748; border-bottom: 1px solid #E2E8F0;">Data Type</th>
@@ -3361,12 +3399,15 @@
                 result.columns.forEach((col, idx) => {
                     const bgColor = idx % 2 === 0 ? '#FFFFFF' : '#F7FAFC';
                     const expression = col.expression ? col.expression.substring(0, 100) + (col.expression.length > 100 ? '...' : '') : '-';
+                    const colName = (typeof escapeHtml === 'function') ? escapeHtml(col.name || '') : (col.name || '');
+                    const dataType = (typeof escapeHtml === 'function') ? escapeHtml(col.dataType || '-') : (col.dataType || '-');
+                    const exprSafe = (typeof escapeHtml === 'function') ? escapeHtml(expression) : expression;
 
                     columnsHtml += `
                         <tr style="background: ${bgColor};">
-                            <td style="padding: 10px 12px; border-bottom: 1px solid #E2E8F0; font-weight: 500; color: #2D3748;">${col.name}</td>
-                            <td style="padding: 10px 12px; border-bottom: 1px solid #E2E8F0; color: #718096;">${col.dataType || '-'}</td>
-                            <td style="padding: 10px 12px; border-bottom: 1px solid #E2E8F0; color: #718096; font-family: 'Courier New', monospace; font-size: 11px;">${expression}</td>
+                            <td style="padding: 10px 12px; border-bottom: 1px solid #E2E8F0; font-weight: 500; color: #2D3748;">${colName}</td>
+                            <td style="padding: 10px 12px; border-bottom: 1px solid #E2E8F0; color: #718096;">${dataType}</td>
+                            <td style="padding: 10px 12px; border-bottom: 1px solid #E2E8F0; color: #718096; font-family: 'Courier New', monospace; font-size: 11px;">${exprSafe}</td>
                         </tr>`;
                 });
 
@@ -3378,6 +3419,13 @@
 
                 element.querySelector('td').innerHTML = columnsHtml;
                 element.dataset.loaded = 'true';
+                // Ensure expanded block is in view / scrollable parent can move
+                try {
+                    const scrollHost = document.getElementById('tableSearchContent');
+                    if (scrollHost) {
+                        element.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                    }
+                } catch (e) { /* ignore */ }
                 console.log('✅ Columns rendered successfully');
             } else {
                 element.querySelector('td').innerHTML = `
