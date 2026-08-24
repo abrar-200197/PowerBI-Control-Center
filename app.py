@@ -51,6 +51,7 @@ except Exception:
         return n.casefold() in {
             "usage metrics report",
             "report usage metrics report",
+            "dashboard usage metrics report",
         }
 
 # Initialize Flask app
@@ -7822,7 +7823,7 @@ def export_inactive_reports(workspace_id):
         ws_rules.append([])
         ws_rules.append(['Comments column', f'Pre-filled with "Zero views in last {VIEW_LOOKBACK_LABEL}" when views known and == 0'])
         ws_rules.append(['Archived Status / Can Decommission / Review Comments', 'Left blank for reviewers'])
-        ws_rules.append(['Excluded', 'Usage Metrics Report, Report Usage Metrics Report, [App] copies'])
+        ws_rules.append(['Excluded', 'Usage Metrics Report, Report Usage Metrics Report, Dashboard Usage Metrics Report, [App] copies'])
         ws_rules.column_dimensions['A'].width = 40
         ws_rules.column_dimensions['B'].width = 80
         ws_rules.cell(row=1, column=1).font = Font(bold=True, size=13, color='FFFFFF')
