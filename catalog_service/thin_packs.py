@@ -23,6 +23,7 @@ USAGE_LOOKBACK_DAYS = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))
 _EXCLUDED_REPORT_NAMES = frozenset({
     "usage metrics report",
     "report usage metrics report",
+    "dashboard usage metrics report",
 })
 
 
@@ -32,6 +33,7 @@ def is_excluded_report_name(name: Optional[str]) -> bool:
     Currently:
       - Usage Metrics Report
       - Report Usage Metrics Report
+      - Dashboard Usage Metrics Report
     Also skips published app shells ([App] …).
     """
     n = (name or "").strip()

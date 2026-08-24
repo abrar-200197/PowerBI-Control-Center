@@ -180,6 +180,7 @@ def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, An
                 return n in {
                     "usage metrics report",
                     "report usage metrics report",
+                    "dashboard usage metrics report",
                 }
         for it in files:
             row = _row_from_file(it, base)

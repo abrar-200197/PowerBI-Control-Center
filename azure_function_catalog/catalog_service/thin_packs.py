@@ -21,6 +21,7 @@ USAGE_LOOKBACK_DAYS = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))
 _EXCLUDED_REPORT_NAMES = frozenset({
     "usage metrics report",
     "report usage metrics report",
+    "dashboard usage metrics report",
 })
 
 
