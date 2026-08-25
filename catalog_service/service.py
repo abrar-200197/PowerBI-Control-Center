@@ -645,6 +645,8 @@ class CatalogService:
         limit: int,
         usage_lookback_days: int,
     ) -> Dict[str, Any]:
+        from catalog_service.thin_packs import is_excluded_report_name
+
         lists = thin.get("detailLists") or {}
         src = lists.get(metric) or []
         if not isinstance(src, list):
@@ -654,6 +656,11 @@ class CatalogService:
         lim = max(1, int(limit))
         for r in src:
             if not isinstance(r, dict):
+                continue
+            # Always enforce platform excludes at serve-time — packs built before
+            # "Dashboard Usage Metrics Report" was added still ship those rows.
+            rname = r.get("reportName") or r.get("name") or ""
+            if is_excluded_report_name(rname):
                 continue
             wid = r.get("workspaceId")
             if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
@@ -807,6 +814,8 @@ class CatalogService:
         allowed_workspace_ids: Optional[Set[str]],
         inactive_days: int,
     ) -> Dict[str, Any]:
+        from catalog_service.thin_packs import is_excluded_report_name
+
         workspaces_out: List[Dict[str, Any]] = []
         total_reports = total_inactive = total_orphaned = total_active = total_zero_views = 0
         total_failed_refresh = 0
@@ -820,7 +829,27 @@ class CatalogService:
         zero_by_ws: Dict[str, int] = {}
         failed_by_ws: Dict[str, int] = {}
         usage_days = thin.get("usageLookbackDays")
-        if not pack_has_zero:
+
+        # Prefer recounting zero-views from detailLists so stale packs that still
+        # contain Dashboard/Usage Metrics rows don't inflate KPI + workspace counts.
+        lists = thin.get("detailLists") if isinstance(thin.get("detailLists"), dict) else {}
+        zero_rows = lists.get("zero_views") if isinstance(lists, dict) else None
+        if isinstance(zero_rows, list):
+            zero_by_ws = {}
+            for r in zero_rows:
+                if not isinstance(r, dict):
+                    continue
+                rname = r.get("reportName") or r.get("name") or ""
+                if is_excluded_report_name(rname):
+                    continue
+                wid = r.get("workspaceId")
+                if not wid:
+                    continue
+                if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
+                    continue
+                zero_by_ws[wid] = int(zero_by_ws.get(wid) or 0) + 1
+            pack_has_zero = True  # use our filtered map below
+        elif not pack_has_zero:
             try:
                 zero_by_ws, usage_days = self._zero_views_by_workspace(allowed_workspace_ids)
             except Exception as exc:
@@ -830,6 +859,9 @@ class CatalogService:
                 failed_by_ws = self._failed_refresh_by_workspace(allowed_workspace_ids)
             except Exception as exc:
                 logger.warning("home failed-refresh enrich skipped: %s", exc)
+
+        # When we rebuilt zero_by_ws from detailLists, always prefer that map
+        use_filtered_zero_map = isinstance(zero_rows, list)
 
         for ws in thin.get("workspaces") or []:
             wid = ws.get("id")
@@ -841,7 +873,9 @@ class CatalogService:
             ic = int(ws.get("inactiveCount") or 0)
             oc = int(ws.get("orphanedCount") or 0)
             ac = int(ws.get("activeCount") if ws.get("activeCount") is not None else max(0, rc - ic))
-            if pack_has_zero:
+            if use_filtered_zero_map:
+                zc = int(zero_by_ws.get(wid) or 0)
+            elif pack_has_zero:
                 zc = int(ws.get("zeroViewsCount") or 0)
             else:
                 zc = int(zero_by_ws.get(wid) or 0)
