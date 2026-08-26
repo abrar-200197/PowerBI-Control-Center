@@ -113,21 +113,45 @@ def _pick_session_dir() -> str:
 
 _sess_dir = _pick_session_dir()
 
-app.config['SESSION_TYPE'] = 'filesystem'
+# Default filesystem. Optional Redis when SESSION_REDIS_URL is set (recommended on Azure
+# multi-instance / to survive worker recycles without losing mid-login OAuth state).
+# Existing successful-login behavior is unchanged when Redis is unset.
 app.config['SESSION_FILE_DIR'] = _sess_dir
-app.config['SESSION_FILE_THRESHOLD'] = 500
+# Old default 500 pruned server session files aggressively and could delete the
+# mid-login OAuth "state" file between /login and /getAToken under load.
+try:
+    _sess_threshold = int(os.getenv('SESSION_FILE_THRESHOLD', '10000'))
+except ValueError:
+    _sess_threshold = 10000
+app.config['SESSION_FILE_THRESHOLD'] = max(500, _sess_threshold)
 app.config['SESSION_USE_SIGNER'] = True
 app.config['SESSION_KEY_PREFIX'] = 'pbi_cc:'
 # Ensure Flask always saves session after login/callback
 app.config['SESSION_PERMANENT'] = False
 
-try:
-    from flask_session import Session as _FlaskSession
-    _FlaskSession(app)
-    _session_backend = f'filesystem:{_sess_dir}'
-except Exception as _sess_err:
-    _session_backend = f'cookie-fallback ({_sess_err})'
-    print(f"⚠️ Flask-Session unavailable, cookie sessions may overflow: {_sess_err}")
+_session_backend = 'unset'
+_redis_url = (os.getenv('SESSION_REDIS_URL') or os.getenv('REDIS_URL') or '').strip()
+if _redis_url:
+    try:
+        import redis as _redis_mod
+        app.config['SESSION_TYPE'] = 'redis'
+        app.config['SESSION_REDIS'] = _redis_mod.from_url(_redis_url)
+        from flask_session import Session as _FlaskSession
+        _FlaskSession(app)
+        _session_backend = f'redis:{_redis_url.split("@")[-1] if "@" in _redis_url else "configured"}'
+    except Exception as _redis_err:
+        print(f"⚠️ SESSION_REDIS_URL set but Redis session init failed ({_redis_err}); using filesystem")
+        _redis_url = ''
+
+if not _redis_url:
+    app.config['SESSION_TYPE'] = 'filesystem'
+    try:
+        from flask_session import Session as _FlaskSession
+        _FlaskSession(app)
+        _session_backend = f'filesystem:{_sess_dir} (threshold={app.config["SESSION_FILE_THRESHOLD"]})'
+    except Exception as _sess_err:
+        _session_backend = f'cookie-fallback ({_sess_err})'
+        print(f"⚠️ Flask-Session unavailable, cookie sessions may overflow: {_sess_err}")
 
 print(f"Session configuration:")
 print(f"   SECRET_KEY: {'Set from environment' if os.getenv('SECRET_KEY') else 'Using default (set SECRET_KEY in production!)'}")
@@ -475,14 +499,77 @@ def authorized():
     print(f"   Has code: {bool(request.args.get('code'))}")
     print(f"   Has error: {bool(request.args.get('error'))}")
 
-    # Verify state — show error page (do NOT redirect /login forever)
+    # Verify state. On mismatch: clear orphan cookie/session once, then offer a clean
+# /login — never leave users refreshing a one-time getAToken?code=… URL.
+# Successful path below is unchanged (code exchange / session fill).
     if request.args.get('state') != session.get("state"):
         print(f"❌ STATE MISMATCH - Session may not be persisting!")
         print(f"   SESSION_COOKIE_SECURE={app.config.get('SESSION_COOKIE_SECURE')}")
         print(f"   REDIRECT_URI config={REDIRECT_URI}")
+        print(f"   request_state={request.args.get('state')!r} session_state={session.get('state')!r}")
+        print(f"   cookies={list(request.cookies.keys())} session_keys={list(session.keys())}")
+        print(f"   session_backend={_session_backend}")
+
+        # Drop broken server session + oauth leftovers so the next /login is clean.
+        try:
+            session.clear()
+            session.modified = True
+        except Exception as _clr_err:
+            print(f"   session.clear failed: {_clr_err}")
+
+        _cookie_name = app.config.get('SESSION_COOKIE_NAME') or 'pbi_session'
+        _retry_cookie = 'pbi_oauth_retry'
+        _is_azure = bool(os.getenv('WEBSITE_HOSTNAME'))
+        _secure = bool(app.config.get('SESSION_COOKIE_SECURE'))
+        _samesite = app.config.get('SESSION_COOKIE_SAMESITE') or 'Lax'
+        # One auto-retry via /login (avoids stuck getAToken bookmark loops).
+        # Tracked with a short-lived cookie so the Entra round-trip still counts
+        # as "already retried" if state is missing again.
+        _already_retried = (request.cookies.get(_retry_cookie) or '').strip() == '1'
+        if not _already_retried:
+            print("   → one-shot clean redirect to /login (cleared orphan session)")
+            resp = redirect(url_for('login'))
+            resp.set_cookie(
+                _cookie_name,
+                '',
+                expires=0,
+                max_age=0,
+                path='/',
+                secure=_secure,
+                httponly=True,
+                samesite=_samesite,
+            )
+            resp.set_cookie(
+                _retry_cookie,
+                '1',
+                max_age=180,
+                path='/',
+                secure=_secure,
+                httponly=True,
+                samesite=_samesite,
+            )
+            return resp
+
+        _help_prod = f"""
+<p style="background:#eef6ff;border:1px solid #bcd;padding:12px;border-radius:8px">
+  <b>Production tip:</b> Close this tab. Open
+  <a href="{url_for('login')}"><code>/login</code></a> only
+  (do not refresh the long <code>getAToken?code=…</code> URL).
+  Ensure App Setting <code>SECRET_KEY</code> is set and stable across restarts.
+  Optional: set <code>SESSION_REDIS_URL</code> so OAuth state survives worker recycles.
+</p>"""
+        _help_local = """
+<ol>
+<li>Always open <b>http://localhost:5000</b> (not 127.0.0.1) unless both URIs are in Entra.</li>
+<li>Entra redirect URIs must include <code>http://localhost:5000/getAToken</code>.</li>
+<li>.env: <code>SESSION_COOKIE_SECURE=false</code>, stable <code>SECRET_KEY</code>.</li>
+<li>Use a fresh Incognito window, then open <a href="/login">/login</a>.</li>
+<li><a href="/debug/session-test">/debug/session-test</a> — <code>session_working</code> must stay true.</li>
+</ol>"""
         html = f"""<!doctype html><html><body style="font-family:Segoe UI,sans-serif;max-width:740px;margin:40px auto;padding:0 16px;line-height:1.45">
 <h2>Sign-in session lost (OAuth state mismatch)</h2>
-<p>Azure AD returned, but this browser did not send back the session cookie that held the CSRF <code>state</code>.</p>
+<p>Azure AD returned, but the server session no longer held the CSRF <code>state</code>
+(orphan cookie, recycled worker, pruned session file, or stale <code>getAToken</code> URL).</p>
 <pre style="background:#f4f4f4;padding:12px;overflow:auto">request_state = {request.args.get('state')!r}
 session_state = {session.get('state')!r}
 cookies = {list(request.cookies.keys())!r}
@@ -490,21 +577,36 @@ host = {request.host!r}
 redirect_uri = {redirect_uri!r}
 cookie_secure = {app.config.get('SESSION_COOKIE_SECURE')!r}
 session_dir = {app.config.get('SESSION_FILE_DIR')!r}
+session_backend = {_session_backend!r}
 </pre>
-<ol>
-<li>Always open <b>http://localhost:5000</b> (not 127.0.0.1) unless both URIs are in Entra.</li>
-<li>Entra app → Authentication → Redirect URIs must include
-  <code>http://localhost:5000/getAToken</code>
-  and preferably <code>http://127.0.0.1:5000/getAToken</code>.</li>
-<li>.env: <code>SESSION_COOKIE_SECURE=false</code>,
-  <code>REDIRECT_URI=http://localhost:5000/getAToken</code>, stable <code>SECRET_KEY</code>.</li>
-<li>Restart <code>python app.py</code>. Use a fresh Incognito window.</li>
-<li>Open <a href="/debug/session-test">/debug/session-test</a>, refresh once —
-  <code>session_working</code> must stay true and <code>pbi_session</code> cookie must appear.</li>
-</ol>
-<p><a href="/login">Try sign-in again</a> · <a href="/debug/env">/debug/env</a></p>
+{_help_prod if _is_azure else _help_local}
+<p><a href="{url_for('login')}" style="display:inline-block;margin-top:8px;padding:10px 16px;background:#0b5fff;color:#fff;text-decoration:none;border-radius:6px">Try sign-in again</a>
+ · <a href="/debug/env">/debug/env</a>
+ · <a href="/debug/session-test">/debug/session-test</a></p>
 </body></html>"""
-        return html, 400
+        resp = app.make_response((html, 400))
+        resp.set_cookie(
+            _cookie_name,
+            '',
+            expires=0,
+            max_age=0,
+            path='/',
+            secure=_secure,
+            httponly=True,
+            samesite=_samesite,
+        )
+        # Allow a future mismatch to auto-retry once again after user acts.
+        resp.set_cookie(
+            _retry_cookie,
+            '',
+            expires=0,
+            max_age=0,
+            path='/',
+            secure=_secure,
+            httponly=True,
+            samesite=_samesite,
+        )
+        return resp
 
     # Check for errors from Azure AD
     if "error" in request.args:
@@ -589,7 +691,19 @@ session_dir = {app.config.get('SESSION_FILE_DIR')!r}
 
         # Optional one-shot post-login landing (scroll-to-enter). Not auto-zoom.
         session['show_login_landing'] = True
-        return redirect(url_for("index"))
+        resp = redirect(url_for("index"))
+        # Clear one-shot OAuth retry marker after a successful sign-in.
+        resp.set_cookie(
+            'pbi_oauth_retry',
+            '',
+            expires=0,
+            max_age=0,
+            path='/',
+            secure=bool(app.config.get('SESSION_COOKIE_SECURE')),
+            httponly=True,
+            samesite=app.config.get('SESSION_COOKIE_SAMESITE') or 'Lax',
+        )
+        return resp
 
     flash('No authorization code received', 'error')
     return redirect(url_for("login"))
