@@ -705,7 +705,7 @@
             <button class="btn btn-danger" onclick="exportDecommissionReport()" id="decommissionBtn" style="display: none;" title="Generate quarterly decommissioning report for inactive reports">
                 Decommission list
             </button>
-            <button class="btn btn-primary" onclick="downloadDecommissionReportsZip()" id="decommissionDownloadBtn" style="display: none;" title="Download PBIX/RDL for all decommission-list candidates in this workspace (ZIP)">
+            <button class="btn btn-primary" onclick="downloadAllDecommissionReportsToSharePoint()" id="decommissionDownloadBtn" style="display: none;" title="Archive all decommission-list candidates to SharePoint (same as per-row Download, one by one)">
                 Download decommission reports
             </button>
             <button class="btn btn-secondary" onclick="refreshData()" id="refreshBtn" title="Reload reports for this workspace">
@@ -4056,16 +4056,17 @@
     }
 
     /**
-     * Download PBIX/RDL for all decommission-list candidates in the current workspace as one ZIP.
-     * Same candidate rules as "Decommission list". Does not change single-row Download.
+     * Archive every decommission-list candidate to SharePoint — same endpoint and
+     * path layout as the per-row Download button, one report at a time (not a ZIP).
+     * Visibility: only when canArchiveReports (same as individual Download).
      */
-    async function downloadDecommissionReportsZip() {
+    async function downloadAllDecommissionReportsToSharePoint() {
         if (!currentWorkspaceId) {
             showAlert('warning', 'Select a workspace first.');
             return;
         }
         if (!canArchiveReports) {
-            showAlert('error', 'You are not authorized to download decommission report files.');
+            showAlert('error', 'You are not authorized to archive reports to SharePoint.');
             return;
         }
         if (!reports || reports.length === 0) {
@@ -4075,64 +4076,136 @@
 
         const btn = document.getElementById('decommissionDownloadBtn');
         const original = btn ? btn.innerHTML : '';
+        const setBtn = (html, disabled) => {
+            if (!btn) return;
+            btn.disabled = !!disabled;
+            btn.innerHTML = html;
+            if (disabled) btn.classList.add('loading');
+            else btn.classList.remove('loading');
+        };
+
         try {
-            if (btn) {
-                btn.classList.add('loading');
-                btn.disabled = true;
-                btn.innerHTML = '<span class="btn-spinner"></span>Preparing ZIP…';
+            setBtn('<span class="btn-spinner"></span>Loading list…', true);
+
+            const listRes = await fetch(
+                `/api/decommission-list-candidates/${currentWorkspaceId}`,
+                { credentials: 'include' }
+            );
+            const listBody = await listRes.json().catch(() => ({}));
+            if (!listRes.ok || !listBody.success) {
+                throw new Error(listBody.error || `HTTP ${listRes.status}`);
             }
+
+            const candidates = listBody.candidates || [];
+            const workspaceName = listBody.workspace_name
+                || (document.querySelector(`#workspaceSelect option[value="${currentWorkspaceId}"]`) || {}).textContent
+                || currentWorkspaceId;
+
+            if (!candidates.length) {
+                showAlert('info', 'No decommission-list candidates to archive in this workspace.');
+                return;
+            }
+
+            const ok = window.confirm(
+                `Archive ${candidates.length} decommission-list report(s) from "${workspaceName}" to SharePoint?\n\n` +
+                'Each file is exported and uploaded individually (same as the row Download button).\n' +
+                'Large reports can take several minutes each — keep this tab open.'
+            );
+            if (!ok) return;
+
             showAlert(
                 'info',
-                'Downloading decommission-list reports as ZIP… large workspaces can take several minutes.',
-                300000
+                `Archiving ${candidates.length} report(s) to SharePoint…`,
+                600000
             );
 
-            const url = `/api/download-decommission-reports/${currentWorkspaceId}`;
-            const response = await fetch(url, { credentials: 'include' });
-            if (!response.ok) {
-                let msg = `HTTP ${response.status}`;
+            let okCount = 0;
+            const failures = [];
+
+            for (let i = 0; i < candidates.length; i++) {
+                const c = candidates[i];
+                const rid = c.report_id;
+                const rname = c.report_name || 'Report';
+                setBtn(
+                    `<span class="btn-spinner"></span>${i + 1}/${candidates.length}`,
+                    true
+                );
+                console.log(`📦 Bulk archive [${i + 1}/${candidates.length}] ${rname}`);
+
+                // Prefer live row folder info when present in the table cache
+                const live = (allWorkspaceReports || reports || []).find(r => r && r.id === rid);
+                let folderId = (live && (live.folderId || live.folderObjectId)) || c.folder_id || null;
+                let folderName = (live && live.folderName) || c.folder_name || null;
+                if (folderId === '__ROOT__' || !folderId) {
+                    folderId = null;
+                    folderName = null;
+                } else if (!folderName && folders && folders.length) {
+                    const f = folders.find(x => x && x.id === folderId);
+                    if (f && f.name) folderName = f.name;
+                }
+
+                const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+                const abortTimer = controller
+                    ? setTimeout(() => controller.abort(), 15 * 60 * 1000)
+                    : null;
+
                 try {
-                    const errBody = await response.json();
-                    msg = errBody.error || errBody.message || msg;
-                    if (errBody.failures && errBody.failures.length) {
-                        msg += ' | ' + errBody.failures.slice(0, 3).join('; ');
+                    const res = await fetch('/api/reports/archive-to-sharepoint', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        signal: controller ? controller.signal : undefined,
+                        body: JSON.stringify({
+                            workspace_id: currentWorkspaceId,
+                            workspace_name: workspaceName,
+                            report_id: rid,
+                            report_name: rname,
+                            folder_id: folderId,
+                            folder_name: folderName,
+                        }),
+                    });
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok || !body.success) {
+                        const err = body.error || `HTTP ${res.status}`;
+                        failures.push(`${rname}: ${err}`);
+                        console.warn('bulk archive fail', rname, body);
+                    } else {
+                        okCount += 1;
+                        console.log('bulk archive OK', rname, body.remotePath || body.batchFolder);
                     }
                 } catch (e) {
-                    try {
-                        msg = await response.text() || msg;
-                    } catch (e2) { /* ignore */ }
+                    const msg = (e && e.name === 'AbortError')
+                        ? 'timed out'
+                        : (e.message || String(e));
+                    failures.push(`${rname}: ${msg}`);
+                    console.error('bulk archive exception', rname, e);
+                } finally {
+                    if (abortTimer) clearTimeout(abortTimer);
                 }
-                throw new Error(msg);
             }
 
-            const blob = await response.blob();
-            let filename = 'Decommission_Reports.zip';
-            const cd = response.headers.get('Content-Disposition') || '';
-            const m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
-            if (m && m[1]) {
-                filename = decodeURIComponent(m[1].replace(/"/g, '').trim());
+            if (okCount && !failures.length) {
+                showAlert(
+                    'success',
+                    `Archived ${okCount} decommission-list report(s) to SharePoint.`
+                );
+            } else if (okCount && failures.length) {
+                showAlert(
+                    'warning',
+                    `Archived ${okCount} OK, ${failures.length} failed. First errors: ` +
+                    failures.slice(0, 3).join(' | ')
+                );
+            } else {
+                showAlert(
+                    'error',
+                    `No reports archived. ${failures.slice(0, 3).join(' | ') || 'See console.'}`
+                );
             }
-
-            const downloadUrl = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = downloadUrl;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(downloadUrl);
-            document.body.removeChild(a);
-
-            showAlert('success', `Decommission reports ZIP ready: ${filename}`);
-            console.log('✅ Bulk decommission ZIP downloaded', filename);
         } catch (error) {
-            console.error('❌ Bulk decommission download failed:', error);
-            showAlert('error', `Failed to download decommission reports: ${error.message || error}`);
+            console.error('❌ Bulk decommission SharePoint archive failed:', error);
+            showAlert('error', `Failed: ${error.message || error}`);
         } finally {
-            if (btn) {
-                btn.classList.remove('loading');
-                btn.disabled = false;
-                btn.innerHTML = original || 'Download decommission reports';
-            }
+            setBtn(original || 'Download decommission reports', false);
         }
     }
 

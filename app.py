@@ -8028,41 +8028,34 @@ def export_inactive_reports(workspace_id):
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/download-decommission-reports/<workspace_id>')
+@app.route('/api/decommission-list-candidates/<workspace_id>')
 @login_required
-def download_decommission_reports(workspace_id):
+def decommission_list_candidates(workspace_id):
     """
-    One-click ZIP of all Report Catalog decommission-list candidates for a workspace.
+    JSON list of Report Catalog decommission-list candidates for bulk SharePoint archive.
 
-    Uses the same candidate rules as /api/export-inactive-reports (stale refresh,
-    no import history, zero views). Does not change Excel export or per-row Download.
-    Requires archive permission (same allow-list as single-report Download).
+    Same candidate rules as /api/export-inactive-reports. Does not export files —
+    the client calls POST /api/reports/archive-to-sharepoint once per candidate
+    (identical to the per-row Download button).
+
+    Requires archive allow-list (same as individual Download).
     """
     try:
-        import io
-        import re
-        import zipfile
         from datetime import datetime, timezone
-        from flask import send_file
 
-        from features.report_archive_service import (
-            export_report_bytes,
-            user_can_archive,
-            _safe_segment,
-        )
+        from features.report_archive_service import user_can_archive
 
         email = session.get('user', {}).get('preferred_username') or ''
         if not user_can_archive(email):
             return jsonify({
                 'success': False,
-                'error': 'Not authorized to download decommission report files.',
+                'error': 'Not authorized to archive reports to SharePoint.',
             }), 403
 
         workspace_id = (workspace_id or '').strip()
         if not workspace_id:
             return jsonify({'success': False, 'error': 'workspace_id required'}), 400
 
-        # ---- Build candidate set with the same rules as Decommission list Excel ----
         REFRESH_STALE_DAYS = 90
         VIEW_LOOKBACK_LABEL = '60 days'
 
@@ -8121,7 +8114,7 @@ def download_decommission_reports(workspace_id):
             try:
                 pack = catalog_service.get_workspace_reports(workspace_id)
             except Exception as e:
-                print(f"   ⚠️ bulk decomm catalog failed: {e}")
+                print(f"   ⚠️ decomm candidates catalog failed: {e}")
                 pack = None
 
         if pack and (pack.get('reports') or []):
@@ -8145,7 +8138,7 @@ def download_decommission_reports(workspace_id):
         else:
             return jsonify({
                 'success': False,
-                'error': 'No reports found in catalog for this workspace. Open Report Catalog first.',
+                'error': 'No reports found in catalog for this workspace.',
             }), 404
 
         for r in reports_in:
@@ -8176,6 +8169,22 @@ def download_decommission_reports(workspace_id):
                 or pack.get('generatedAt')
             )
         data_as_of_dt = _parse_dt(data_as_of_raw) or datetime.now(timezone.utc)
+
+        # Folder map for archive path (same idea as single Download)
+        folder_path_by_report = {}
+        report_folder_map = {}
+        folder_names_map = {}
+        try:
+            folder_meta = _fetch_workspace_folder_meta(workspace_id) or {}
+            report_folder_map = folder_meta.get('report_folder_map') or {}
+            folder_names_map = folder_meta.get('folder_names_map') or {}
+            for rid, fid in report_folder_map.items():
+                info = folder_names_map.get(fid) or {}
+                nm = info.get('name')
+                if nm:
+                    folder_path_by_report[rid] = nm
+        except Exception as folder_err:
+            print(f"   ⚠️ folder map for decomm candidates skipped: {folder_err}")
 
         candidates = []
         for report in reports_in:
@@ -8223,146 +8232,50 @@ def download_decommission_reports(workspace_id):
             if (views_known or report.get('view_count') is not None) and int(views or 0) == 0:
                 reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
 
-            if reasons:
-                candidates.append({
-                    'report_id': rid,
-                    'report_name': name,
-                    'reasons': reasons,
-                })
+            if not reasons:
+                continue
 
-        if not candidates:
-            return jsonify({
-                'success': False,
-                'error': 'No decommission-list candidates in this workspace under current rules.',
-            }), 404
+            folder_id = (
+                report.get('folderId')
+                or report.get('folderObjectId')
+                or report_folder_map.get(rid)
+                or None
+            )
+            if folder_id in ('__ROOT__', '', None):
+                folder_id = None
+            folder_name = (
+                report.get('folderName')
+                or report.get('folder_name')
+                or folder_path_by_report.get(rid)
+                or None
+            )
+            if not folder_id:
+                folder_name = None
 
-        # Cap bulk size (env override) so one click cannot hang forever
-        try:
-            max_n = int(os.getenv('DECOMM_BULK_DOWNLOAD_MAX') or '40')
-        except ValueError:
-            max_n = 40
-        max_n = max(1, min(max_n, 100))
-        truncated = len(candidates) > max_n
-        if truncated:
-            candidates = candidates[:max_n]
+            candidates.append({
+                'report_id': rid,
+                'report_name': name,
+                'folder_id': folder_id,
+                'folder_name': folder_name,
+                'reasons': reasons,
+            })
 
-        # Tokens: user first (same as single Download), SP fallback
-        user_token = get_user_powerbi_token()
-        sp_token = None
-        try:
-            from scanner_connector import PowerBIScanner
-            sp_token = PowerBIScanner().get_access_token()
-        except Exception:
-            sp_token = None
-        if not user_token and not sp_token:
-            return jsonify({
-                'success': False,
-                'error': 'No Power BI token available for Export API.',
-            }), 401
+        candidates.sort(key=lambda x: (x.get('report_name') or '').lower())
 
         print(
-            f"\n📦 BULK DECOMM DOWNLOAD ws={workspace_name!r} "
-            f"candidates={len(candidates)} truncated={truncated}"
+            f"📋 decomm candidates ws={workspace_name!r} "
+            f"count={len(candidates)}/{len(reports_in)}"
         )
-
-        zip_buf = io.BytesIO()
-        ok_files = 0
-        fail_rows = []
-        used_names = set()
-
-        with zipfile.ZipFile(zip_buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-            for i, c in enumerate(candidates, 1):
-                rid = c['report_id']
-                rname = c['report_name']
-                print(f"   [{i}/{len(candidates)}] Export {rname!r} ({rid[:8]}…)")
-                result = export_report_bytes(
-                    access_token=user_token or sp_token,
-                    workspace_id=workspace_id,
-                    report_id=rid,
-                    fallback_token=sp_token if user_token else None,
-                )
-                if not result.get('ok'):
-                    err = result.get('error') or 'Export failed'
-                    fail_rows.append(f"{rname}: {err}")
-                    print(f"      ❌ {err[:200]}")
-                    continue
-
-                content = result.get('content') or b''
-                if not content:
-                    fail_rows.append(f"{rname}: empty export body")
-                    continue
-
-                # Extension from content-type / disposition / magic
-                ext = '.pbix'
-                ctype = (result.get('content_type') or '').lower()
-                cdisp = result.get('content_disposition') or ''
-                if 'rdl' in ctype or '.rdl' in cdisp.lower():
-                    ext = '.rdl'
-                elif content[:2] == b'PK':
-                    ext = '.pbix'
-                elif b'<' in content[:200] and b'rdl' in content[:2000].lower():
-                    ext = '.rdl'
-
-                base_name = _safe_segment(rname, 'Report')
-                fname = f"{base_name}{ext}"
-                n = 2
-                while fname.lower() in used_names:
-                    fname = f"{base_name}_{n}{ext}"
-                    n += 1
-                used_names.add(fname.lower())
-                zf.writestr(fname, content)
-                ok_files += 1
-                print(f"      ✅ {fname} ({len(content)} bytes)")
-
-            # Manifest always included
-            manifest_lines = [
-                f"Workspace: {workspace_name}",
-                f"Workspace ID: {workspace_id}",
-                f"Generated (UTC): {datetime.now(timezone.utc).isoformat()}",
-                f"Requested candidates: {len(candidates)}"
-                + (" (list truncated by DECOMM_BULK_DOWNLOAD_MAX)" if truncated else ""),
-                f"Exported OK: {ok_files}",
-                f"Failed: {len(fail_rows)}",
-                "",
-                "Rules (same as Decommission list):",
-                f"  - Days since refresh > {REFRESH_STALE_DAYS}",
-                "  - No import refresh history (not alone for DirectQuery/Live)",
-                f"  - 0 views in last {VIEW_LOOKBACK_LABEL}",
-                "",
-                "OK files:",
-            ]
-            for u in sorted(used_names):
-                manifest_lines.append(f"  - {u}")
-            if fail_rows:
-                manifest_lines.append("")
-                manifest_lines.append("Failures:")
-                for fr in fail_rows:
-                    manifest_lines.append(f"  - {fr}")
-            zf.writestr('_manifest.txt', "\n".join(manifest_lines) + "\n")
-
-        if ok_files == 0:
-            return jsonify({
-                'success': False,
-                'error': 'No reports could be exported. See server logs.',
-                'failures': fail_rows[:20],
-            }), 502
-
-        zip_buf.seek(0)
-        safe_ws = re.sub(r'[^A-Za-z0-9._-]+', '_', workspace_name)[:60] or 'workspace'
-        zip_name = (
-            f"Decommission_Reports_{safe_ws}_"
-            f"{datetime.now(timezone.utc).strftime('%Y%m%d')}.zip"
-        )
-        print(f"   📁 ZIP {zip_name} ok={ok_files} fail={len(fail_rows)}")
-        return send_file(
-            zip_buf,
-            mimetype='application/zip',
-            as_attachment=True,
-            download_name=zip_name,
-        )
+        return jsonify({
+            'success': True,
+            'workspace_id': workspace_id,
+            'workspace_name': workspace_name,
+            'count': len(candidates),
+            'candidates': candidates,
+        })
 
     except Exception as e:
-        print(f"❌ Error bulk downloading decommission reports: {e}")
+        print(f"❌ Error listing decommission candidates: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
