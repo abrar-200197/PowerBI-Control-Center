@@ -2151,26 +2151,41 @@ def api_decommissioned_reports():
                 return q in blob
             rows = [r for r in rows if _match(r)]
 
-        # Rebuild workspace groups for filtered set
+        # Rebuild workspace groups for filtered report rows
         by_ws = {}
         for r in rows:
             wn = r.get('workspaceName') or 'Unknown'
             by_ws.setdefault(wn, []).append(r)
+
+        # Keep empty SharePoint workspace folders (0 reports) from inventory.
+        # Text search (q) only matches report rows — hide empties while searching.
+        # Workspace dropdown filter still shows an empty folder when selected.
+        if not q:
+            for w in (payload.get('workspaces') or []):
+                wn = (w.get('workspaceName') or 'Unknown')
+                if ws_filter and wn.lower() != ws_filter.lower():
+                    continue
+                if wn not in by_ws:
+                    by_ws[wn] = list(w.get('reports') or [])
+
         workspaces = [
             {
                 'workspaceName': wn,
                 'reportCount': len(rs),
                 'reports': rs,
+                'isEmpty': len(rs) == 0,
             }
             for wn, rs in sorted(by_ws.items(), key=lambda x: x[0].lower())
         ]
 
+        empty_n = sum(1 for w in workspaces if not w.get('reportCount'))
         return jsonify({
             **payload,
             'rows': rows,
             'workspaces': workspaces,
             'totalReports': len(rows),
             'workspaceCount': len(workspaces),
+            'emptyWorkspaceCount': empty_n,
             'filter': {'workspace': ws_filter or None, 'q': q or None},
         })
     except Exception as e:
