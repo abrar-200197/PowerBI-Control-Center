@@ -4107,9 +4107,7 @@
             }
 
             const ok = window.confirm(
-                `Archive ${candidates.length} decommission-list report(s) from "${workspaceName}" to SharePoint?\n\n` +
-                'Each file is exported and uploaded individually (same as the row Download button).\n' +
-                'Large reports can take several minutes each — keep this tab open.'
+                `Archive ${candidates.length} report(s) from "${workspaceName}" to SharePoint?`
             );
             if (!ok) return;
 
