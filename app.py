@@ -1102,6 +1102,94 @@ def api_catalog_status():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _perform_catalog_refresh() -> dict:
+    """
+    Shared body for interactive and machine catalog refresh.
+    Force re-download of catalog artifacts from SharePoint into server memory/disk mirror.
+    Also clears per-user /api/reports response cache so Report Catalog picks up new ops.
+    """
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return {'success': False, 'error': 'Catalog not available', '_http': 503}
+
+    catalog_service.invalidate()
+    # Prefer thin packs first (fast UI), then heavy files for report/model APIs
+    home = catalog_service.get_json('ui_home_index.json', force_refresh=True)
+    tables = catalog_service.get_json('ui_impact_tables.json', force_refresh=True)
+    try:
+        impact_reports = catalog_service.get_json('ui_impact_reports.json', force_refresh=True)
+    except Exception:
+        impact_reports = None
+    summary = catalog_service.get_summary(force_refresh=True)
+    cat = catalog_service.get_workspace_catalog(force_refresh=True)
+    impact = catalog_service.get_impact_index(force_refresh=True)
+    # Rebuild report→sources pack if SharePoint has old pack without it
+    if impact and (not impact_reports or not isinstance((impact_reports or {}).get('rows'), list)):
+        try:
+            catalog_service._ensure_thin_impact_pack(impact)
+            impact_reports = catalog_service.get_json('ui_impact_reports.json')
+        except Exception as exc:
+            print(f"⚠️ thin impact reports pack rebuild: {exc}")
+    # Ops snapshot used for last refresh / views — reload so Catalog is not stuck on old ops
+    try:
+        catalog_service.get_json('refresh_snapshot.json', force_refresh=True)
+    except Exception:
+        pass
+    try:
+        catalog_service.get_json('usage_snapshot.json', force_refresh=True)
+    except Exception:
+        pass
+
+    # Ensure Home KPI detail lists + report directory exist (older SP packs may lack them)
+    home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
+    report_dir = None
+    try:
+        report_dir = catalog_service.get_json('ui_report_directory.json')
+    except Exception:
+        report_dir = None
+    need_home_rebuild = cat and (
+        not home_has_details
+        or not report_dir
+        or not isinstance((report_dir or {}).get('rows'), list)
+    )
+    if need_home_rebuild:
+        try:
+            catalog_service._ensure_thin_home_pack(cat)
+            home = catalog_service.get_json('ui_home_index.json')
+            home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
+            report_dir = catalog_service.get_json('ui_report_directory.json')
+        except Exception as exc:
+            print(f"⚠️ thin home/report-directory pack rebuild after refresh: {exc}")
+
+    # Drop in-process /api/reports shells + folder tree so next load is fresh
+    cleared_reports = 0
+    try:
+        global reports_cache, workspace_folders_cache
+        cleared_reports = len(reports_cache)
+        reports_cache = {}
+        workspace_folders_cache = {}
+    except Exception:
+        pass
+
+    ops_at = None
+    if isinstance(cat, dict):
+        ops_at = cat.get('opsEnrichedAt') or cat.get('generatedAt')
+    return {
+        'success': True,
+        'ui_home_index': bool(home),
+        'ui_home_detailLists': home_has_details,
+        'ui_report_directory': bool(report_dir and (report_dir.get('rows') is not None)),
+        'ui_impact_tables': bool(tables),
+        'ui_impact_reports': bool(impact_reports),
+        'workspace_catalog': bool(cat),
+        'impact_index': bool(impact),
+        'summary': bool(summary),
+        'opsEnrichedAt': ops_at,
+        'generatedAt': (cat or {}).get('generatedAt') if isinstance(cat, dict) else None,
+        'clearedReportsCacheEntries': cleared_reports,
+        'status': catalog_service.status(),
+    }
+
+
 @app.route('/api/catalog/refresh', methods=['POST'])
 @login_required
 def api_catalog_refresh():
@@ -1109,87 +1197,46 @@ def api_catalog_refresh():
     Force re-download of catalog artifacts from SharePoint into server memory/disk mirror.
     Also clears per-user /api/reports response cache so Report Catalog picks up new ops.
     """
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
     try:
-        catalog_service.invalidate()
-        # Prefer thin packs first (fast UI), then heavy files for report/model APIs
-        home = catalog_service.get_json('ui_home_index.json', force_refresh=True)
-        tables = catalog_service.get_json('ui_impact_tables.json', force_refresh=True)
-        try:
-            impact_reports = catalog_service.get_json('ui_impact_reports.json', force_refresh=True)
-        except Exception:
-            impact_reports = None
-        summary = catalog_service.get_summary(force_refresh=True)
-        cat = catalog_service.get_workspace_catalog(force_refresh=True)
-        impact = catalog_service.get_impact_index(force_refresh=True)
-        # Rebuild report→sources pack if SharePoint has old pack without it
-        if impact and (not impact_reports or not isinstance((impact_reports or {}).get('rows'), list)):
-            try:
-                catalog_service._ensure_thin_impact_pack(impact)
-                impact_reports = catalog_service.get_json('ui_impact_reports.json')
-            except Exception as exc:
-                print(f"⚠️ thin impact reports pack rebuild: {exc}")
-        # Ops snapshot used for last refresh / views — reload so Catalog is not stuck on old ops
-        try:
-            catalog_service.get_json('refresh_snapshot.json', force_refresh=True)
-        except Exception:
-            pass
-        try:
-            catalog_service.get_json('usage_snapshot.json', force_refresh=True)
-        except Exception:
-            pass
-
-        # Ensure Home KPI detail lists + report directory exist (older SP packs may lack them)
-        home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
-        report_dir = None
-        try:
-            report_dir = catalog_service.get_json('ui_report_directory.json')
-        except Exception:
-            report_dir = None
-        need_home_rebuild = cat and (
-            not home_has_details
-            or not report_dir
-            or not isinstance((report_dir or {}).get('rows'), list)
-        )
-        if need_home_rebuild:
-            try:
-                catalog_service._ensure_thin_home_pack(cat)
-                home = catalog_service.get_json('ui_home_index.json')
-                home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
-                report_dir = catalog_service.get_json('ui_report_directory.json')
-            except Exception as exc:
-                print(f"⚠️ thin home/report-directory pack rebuild after refresh: {exc}")
-
-        # Drop in-process /api/reports shells + folder tree so next load is fresh
-        cleared_reports = 0
-        try:
-            global reports_cache, workspace_folders_cache
-            cleared_reports = len(reports_cache)
-            reports_cache = {}
-            workspace_folders_cache = {}
-        except Exception:
-            pass
-
-        ops_at = None
-        if isinstance(cat, dict):
-            ops_at = cat.get('opsEnrichedAt') or cat.get('generatedAt')
-        return jsonify({
-            'success': True,
-            'ui_home_index': bool(home),
-            'ui_home_detailLists': home_has_details,
-            'ui_report_directory': bool(report_dir and (report_dir.get('rows') is not None)),
-            'ui_impact_tables': bool(tables),
-            'ui_impact_reports': bool(impact_reports),
-            'workspace_catalog': bool(cat),
-            'impact_index': bool(impact),
-            'summary': bool(summary),
-            'opsEnrichedAt': ops_at,
-            'generatedAt': (cat or {}).get('generatedAt') if isinstance(cat, dict) else None,
-            'clearedReportsCacheEntries': cleared_reports,
-            'status': catalog_service.status(),
-        })
+        body = _perform_catalog_refresh()
+        code = int(body.pop('_http', 200)) if isinstance(body, dict) else 200
+        return jsonify(body), code
     except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/catalog/refresh-internal', methods=['POST'])
+def api_catalog_refresh_internal():
+    """
+    Machine-callable catalog refresh after ops/fresh SharePoint publish.
+    Auth: header X-Catalog-Refresh-Key (or Authorization: Bearer) must match
+    App Setting CATALOG_REFRESH_SECRET. No user SSO session required.
+    """
+    secret = (os.getenv('CATALOG_REFRESH_SECRET') or '').strip()
+    if not secret:
+        return jsonify({
+            'success': False,
+            'error': 'CATALOG_REFRESH_SECRET is not configured on the app',
+        }), 503
+
+    provided = (
+        (request.headers.get('X-Catalog-Refresh-Key') or '').strip()
+        or (request.headers.get('X-Api-Key') or '').strip()
+    )
+    auth_h = (request.headers.get('Authorization') or '').strip()
+    if auth_h.lower().startswith('bearer '):
+        provided = provided or auth_h[7:].strip()
+    if not provided or provided != secret:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
+    try:
+        body = _perform_catalog_refresh()
+        code = int(body.pop('_http', 200)) if isinstance(body, dict) else 200
+        body['triggeredBy'] = 'internal'
+        print(f"🔄 catalog refresh-internal OK opsEnrichedAt={body.get('opsEnrichedAt')}")
+        return jsonify(body), code
+    except Exception as e:
+        print(f"❌ catalog refresh-internal failed: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

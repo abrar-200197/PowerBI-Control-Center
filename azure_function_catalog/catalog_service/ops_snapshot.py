@@ -370,11 +370,82 @@ def fetch_admin_refreshables_map(
     return out
 
 
+def _is_true_history_source(info: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(info, dict):
+        return False
+    src = str(info.get("refresh_source") or "").lower().replace("-", "_").replace(" ", "")
+    if src in (
+        "scheduled", "ondemand", "on_demand", "viaapi", "via_api",
+        "admin", "history", "api",
+    ):
+        return True
+    if info.get("history_refresh_type"):
+        return True
+    return False
+
+
+def _is_history_miss(info: Optional[Dict[str, Any]]) -> bool:
+    """
+    True when this run did not capture usable Scheduled/API/Admin job history
+    and would (or did) fall back to content timestamps / empty / error.
+    Those IDs are candidates for a targeted retry pass.
+    """
+    if not isinstance(info, dict):
+        return True
+    if _is_true_history_source(info) and info.get("last_refreshed"):
+        return False
+    src = str(info.get("refresh_source") or "").lower().replace("-", "_").replace(" ", "")
+    if src in ("content_modified", "content_created", "contentcreated", "created", "none", ""):
+        return True
+    st = str(info.get("last_refresh_status") or "").lower()
+    if st in ("error", "access denied", "unverified", "no history"):
+        return True
+    rtype = str(info.get("refresh_type") or "").lower()
+    if rtype == "error" and not _is_true_history_source(info):
+        return True
+    note = str(info.get("refresh_note") or "").lower()
+    if "no scheduled refresh history" in note or "could not load refresh history" in note:
+        return True
+    return not bool(info.get("last_refreshed"))
+
+
+def _prefer_prior_scheduled(
+    new_info: Dict[str, Any],
+    prior_info: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    If this run only has content fallback / miss but a previous ops snapshot had
+    real scheduled history, keep the prior scheduled values (do not overwrite with
+    content_modified "Success").
+    """
+    if not isinstance(prior_info, dict) or not prior_info:
+        return new_info
+    if not _is_true_history_source(prior_info) or not prior_info.get("last_refreshed"):
+        return new_info
+    if _is_true_history_source(new_info) and new_info.get("last_refreshed"):
+        return new_info
+    # Keep prior job truth; preserve any fresher schedule label from this run if present
+    kept = dict(prior_info)
+    for k in ("refresh_schedule", "schedule_days", "schedule_times", "schedule_summary", "datasetName"):
+        if new_info.get(k) not in (None, "", "Unknown", "Error"):
+            # Prefer explicit schedule from this run when prior was empty/unknown
+            prior_sched = str(kept.get(k) or "")
+            if not prior_sched or prior_sched in ("Unknown", "Error", "N/A"):
+                kept[k] = new_info.get(k)
+    note = str(kept.get("refresh_note") or "")
+    extra = "Retained prior scheduled history (this run could not re-read refreshes)."
+    if extra.lower() not in note.lower():
+        kept["refresh_note"] = f"{note}; {extra}".strip("; ") if note else extra
+    kept["days_since_refresh"] = days_since_refresh(kept.get("last_refreshed"))
+    return kept
+
+
 def build_refresh_snapshot(
     targets: List[Dict[str, str]],
     auth: Optional[OpsAuth] = None,
     workers: int = REFRESH_WORKERS,
     catalog: Optional[Dict[str, Any]] = None,
+    prior_datasets: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Fetch refresh info for unique datasets (service principal).
@@ -384,18 +455,24 @@ def build_refresh_snapshot(
       2) Admin refreshables lastRefresh (bulk)
       3) Content-modified fallback (report/dataset timestamps) when history empty
 
+    After the main pass, history-miss datasets get a slower targeted retry.
+    Prior snapshot scheduled rows are retained when retry still cannot read history
+    (avoids overwriting real jobs with content_modified).
+
     OneDrive-tab history is NOT returned by Microsoft REST APIs — we document that
     in refresh_note when still blank after all sources.
     """
     auth = auth or OpsAuth()
     headers = auth.headers()
     results: Dict[str, Any] = {}
+    prior_datasets = prior_datasets if isinstance(prior_datasets, dict) else {}
     if not targets:
         return {
             "generatedAt": _utc_now().isoformat(),
             "datasetCount": 0,
             "datasets": {},
             "sources": {"scheduled": 0, "admin": 0, "content_modified": 0},
+            "retry": {"candidates": 0, "healed": 0, "stillMiss": 0, "priorRetained": 0},
         }
 
     # Optional: newest report modifiedDateTime per dataset (content-modified fallback)
@@ -433,9 +510,10 @@ def build_refresh_snapshot(
 
     admin_map = fetch_admin_refreshables_map(auth=auth)
 
-    def _one(t: Dict[str, str]) -> Tuple[str, Dict[str, Any]]:
+    def _one(t: Dict[str, str], *, timeout: Optional[float] = None) -> Tuple[str, Dict[str, Any]]:
         ds_id = t["datasetId"]
         ws_id = t.get("workspaceId") or None
+        to = timeout if timeout is not None else min(HTTP_TIMEOUT, 12)
         try:
             scheduled = resolve_dataset_refresh_info(
                 headers=headers,
@@ -443,7 +521,7 @@ def build_refresh_snapshot(
                 dataset_id=ds_id,
                 dataset_workspace_id=ws_id,
                 history_top=5,
-                timeout=min(HTTP_TIMEOUT, 12),
+                timeout=to,
             )
         except Exception as exc:
             logger.warning("Refresh snapshot failed %s: %s", ds_id[:8], exc)
@@ -502,7 +580,60 @@ def build_refresh_snapshot(
             if done % 50 == 0 or done == len(targets):
                 logger.info("  refresh progress %s/%s", done, len(targets))
 
-    src_counts = {"scheduled": 0, "admin": 0, "content_modified": 0, "other": 0, "none": 0}
+    # ---- Targeted retry for history misses (slower, fewer workers) ----
+    by_id = {t["datasetId"]: t for t in targets if t.get("datasetId")}
+    miss_ids = [ds for ds, info in results.items() if _is_history_miss(info)]
+    healed = 0
+    retry_workers = max(1, min(4, workers))
+    retry_timeout = max(float(HTTP_TIMEOUT), 25.0)
+    if miss_ids:
+        logger.info(
+            "Ops refresh retry: %s history-miss datasets (workers=%s timeout=%ss)",
+            len(miss_ids),
+            retry_workers,
+            int(retry_timeout),
+        )
+        retry_targets = [by_id[i] for i in miss_ids if i in by_id]
+        with ThreadPoolExecutor(max_workers=retry_workers) as ex:
+            futs = {
+                ex.submit(_one, t, timeout=retry_timeout): t["datasetId"]
+                for t in retry_targets
+            }
+            for fut in as_completed(futs):
+                try:
+                    ds_id, info = fut.result()
+                except Exception as exc:
+                    logger.warning("Refresh retry failed: %s", exc)
+                    continue
+                if not _is_history_miss(info) and _is_true_history_source(info):
+                    healed += 1
+                    results[ds_id] = info
+                elif not _is_history_miss(info):
+                    results[ds_id] = info
+                    healed += 1
+
+    # ---- Retain prior scheduled when still a miss (never overwrite with modified) ----
+    prior_retained = 0
+    still_miss = 0
+    for ds_id, info in list(results.items()):
+        if not _is_history_miss(info):
+            continue
+        still_miss += 1
+        prior = prior_datasets.get(ds_id) if isinstance(prior_datasets.get(ds_id), dict) else None
+        kept = _prefer_prior_scheduled(info, prior)
+        if kept is not info and _is_true_history_source(kept):
+            results[ds_id] = kept
+            prior_retained += 1
+            still_miss -= 1
+
+    src_counts: Dict[str, int] = {
+        "scheduled": 0,
+        "admin": 0,
+        "content_modified": 0,
+        "content_created": 0,
+        "other": 0,
+        "none": 0,
+    }
     for info in results.values():
         src = str((info or {}).get("refresh_source") or "none")
         if src in src_counts:
@@ -512,12 +643,21 @@ def build_refresh_snapshot(
         else:
             src_counts["none"] += 1
 
+    retry_meta = {
+        "candidates": len(miss_ids),
+        "healed": healed,
+        "stillMiss": still_miss,
+        "priorRetained": prior_retained,
+    }
+    logger.info("Ops refresh retry summary: %s", retry_meta)
+
     return {
         "generatedAt": _utc_now().isoformat(),
         "datasetCount": len(results),
         "datasets": results,
         "sources": src_counts,
         "adminRefreshablesCount": len(admin_map),
+        "retry": retry_meta,
     }
 
 
@@ -923,15 +1063,36 @@ def run_ops_enrichment(
 
     if not skip_refresh:
         targets = collect_dataset_targets(catalog)
-        refresh_snap = build_refresh_snapshot(targets, auth=auth, catalog=catalog)
+        # Prior ops snapshot (seeded from SharePoint on ops-only) — used to retain
+        # scheduled history when this run cannot re-read refreshes for a dataset.
+        prior_datasets: Dict[str, Any] = {}
+        prior_path = write_dir / "refresh_snapshot.json"
+        if prior_path.is_file():
+            try:
+                prior_blob = json.loads(prior_path.read_text(encoding="utf-8"))
+                if isinstance(prior_blob.get("datasets"), dict):
+                    prior_datasets = prior_blob["datasets"]
+                    logger.info(
+                        "Loaded prior refresh_snapshot for %s datasets (retain-on-miss)",
+                        len(prior_datasets),
+                    )
+            except Exception as exc:
+                logger.warning("Could not read prior refresh_snapshot: %s", exc)
+        refresh_snap = build_refresh_snapshot(
+            targets,
+            auth=auth,
+            catalog=catalog,
+            prior_datasets=prior_datasets,
+        )
         p = write_dir / "refresh_snapshot.json"
         p.write_text(json.dumps(refresh_snap, ensure_ascii=False, indent=2), encoding="utf-8")
         paths["refresh_snapshot"] = p
         logger.info(
-            "Wrote %s (%s datasets, sources=%s)",
+            "Wrote %s (%s datasets, sources=%s retry=%s)",
             p,
             refresh_snap.get("datasetCount"),
             refresh_snap.get("sources"),
+            refresh_snap.get("retry"),
         )
 
     if not skip_usage:
@@ -976,6 +1137,8 @@ def run_ops_enrichment(
         "refreshDatasetCount": (refresh_snap or {}).get("datasetCount"),
         "usageReportCount": (usage_snap or {}).get("reportCount"),
         "usageDaysFetched": (usage_snap or {}).get("daysFetchedThisRun"),
+        "refreshSources": (refresh_snap or {}).get("sources"),
+        "refreshRetry": (refresh_snap or {}).get("retry"),
     }
     p_sum = write_dir / "ops_summary.json"
     p_sum.write_text(json.dumps(summary_ops, indent=2), encoding="utf-8")

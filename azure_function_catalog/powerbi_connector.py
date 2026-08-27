@@ -644,6 +644,7 @@ def _is_weak_created_fallback(src):
     note = str(src.get('refresh_note') or '').lower()
     if 'created date' in note or 'dataset created' in note:
         return True
+    # legacy: content_modified note that only mentions created
     if src_l == 'content_modified' and 'created' in note and 'modified' not in note:
         return True
     return False
@@ -681,6 +682,7 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
     if true_hist:
         pool = true_hist
     else:
+        # Content only: drop weak created stamps when any non-created content exists
         strong = [(s, dt) for s, dt in with_ts if not _is_weak_created_fallback(s)]
         pool = strong if strong else with_ts
 
@@ -690,6 +692,7 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
         if best is None or dt > best_dt:
             best, best_dt = src, dt
 
+    # Base: first source that has any useful structure, else first
     base = dict(cleaned[0])
     for src in cleaned[1:]:
         for k in prefer_keys:
@@ -698,6 +701,7 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
 
     if best is not None:
         base['last_refreshed'] = best.get('last_refreshed')
+        # Prefer status / source labels from the same winner
         if best.get('last_refresh_status'):
             base['last_refresh_status'] = best.get('last_refresh_status')
         if best.get('refresh_source'):
@@ -723,6 +727,7 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
         elif any(not parse_refresh_timestamp(s.get('last_refreshed')) for s in cleaned):
             note_bits.append('filled from alternate refresh source')
 
+        # Drop empty / duplicate notes
         seen_n = set()
         clean_notes = []
         for n in note_bits:
@@ -734,6 +739,7 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
         if clean_notes:
             base['refresh_note'] = '; '.join(clean_notes)
     else:
+        # No timestamps anywhere — still take best status label available
         for src in cleaned:
             if src.get('last_refresh_status') and not base.get('last_refresh_status'):
                 base['last_refresh_status'] = src.get('last_refresh_status')
@@ -742,6 +748,7 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
             if src.get('refresh_source') and not base.get('refresh_source'):
                 base['refresh_source'] = src.get('refresh_source')
 
+        # Clarify OneDrive-only case for the UI (Scheduled tab empty, portal OneDrive has rows)
         status = str(base.get('last_refresh_status') or '').lower()
         if status in ('', 'no history', 'none', 'null') or not base.get('last_refreshed'):
             base['last_refresh_status'] = base.get('last_refresh_status') or 'No History'
@@ -754,6 +761,21 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
                 base['refresh_note'] = f"{note}; {extra}".strip('; ') if note else extra
             if not base.get('refresh_source'):
                 base['refresh_source'] = 'none'
+
+    # Content fallbacks must never look like a successful import refresh in the UI.
+    src_final = str(base.get('refresh_source') or '').lower().replace('-', '_').replace(' ', '')
+    if src_final in (
+        'content_modified', 'content_created', 'contentcreated', 'created',
+    ) or _is_weak_created_fallback(base):
+        st = str(base.get('last_refresh_status') or '').lower()
+        if st in ('completed', 'success', 'succeeded', ''):
+            base['last_refresh_status'] = 'Unverified'
+        note = str(base.get('refresh_note') or '')
+        if 'verify in power bi' not in note.lower():
+            extra = (
+                'Verify in Power BI service (content modified/created is not a confirmed refresh job).'
+            )
+            base['refresh_note'] = f'{note}; {extra}'.strip('; ') if note else extra
 
     base['days_since_refresh'] = days_since_refresh(base.get('last_refreshed'))
     return base
@@ -788,8 +810,11 @@ def refresh_info_from_content_modified(dataset_info, report_meta=None, *, datase
       1) report modifiedDateTime (often tracks OneDrive .pbix publish/sync)
       2) dataset modifiedDateTime / lastModified
       3) dataset createdDate only if nothing else (weak — labeled content_created)
+
+    Not true OneDrive history (REST does not expose that tab). Never pretends
+    this is Scheduled history.
     """
-    modified_candidates = []
+    modified_candidates = []  # (raw_ts, label)
     created_candidates = []
 
     if isinstance(report_meta, dict):
@@ -840,12 +865,20 @@ def refresh_info_from_content_modified(dataset_info, report_meta=None, *, datase
             '(OneDrive-tab history is not available via REST API)'
         )
 
+    # Never present content fallback as a successful import refresh.
+    # UI must not show green "Success" for these rows — users should verify in Power BI.
+    warn = (
+        'Verify in Power BI service (Scheduled refresh history was not confirmed this run; '
+        'date is content modified/created, not a dataset refresh job). '
+        'OneDrive-tab history is not available via REST API.'
+    )
+    full_note = f'{note}; {warn}' if note else warn
     return _empty_refresh_info(
         last_refreshed=best_ts,
-        last_refresh_status='Completed',
+        last_refresh_status='Unverified',
         refresh_type='import',
         refresh_source=source,
-        refresh_note=note,
+        refresh_note=full_note,
         dataset_workspace_id=dataset_workspace_id,
         is_refreshable=(dataset_info or {}).get('isRefreshable') if isinstance(dataset_info, dict) else None,
         dataset_owner=(dataset_info or {}).get('configuredBy', 'Unknown') if isinstance(dataset_info, dict) else 'Unknown',

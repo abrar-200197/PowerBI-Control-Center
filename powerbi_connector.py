@@ -762,6 +762,21 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
             if not base.get('refresh_source'):
                 base['refresh_source'] = 'none'
 
+    # Content fallbacks must never look like a successful import refresh in the UI.
+    src_final = str(base.get('refresh_source') or '').lower().replace('-', '_').replace(' ', '')
+    if src_final in (
+        'content_modified', 'content_created', 'contentcreated', 'created',
+    ) or _is_weak_created_fallback(base):
+        st = str(base.get('last_refresh_status') or '').lower()
+        if st in ('completed', 'success', 'succeeded', ''):
+            base['last_refresh_status'] = 'Unverified'
+        note = str(base.get('refresh_note') or '')
+        if 'verify in power bi' not in note.lower():
+            extra = (
+                'Verify in Power BI service (content modified/created is not a confirmed refresh job).'
+            )
+            base['refresh_note'] = f'{note}; {extra}'.strip('; ') if note else extra
+
     base['days_since_refresh'] = days_since_refresh(base.get('last_refreshed'))
     return base
 
@@ -850,12 +865,20 @@ def refresh_info_from_content_modified(dataset_info, report_meta=None, *, datase
             '(OneDrive-tab history is not available via REST API)'
         )
 
+    # Never present content fallback as a successful import refresh.
+    # UI must not show green "Success" for these rows — users should verify in Power BI.
+    warn = (
+        'Verify in Power BI service (Scheduled refresh history was not confirmed this run; '
+        'date is content modified/created, not a dataset refresh job). '
+        'OneDrive-tab history is not available via REST API.'
+    )
+    full_note = f'{note}; {warn}' if note else warn
     return _empty_refresh_info(
         last_refreshed=best_ts,
-        last_refresh_status='Completed',
+        last_refresh_status='Unverified',
         refresh_type='import',
         refresh_source=source,
-        refresh_note=note,
+        refresh_note=full_note,
         dataset_workspace_id=dataset_workspace_id,
         is_refreshable=(dataset_info or {}).get('isRefreshable') if isinstance(dataset_info, dict) else None,
         dataset_owner=(dataset_info or {}).get('configuredBy', 'Unknown') if isinstance(dataset_info, dict) else 'Unknown',

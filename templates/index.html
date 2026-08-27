@@ -2476,8 +2476,10 @@
             const daysSinceRefresh = formatDaysSinceRefreshCell(report);
 
             const refreshStatus = report.last_refresh_status ?
-                getRefreshStatusBadge(report.last_refresh_status, report.refresh_note) :
-                (pending ? '<span class="inline-spinner" title="Loading status…"></span>' : '<span class="cell-muted">—</span>');
+                getRefreshStatusBadge(report.last_refresh_status, report.refresh_note, report) :
+                (isContentFallbackSource(report)
+                    ? getRefreshStatusBadge('Unverified', report.refresh_note, report)
+                    : (pending ? '<span class="inline-spinner" title="Loading status…"></span>' : '<span class="cell-muted">—</span>'));
 
             const safeName = report.name.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/ /g, '_');
 
@@ -2641,6 +2643,11 @@
         );
     }
 
+    function isContentFallbackSource(report) {
+        const src = String(report.refresh_source || '').toLowerCase().replace(/[-\s]/g, '_');
+        return src === 'content_modified' || src === 'content_created' || src === 'contentcreated' || src === 'created';
+    }
+
     function formatLastRefreshedCell(report) {
         const note = report.refresh_note ? String(report.refresh_note) : '';
         const titleAttr = note ? ` title="${escapeHtml(note)}"` : '';
@@ -2654,10 +2661,19 @@
             const datePart = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
             const timePart = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
             const status = (report.last_refresh_status || '').toLowerCase();
-            const tip = note || (status === 'inprogress' || status === 'in progress' ? 'Refresh in progress — showing last completed time' : d.toLocaleString());
-            const sub = (status === 'inprogress' || status === 'in progress')
-                ? '<span class="sub">in progress</span>'
-                : `<span class="sub">${escapeHtml(timePart)}</span>`;
+            const contentFb = isContentFallbackSource(report) || status === 'unverified';
+            let tip = note || (status === 'inprogress' || status === 'in progress' ? 'Refresh in progress — showing last completed time' : d.toLocaleString());
+            if (contentFb && !note) {
+                tip = 'Unverified — content modified/created (not a confirmed refresh job). Verify in Power BI service.';
+            }
+            let sub;
+            if (status === 'inprogress' || status === 'in progress') {
+                sub = '<span class="sub">in progress</span>';
+            } else if (contentFb) {
+                sub = `<span class="sub" style="color:#B45309">unverified · ${escapeHtml(timePart)}</span>`;
+            } else {
+                sub = `<span class="sub">${escapeHtml(timePart)}</span>`;
+            }
             return `<span class="ts-cell" title="${escapeHtml(tip)}">${escapeHtml(datePart)}${sub}</span>`;
         }
 
@@ -2709,14 +2725,21 @@
         return styleDaysSince(diffDays);
     }
 
-    function getRefreshStatusBadge(status, note) {
+    function getRefreshStatusBadge(status, note, report) {
         if (!status) {
             return '<span class="cell-muted">—</span>';
         }
 
         const statusLower = String(status).toLowerCase();
-        const titleAttr = note ? ` title="${escapeHtml(String(note))}"` : '';
+        const contentFb = report && isContentFallbackSource(report);
+        const defaultVerify = 'Verify in Power BI service — date may be content modified/created, not a confirmed refresh job.';
+        const tip = note || (contentFb || statusLower === 'unverified' ? defaultVerify : '');
+        const titleAttr = tip ? ` title="${escapeHtml(String(tip))}"` : '';
 
+        // Content fallback must never look like a successful import refresh
+        if (contentFb || statusLower === 'unverified' || statusLower === 'estimated') {
+            return `<span class="badge badge-warning"${titleAttr}>Verify in PBI</span>`;
+        }
         if (statusLower === 'completed' || statusLower === 'success' || statusLower === 'succeeded') {
             return `<span class="badge badge-success"${titleAttr}>Success</span>`;
         }

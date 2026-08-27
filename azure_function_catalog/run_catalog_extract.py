@@ -23,6 +23,7 @@ import argparse
 import atexit
 import json
 import logging
+import os
 import shutil
 import sys
 import tempfile
@@ -249,6 +250,67 @@ def publish_temp_latest(
     except Exception as exc:
         print(f"  ! audit skipped: {exc}")
 
+
+def notify_app_catalog_refresh() -> None:
+    """
+    After successful SharePoint publish, ask the web app to reload catalog cache.
+    Best-effort: never fails the extract. Requires:
+      CATALOG_REFRESH_SECRET  — shared with App Service
+      CATALOG_APP_BASE_URL or APP_BASE_URL — e.g. https://…azurewebsites.net
+    """
+    import urllib.error
+    import urllib.request
+
+    secret = (os.getenv("CATALOG_REFRESH_SECRET") or "").strip()
+    base = (
+        (os.getenv("CATALOG_APP_BASE_URL") or os.getenv("APP_BASE_URL") or "")
+        .strip()
+        .rstrip("/")
+    )
+    if not secret or not base:
+        print(
+            "NOTE: skip app catalog refresh "
+            "(set CATALOG_REFRESH_SECRET + CATALOG_APP_BASE_URL to enable)"
+        )
+        return
+
+    url = f"{base}/api/catalog/refresh-internal"
+    # Brief pause so SharePoint item metadata is consistent for the app download
+    try:
+        import time as _time
+        _time.sleep(float(os.getenv("CATALOG_REFRESH_NOTIFY_DELAY_SEC") or "3"))
+    except Exception:
+        pass
+
+    body = b"{}"
+    attempts = max(1, int(os.getenv("CATALOG_REFRESH_NOTIFY_ATTEMPTS") or "3"))
+    last_err = None
+    for i in range(attempts):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=body,
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Catalog-Refresh-Key": secret,
+                    "User-Agent": "pbi-control-center-extract/1.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                print(f"App catalog refresh OK (HTTP {resp.status}): {raw[:300]}")
+                return
+        except Exception as exc:
+            last_err = exc
+            print(f"  ! app catalog refresh attempt {i + 1}/{attempts} failed: {exc}")
+            try:
+                import time as _time
+                _time.sleep(5 * (i + 1))
+            except Exception:
+                pass
+    print(f"WARNING: app catalog refresh gave up after {attempts} tries: {last_err}")
+
     # drop in-process cache so a co-hosted app picks up new files
     try:
         from catalog_service import catalog_service
@@ -421,6 +483,11 @@ def main(argv=None) -> int:
             clean_first=bool(args.fresh) or not args.ops_only,
         )
         print("Published to SharePoint latest/ (source of truth).")
+        # Ask App Service to reload packs so UI is not stuck on pre-publish cache.
+        try:
+            notify_app_catalog_refresh()
+        except Exception as exc:
+            print(f"WARNING: app catalog refresh notify failed (non-fatal): {exc}")
         return 0
     except Exception:
         logging.exception("Extract failed")
