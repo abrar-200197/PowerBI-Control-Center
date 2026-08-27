@@ -205,27 +205,36 @@ function render(){
   if(!CACHE) return;
   syncClearButton();
   const rows=filteredRows();
-  const wsSet=new Set(rows.map(r=>r.workspaceName));
+  const wsFilter=($('wsFilter').value||'').trim();
+  const qActive=!!(($('qFilter').value||'').trim());
+  // Group for display — default collapsed (workspace overview only)
+  const by={};
+  rows.forEach(r=>{const k=r.workspaceName||'Unknown';(by[k]=by[k]||[]).push(r)});
+  // Include empty SharePoint workspace folders (0 reports) unless a text search is active
+  // (empty folders have nothing to match). Workspace dropdown filter still shows them.
+  if(!qActive){
+    (CACHE.workspaces||[]).forEach(w=>{
+      const wn=w.workspaceName||'Unknown';
+      if(wsFilter && wn.toLowerCase()!==wsFilter.toLowerCase()) return;
+      if(!Object.prototype.hasOwnProperty.call(by, wn)) by[wn]=[];
+    });
+  }
+  const names=Object.keys(by).sort((a,b)=>a.localeCompare(b));
   $('stats').style.display='grid';
   $('stTotal').textContent=rows.length;
-  $('stWs').textContent=wsSet.size;
+  // Workspace KPI: distinct groups on screen (includes empty folders when listed)
+  $('stWs').textContent=names.length;
   $('stBatch').textContent=CACHE.batchCount||0;
   $('stSrc').textContent='SharePoint';
   $('noteBar').textContent=CACHE.note||'SharePoint archive only — not live Power BI metadata.';
-  if(!rows.length){
+  if(!names.length){
     GROUP_NAMES={};
     $('tableHost').innerHTML='<div class="idle">No decommissioned report files found'+(CACHE.basePath?' under '+esc(CACHE.basePath):'')+'.</div>';
     return;
   }
-  // Group for display — default collapsed (workspace overview only)
-  const by={};
-  rows.forEach(r=>{const k=r.workspaceName||'Unknown';(by[k]=by[k]||[]).push(r)});
-  const names=Object.keys(by).sort((a,b)=>a.localeCompare(b));
 
   // Convenience expands only — default load stays collapsed overview
-  const filteredWs=($('wsFilter').value||'').trim();
-  const qActive=!!(($('qFilter').value||'').trim());
-  if(filteredWs && names.length===1){
+  if(wsFilter && names.length===1){
     EXPANDED.add(wsKey(names[0]));
   }
   // Search: open groups that have matching rows so hits are visible
@@ -273,6 +282,14 @@ function render(){
 
     // ONLY render report rows when expanded (this is what makes collapse work)
     if(!isOpen) return;
+
+    if(!list.length){
+      html+=`<tr class="ws-row" data-gid="${gid}">
+        <td colspan="${colSpan}" style="opacity:.75;font-size:12px;padding:10px 16px 10px 40px">
+          No archived reports in this workspace folder (tracking placeholder).
+        </td></tr>`;
+      return;
+    }
 
     list.forEach(r=>{
       n++;

@@ -10,6 +10,9 @@ Layout (same as archive upload):
 
 We do not claim live Power BI metadata — only SharePoint file facts:
   workspace, optional folder, report name, type, size, dates, webUrl, batch.
+
+Workspace folders with zero archived reports are still listed (reportCount=0)
+so tracking placeholders appear in workspace count / filters.
 """
 
 from __future__ import annotations
@@ -197,11 +200,37 @@ def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, An
 
         rows.sort(key=_sort_key, reverse=True)
 
-        # Group by workspace
+        # Group by workspace (from report files)
         by_ws: Dict[str, List[Dict[str, Any]]] = {}
         for r in rows:
             wn = r.get("workspaceName") or "Unknown"
             by_ws.setdefault(wn, []).append(r)
+
+        # Also include empty workspace folders under each batch (tracking placeholders).
+        # Layout: base / <batch> / <WorkspaceName> / ...
+        # Does not change report rows or totalReports — only workspace list/count.
+        empty_ws = 0
+        for b in batches:
+            bname = (b.get("name") or "").strip()
+            if not bname:
+                continue
+            batch_path = f"{base}/{bname}" if base else bname
+            try:
+                ws_folders = sp.list_folders(batch_path)
+            except Exception as ex:
+                logger.warning(
+                    "decommission: list workspace folders failed under %s: %s",
+                    batch_path,
+                    ex,
+                )
+                continue
+            for wf in ws_folders:
+                wn = (wf.get("name") or "").strip()
+                if not wn:
+                    continue
+                if wn not in by_ws:
+                    by_ws[wn] = []
+                    empty_ws += 1
 
         workspaces = []
         for wn, rs in sorted(by_ws.items(), key=lambda x: x[0].lower()):
@@ -209,6 +238,7 @@ def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, An
                 "workspaceName": wn,
                 "reportCount": len(rs),
                 "reports": rs,
+                "isEmpty": len(rs) == 0,
             })
 
         payload = {
@@ -218,6 +248,7 @@ def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, An
             "batchCount": len(batches),
             "totalReports": len(rows),
             "workspaceCount": len(workspaces),
+            "emptyWorkspaceCount": empty_ws,
             "rows": rows,
             "workspaces": workspaces,
             "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -225,7 +256,8 @@ def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, An
             "source": "sharepoint",
             "note": (
                 "Inventory is derived from SharePoint archive files only "
-                "(not live Power BI metadata). Decommissioned date = file upload/create time."
+                "(not live Power BI metadata). Decommissioned date = file upload/create time. "
+                "Workspace folders with no archived reports are included (0 reports)."
             ),
         }
         _CACHE = {"ts": now, "payload": payload}
