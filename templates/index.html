@@ -705,6 +705,9 @@
             <button class="btn btn-danger" onclick="exportDecommissionReport()" id="decommissionBtn" style="display: none;" title="Generate quarterly decommissioning report for inactive reports">
                 Decommission list
             </button>
+            <button class="btn btn-primary" onclick="downloadDecommissionReportsZip()" id="decommissionDownloadBtn" style="display: none;" title="Download PBIX/RDL for all decommission-list candidates in this workspace (ZIP)">
+                Download decommission reports
+            </button>
             <button class="btn btn-secondary" onclick="refreshData()" id="refreshBtn" title="Reload reports for this workspace">
                 Refresh
             </button>
@@ -2382,6 +2385,7 @@
         const tableDiv = document.getElementById('reportsTable');
         const exportBtn = document.getElementById('exportBtn');
         const decommissionBtn = document.getElementById('decommissionBtn');
+        const decommissionDownloadBtn = document.getElementById('decommissionDownloadBtn');
         // Parameter name kept as local list; never confuse with global `reports`
         const reports = reportsToShow;
 
@@ -2389,12 +2393,17 @@
             tableDiv.innerHTML = '<div class="no-data">📊 No reports found in workspace</div>';
             if (exportBtn) exportBtn.style.display = 'none';
             if (decommissionBtn) decommissionBtn.style.display = 'none';
+            if (decommissionDownloadBtn) decommissionDownloadBtn.style.display = 'none';
             return;
         }
 
         // Show export buttons when reports are loaded
         if (exportBtn) exportBtn.style.display = 'inline-block';
         if (decommissionBtn) decommissionBtn.style.display = 'inline-block';
+        // Bulk PBIX download uses same allow-list as per-row Download
+        if (decommissionDownloadBtn) {
+            decommissionDownloadBtn.style.display = canArchiveReports ? 'inline-block' : 'none';
+        }
 
         // Sort reports alphabetically by name (A-Z)
         const sortedReports = [...reports].sort((a, b) => a.name.localeCompare(b.name));
@@ -4042,6 +4051,87 @@
                 decomBtn.classList.remove('loading');
                 decomBtn.disabled = false;
                 decomBtn.innerHTML = decomOriginal || 'Decommission list';
+            }
+        }
+    }
+
+    /**
+     * Download PBIX/RDL for all decommission-list candidates in the current workspace as one ZIP.
+     * Same candidate rules as "Decommission list". Does not change single-row Download.
+     */
+    async function downloadDecommissionReportsZip() {
+        if (!currentWorkspaceId) {
+            showAlert('warning', 'Select a workspace first.');
+            return;
+        }
+        if (!canArchiveReports) {
+            showAlert('error', 'You are not authorized to download decommission report files.');
+            return;
+        }
+        if (!reports || reports.length === 0) {
+            showAlert('warning', 'No reports found in this workspace.');
+            return;
+        }
+
+        const btn = document.getElementById('decommissionDownloadBtn');
+        const original = btn ? btn.innerHTML : '';
+        try {
+            if (btn) {
+                btn.classList.add('loading');
+                btn.disabled = true;
+                btn.innerHTML = '<span class="btn-spinner"></span>Preparing ZIP…';
+            }
+            showAlert(
+                'info',
+                'Downloading decommission-list reports as ZIP… large workspaces can take several minutes.',
+                300000
+            );
+
+            const url = `/api/download-decommission-reports/${currentWorkspaceId}`;
+            const response = await fetch(url, { credentials: 'include' });
+            if (!response.ok) {
+                let msg = `HTTP ${response.status}`;
+                try {
+                    const errBody = await response.json();
+                    msg = errBody.error || errBody.message || msg;
+                    if (errBody.failures && errBody.failures.length) {
+                        msg += ' | ' + errBody.failures.slice(0, 3).join('; ');
+                    }
+                } catch (e) {
+                    try {
+                        msg = await response.text() || msg;
+                    } catch (e2) { /* ignore */ }
+                }
+                throw new Error(msg);
+            }
+
+            const blob = await response.blob();
+            let filename = 'Decommission_Reports.zip';
+            const cd = response.headers.get('Content-Disposition') || '';
+            const m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
+            if (m && m[1]) {
+                filename = decodeURIComponent(m[1].replace(/"/g, '').trim());
+            }
+
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(downloadUrl);
+            document.body.removeChild(a);
+
+            showAlert('success', `Decommission reports ZIP ready: ${filename}`);
+            console.log('✅ Bulk decommission ZIP downloaded', filename);
+        } catch (error) {
+            console.error('❌ Bulk decommission download failed:', error);
+            showAlert('error', `Failed to download decommission reports: ${error.message || error}`);
+        } finally {
+            if (btn) {
+                btn.classList.remove('loading');
+                btn.disabled = false;
+                btn.innerHTML = original || 'Download decommission reports';
             }
         }
     }

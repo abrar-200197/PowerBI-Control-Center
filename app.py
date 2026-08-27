@@ -7869,6 +7869,7 @@ def export_inactive_reports(workspace_id):
                 comments = f'Zero views in last {VIEW_LOOKBACK_LABEL}'
 
             return {
+                'report_id': rid,
                 'workspace_name': workspace_name,
                 'sub_folder': sub_folder,
                 'report_name': name,
@@ -8025,6 +8026,346 @@ def export_inactive_reports(workspace_id):
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/download-decommission-reports/<workspace_id>')
+@login_required
+def download_decommission_reports(workspace_id):
+    """
+    One-click ZIP of all Report Catalog decommission-list candidates for a workspace.
+
+    Uses the same candidate rules as /api/export-inactive-reports (stale refresh,
+    no import history, zero views). Does not change Excel export or per-row Download.
+    Requires archive permission (same allow-list as single-report Download).
+    """
+    try:
+        import io
+        import re
+        import zipfile
+        from datetime import datetime, timezone
+        from flask import send_file
+
+        from features.report_archive_service import (
+            export_report_bytes,
+            user_can_archive,
+            _safe_segment,
+        )
+
+        email = session.get('user', {}).get('preferred_username') or ''
+        if not user_can_archive(email):
+            return jsonify({
+                'success': False,
+                'error': 'Not authorized to download decommission report files.',
+            }), 403
+
+        workspace_id = (workspace_id or '').strip()
+        if not workspace_id:
+            return jsonify({'success': False, 'error': 'workspace_id required'}), 400
+
+        # ---- Build candidate set with the same rules as Decommission list Excel ----
+        REFRESH_STALE_DAYS = 90
+        VIEW_LOOKBACK_LABEL = '60 days'
+
+        def _is_live_or_dq(report_or_ds):
+            rtype = str(
+                report_or_ds.get('refresh_type')
+                or report_or_ds.get('refreshType')
+                or ''
+            ).lower()
+            status = str(
+                report_or_ds.get('last_refresh_status')
+                or report_or_ds.get('refresh_schedule')
+                or ''
+            ).lower()
+            note = str(report_or_ds.get('refresh_note') or '').lower()
+            if rtype in {'directquery', 'live', 'push', 'streaming'}:
+                return True
+            if 'directquery' in status or 'live' in status or 'direct query' in status:
+                return True
+            if 'live connection' in note or 'directquery' in note:
+                return True
+            return False
+
+        def _parse_dt(value):
+            if value in (None, '', 'Unknown', '—', '-'):
+                return None
+            try:
+                if isinstance(value, (int, float)):
+                    ts = float(value)
+                    if ts > 1e12:
+                        ts /= 1000.0
+                    return datetime.fromtimestamp(ts, tz=timezone.utc)
+                s = str(value).strip()
+                if s.endswith('Z'):
+                    s = s[:-1] + '+00:00'
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except Exception:
+                return None
+
+        def _days_since(value, as_of=None):
+            dt = _parse_dt(value)
+            if not dt:
+                return None
+            end = as_of or datetime.now(timezone.utc)
+            return max(0, (end - dt).days)
+
+        workspace_name = 'Unknown Workspace'
+        reports_in = []
+        report_views = {}
+
+        pack = None
+        if CATALOG_AVAILABLE:
+            try:
+                pack = catalog_service.get_workspace_reports(workspace_id)
+            except Exception as e:
+                print(f"   ⚠️ bulk decomm catalog failed: {e}")
+                pack = None
+
+        if pack and (pack.get('reports') or []):
+            workspace_name = (
+                (pack.get('workspace') or {}).get('name')
+                or pack.get('workspace_name')
+                or workspace_name
+            )
+            if workspace_name == 'Unknown Workspace' and CATALOG_AVAILABLE:
+                try:
+                    cat = catalog_service.get_workspace_catalog() or {}
+                    ws = next(
+                        (w for w in (cat.get('workspaces') or []) if w.get('id') == workspace_id),
+                        None,
+                    )
+                    if ws:
+                        workspace_name = ws.get('name') or workspace_name
+                except Exception:
+                    pass
+            reports_in = list(pack.get('reports') or [])
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No reports found in catalog for this workspace. Open Report Catalog first.',
+            }), 404
+
+        for r in reports_in:
+            rid = r.get('id')
+            if rid and r.get('view_count') is not None:
+                try:
+                    report_views[rid] = int(r.get('view_count') or 0)
+                except Exception:
+                    report_views[rid] = 0
+
+        data_as_of_raw = None
+        if CATALOG_AVAILABLE:
+            try:
+                usage_snap = catalog_service.get_json('usage_snapshot.json') or {}
+                data_as_of_raw = (
+                    usage_snap.get('generatedAt')
+                    or usage_snap.get('opsEnrichedAt')
+                    or usage_snap.get('asOf')
+                )
+                for rid, cnt in (usage_snap.get('report_views') or {}).items():
+                    report_views[rid] = int(cnt or report_views.get(rid) or 0)
+            except Exception:
+                pass
+        if not data_as_of_raw and pack:
+            data_as_of_raw = (
+                (pack.get('catalog_meta') or {}).get('opsEnrichedAt')
+                or pack.get('opsEnrichedAt')
+                or pack.get('generatedAt')
+            )
+        data_as_of_dt = _parse_dt(data_as_of_raw) or datetime.now(timezone.utc)
+
+        candidates = []
+        for report in reports_in:
+            name = report.get('name') or 'Unknown'
+            if _is_excluded_report_name(name):
+                continue
+            rid = report.get('id') or ''
+            if not rid:
+                continue
+            live_dq = _is_live_or_dq(report)
+            days = report.get('days_since_refresh')
+            try:
+                days = int(days) if days is not None and days != '' else None
+            except Exception:
+                days = None
+            last_ref = report.get('last_refreshed') or report.get('lastRefresh') or ''
+            days_as_of = _days_since(last_ref, data_as_of_dt) if last_ref else None
+            if days_as_of is not None:
+                days = days_as_of
+            elif days is None and last_ref:
+                days = _days_since(last_ref)
+
+            refresh_status = report.get('last_refresh_status') or report.get('refreshStatus') or ''
+            if rid in report_views:
+                views = int(report_views.get(rid) or 0)
+                views_known = True
+            elif report.get('view_count') is not None:
+                views = int(report.get('view_count') or 0)
+                views_known = True
+            else:
+                views = 0
+                views_known = False
+
+            reasons = []
+            if days is not None and days > REFRESH_STALE_DAYS:
+                reasons.append(f'Days since refresh > {REFRESH_STALE_DAYS} ({days}d)')
+            no_history = False
+            if not live_dq:
+                if (not last_ref) and (days is None):
+                    no_history = True
+                elif str(refresh_status).lower() in {'error', 'failed'} and not last_ref:
+                    no_history = True
+            if no_history:
+                reasons.append('No refresh history')
+            if (views_known or report.get('view_count') is not None) and int(views or 0) == 0:
+                reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
+
+            if reasons:
+                candidates.append({
+                    'report_id': rid,
+                    'report_name': name,
+                    'reasons': reasons,
+                })
+
+        if not candidates:
+            return jsonify({
+                'success': False,
+                'error': 'No decommission-list candidates in this workspace under current rules.',
+            }), 404
+
+        # Cap bulk size (env override) so one click cannot hang forever
+        try:
+            max_n = int(os.getenv('DECOMM_BULK_DOWNLOAD_MAX') or '40')
+        except ValueError:
+            max_n = 40
+        max_n = max(1, min(max_n, 100))
+        truncated = len(candidates) > max_n
+        if truncated:
+            candidates = candidates[:max_n]
+
+        # Tokens: user first (same as single Download), SP fallback
+        user_token = get_user_powerbi_token()
+        sp_token = None
+        try:
+            from scanner_connector import PowerBIScanner
+            sp_token = PowerBIScanner().get_access_token()
+        except Exception:
+            sp_token = None
+        if not user_token and not sp_token:
+            return jsonify({
+                'success': False,
+                'error': 'No Power BI token available for Export API.',
+            }), 401
+
+        print(
+            f"\n📦 BULK DECOMM DOWNLOAD ws={workspace_name!r} "
+            f"candidates={len(candidates)} truncated={truncated}"
+        )
+
+        zip_buf = io.BytesIO()
+        ok_files = 0
+        fail_rows = []
+        used_names = set()
+
+        with zipfile.ZipFile(zip_buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            for i, c in enumerate(candidates, 1):
+                rid = c['report_id']
+                rname = c['report_name']
+                print(f"   [{i}/{len(candidates)}] Export {rname!r} ({rid[:8]}…)")
+                result = export_report_bytes(
+                    access_token=user_token or sp_token,
+                    workspace_id=workspace_id,
+                    report_id=rid,
+                    fallback_token=sp_token if user_token else None,
+                )
+                if not result.get('ok'):
+                    err = result.get('error') or 'Export failed'
+                    fail_rows.append(f"{rname}: {err}")
+                    print(f"      ❌ {err[:200]}")
+                    continue
+
+                content = result.get('content') or b''
+                if not content:
+                    fail_rows.append(f"{rname}: empty export body")
+                    continue
+
+                # Extension from content-type / disposition / magic
+                ext = '.pbix'
+                ctype = (result.get('content_type') or '').lower()
+                cdisp = result.get('content_disposition') or ''
+                if 'rdl' in ctype or '.rdl' in cdisp.lower():
+                    ext = '.rdl'
+                elif content[:2] == b'PK':
+                    ext = '.pbix'
+                elif b'<' in content[:200] and b'rdl' in content[:2000].lower():
+                    ext = '.rdl'
+
+                base_name = _safe_segment(rname, 'Report')
+                fname = f"{base_name}{ext}"
+                n = 2
+                while fname.lower() in used_names:
+                    fname = f"{base_name}_{n}{ext}"
+                    n += 1
+                used_names.add(fname.lower())
+                zf.writestr(fname, content)
+                ok_files += 1
+                print(f"      ✅ {fname} ({len(content)} bytes)")
+
+            # Manifest always included
+            manifest_lines = [
+                f"Workspace: {workspace_name}",
+                f"Workspace ID: {workspace_id}",
+                f"Generated (UTC): {datetime.now(timezone.utc).isoformat()}",
+                f"Requested candidates: {len(candidates)}"
+                + (" (list truncated by DECOMM_BULK_DOWNLOAD_MAX)" if truncated else ""),
+                f"Exported OK: {ok_files}",
+                f"Failed: {len(fail_rows)}",
+                "",
+                "Rules (same as Decommission list):",
+                f"  - Days since refresh > {REFRESH_STALE_DAYS}",
+                "  - No import refresh history (not alone for DirectQuery/Live)",
+                f"  - 0 views in last {VIEW_LOOKBACK_LABEL}",
+                "",
+                "OK files:",
+            ]
+            for u in sorted(used_names):
+                manifest_lines.append(f"  - {u}")
+            if fail_rows:
+                manifest_lines.append("")
+                manifest_lines.append("Failures:")
+                for fr in fail_rows:
+                    manifest_lines.append(f"  - {fr}")
+            zf.writestr('_manifest.txt', "\n".join(manifest_lines) + "\n")
+
+        if ok_files == 0:
+            return jsonify({
+                'success': False,
+                'error': 'No reports could be exported. See server logs.',
+                'failures': fail_rows[:20],
+            }), 502
+
+        zip_buf.seek(0)
+        safe_ws = re.sub(r'[^A-Za-z0-9._-]+', '_', workspace_name)[:60] or 'workspace'
+        zip_name = (
+            f"Decommission_Reports_{safe_ws}_"
+            f"{datetime.now(timezone.utc).strftime('%Y%m%d')}.zip"
+        )
+        print(f"   📁 ZIP {zip_name} ok={ok_files} fail={len(fail_rows)}")
+        return send_file(
+            zip_buf,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=zip_name,
+        )
+
+    except Exception as e:
+        print(f"❌ Error bulk downloading decommission reports: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 def _usage_cache_path(workspace_id: str) -> str:
