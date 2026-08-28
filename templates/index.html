@@ -4107,7 +4107,8 @@
             }
 
             const ok = window.confirm(
-                `Archive ${candidates.length} report(s) from "${workspaceName}" to SharePoint?`
+                `Archive ${candidates.length} report(s) from "${workspaceName}" to SharePoint?\n\n` +
+                'Large reports may take several minutes each — keep this tab open.'
             );
             if (!ok) return;
 
