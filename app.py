@@ -2157,29 +2157,65 @@ def orphaned_reports_page():
     return render_template('orphaned_reports.html')
 
 
+# In-process cache for discovered programme report (user-token lookup by name)
+_DECOMM_DASH_RESOLVE_CACHE = {'ts': 0.0, 'payload': None}
+
+
+def _parse_pbi_service_url(url: str):
+    """Extract workspace + report GUIDs from an app.powerbi.com report URL."""
+    import re
+    u = (url or '').strip()
+    if not u:
+        return None, None
+    m = re.search(
+        r'/groups/([0-9a-fA-F-]{36})/reports/([0-9a-fA-F-]{36})',
+        u,
+        re.I,
+    )
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
+
+
 def _decomm_dashboard_config():
     """
     Overview-tab Power BI report settings (Estate Decommissioning Programme).
     All optional — Detail tab never depends on these.
+
+    Resolution order for IDs:
+      1) DECOMM_DASHBOARD_SERVICE_URL (parse groups/…/reports/…)
+      2) DECOMM_DASHBOARD_WORKSPACE_ID + REPORT_ID env
+      3) Built-in defaults (may be wrong if report moved — discovery fixes at runtime)
     """
-    # Defaults match the published programme report (from working app.powerbi.com URL).
-    # Override via env without code change.
-    # Workspace GUID must be full 8-4-4-4-12 (was missing middle segment earlier).
-    workspace_id = (
-        os.getenv('DECOMM_DASHBOARD_WORKSPACE_ID')
-        or '943b84dc-a22b-4f4f-8434-74396e772de1'
-    ).strip()
-    report_id = (
-        os.getenv('DECOMM_DASHBOARD_REPORT_ID')
-        or '5e4eb1ff-26b8-47d5-84ab-cecadcbb0c3f'
+    title = (
+        os.getenv('DECOMM_DASHBOARD_TITLE')
+        or 'Power BI Estate Decommissioning Programme'
     ).strip()
     dataset_id = (os.getenv('DECOMM_DASHBOARD_DATASET_ID') or '').strip()
     service_url = (os.getenv('DECOMM_DASHBOARD_SERVICE_URL') or '').strip()
+
+    workspace_id = (os.getenv('DECOMM_DASHBOARD_WORKSPACE_ID') or '').strip()
+    report_id = (os.getenv('DECOMM_DASHBOARD_REPORT_ID') or '').strip()
+
+    # Prefer parsing a full working service URL (most reliable)
+    if service_url:
+        w_from_url, r_from_url = _parse_pbi_service_url(service_url)
+        if w_from_url and r_from_url:
+            workspace_id = workspace_id or w_from_url
+            report_id = report_id or r_from_url
+
+    # Defaults only when env is empty (override if wrong)
+    if not workspace_id:
+        workspace_id = '943b84dc-a22b-4f4f-8434-74396e772de1'
+    if not report_id:
+        report_id = '5e4eb1ff-26b8-47d5-84ab-cecadcbb0c3f'
+
     if not service_url and workspace_id and report_id:
         service_url = (
             f'https://app.powerbi.com/groups/{workspace_id}/reports/{report_id}'
             f'/Overview?experience=power-bi'
         )
+
     embed_enabled = (os.getenv('DECOMM_DASHBOARD_EMBED') or 'true').strip().lower() in (
         '1', 'true', 'yes', 'on',
     )
@@ -2189,9 +2225,140 @@ def _decomm_dashboard_config():
         'datasetId': dataset_id or None,
         'serviceUrl': service_url or None,
         'embedEnabled': embed_enabled and bool(workspace_id and report_id),
-        'title': os.getenv('DECOMM_DASHBOARD_TITLE')
-        or 'Power BI Estate Decommissioning Programme',
+        'title': title or 'Power BI Estate Decommissioning Programme',
+        'discoverName': (
+            os.getenv('DECOMM_DASHBOARD_DISCOVER_NAME')
+            or 'Power BI Estate Decommissioning Programme'
+        ).strip(),
     }
+
+
+def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None):
+    """
+    Find the programme report in workspaces the signed-in user can access.
+    Used when configured workspace/report IDs return 404.
+    """
+    import time as _time
+    import re
+
+    global _DECOMM_DASH_RESOLVE_CACHE
+    now = _time.time()
+    cached = _DECOMM_DASH_RESOLVE_CACHE.get('payload')
+    if cached and (now - float(_DECOMM_DASH_RESOLVE_CACHE.get('ts') or 0)) < 600:
+        return dict(cached)
+
+    if not access_token:
+        return None
+
+    prefer_name = (prefer_name or '').strip()
+    name_keys = [
+        prefer_name,
+        'Power BI Estate Decommissioning Programme',
+        'Estate Decommissioning Programme',
+        'Summary Decommission',
+    ]
+    name_keys = [n for n in name_keys if n]
+    name_keys_l = [n.casefold() for n in name_keys]
+
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+    }
+    try:
+        gr = requests.get(
+            'https://api.powerbi.com/v1.0/myorg/groups?$top=5000',
+            headers=headers,
+            timeout=60,
+        )
+        if not gr.ok:
+            print(f'   ⚠️ decomm discover groups HTTP {gr.status_code}')
+            return None
+        groups = (gr.json() or {}).get('value') or []
+    except Exception as e:
+        print(f'   ⚠️ decomm discover groups: {e}')
+        return None
+
+    hits = []
+    for g in groups:
+        gid = g.get('id')
+        gname = g.get('name') or ''
+        if not gid:
+            continue
+        # Prefer Fabric Admin / Governance sounding workspaces first
+        gname_l = gname.casefold()
+        priority = 0
+        if 'fabric' in gname_l and 'admin' in gname_l:
+            priority = 2
+        elif 'governance' in gname_l or 'admin' in gname_l:
+            priority = 1
+        try:
+            rr = requests.get(
+                f'https://api.powerbi.com/v1.0/myorg/groups/{gid}/reports',
+                headers=headers,
+                timeout=45,
+            )
+            if not rr.ok:
+                continue
+            for rep in (rr.json() or {}).get('value') or []:
+                rname = (rep.get('name') or '').strip()
+                if not rname:
+                    continue
+                rl = rname.casefold()
+                score = 0
+                if rl in name_keys_l:
+                    score = 100
+                else:
+                    for nk in name_keys_l:
+                        if nk and nk in rl:
+                            score = max(score, 80)
+                        if nk and re.search(r'decommission', rl) and 'estate' in rl:
+                            score = max(score, 60)
+                if score <= 0:
+                    continue
+                hits.append({
+                    'score': score + priority,
+                    'workspaceId': gid,
+                    'workspaceName': gname,
+                    'reportId': rep.get('id'),
+                    'reportName': rname,
+                    'datasetId': rep.get('datasetId') or '',
+                    'embedUrl': rep.get('embedUrl') or '',
+                    'webUrl': rep.get('webUrl') or '',
+                })
+        except Exception as e:
+            print(f'   ⚠️ decomm discover reports in {gname}: {e}')
+            continue
+
+    if not hits:
+        print('   ⚠️ decomm discover: no matching report in user workspaces')
+        return None
+
+    hits.sort(key=lambda h: (-h['score'], (h.get('reportName') or '').lower()))
+    best = hits[0]
+    wid, rid = best['workspaceId'], best['reportId']
+    service_url = best.get('webUrl') or (
+        f'https://app.powerbi.com/groups/{wid}/reports/{rid}'
+        f'/Overview?experience=power-bi'
+    )
+    payload = {
+        'workspaceId': wid,
+        'workspaceName': best.get('workspaceName'),
+        'reportId': rid,
+        'reportName': best.get('reportName'),
+        'datasetId': best.get('datasetId') or '',
+        'embedUrl': best.get('embedUrl') or (
+            f'https://app.powerbi.com/reportEmbed?reportId={rid}&groupId={wid}'
+        ),
+        'serviceUrl': service_url,
+        'discovered': True,
+        'candidates': len(hits),
+    }
+    _DECOMM_DASH_RESOLVE_CACHE = {'ts': now, 'payload': payload}
+    print(
+        f"   ✅ decomm discover: {payload.get('reportName')!r} "
+        f"ws={payload.get('workspaceName')!r} id={rid}"
+    )
+    return dict(payload)
 
 
 @app.route('/decommissioned-reports')
@@ -2316,14 +2483,6 @@ def api_decommissioned_dashboard_embed_token():
                 'error': 'Dashboard embed is disabled (DECOMM_DASHBOARD_EMBED).',
                 'serviceUrl': cfg.get('serviceUrl'),
             }), 400
-        workspace_id = cfg.get('workspaceId')
-        report_id = cfg.get('reportId')
-        if not workspace_id or not report_id:
-            return jsonify({
-                'success': False,
-                'error': 'DECOMM_DASHBOARD_WORKSPACE_ID / REPORT_ID not configured.',
-                'serviceUrl': cfg.get('serviceUrl'),
-            }), 400
 
         def _fresh_user_token(force_refresh=False):
             if force_refresh:
@@ -2338,18 +2497,16 @@ def api_decommissioned_dashboard_embed_token():
                 'serviceUrl': cfg.get('serviceUrl'),
             }), 401
 
-        meta_url = (
-            f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}'
-        )
-        # Built-in embed URL if Get Report is blocked but user can still view in service
-        fallback_embed_url = (
-            f'https://app.powerbi.com/reportEmbed'
-            f'?reportId={report_id}&groupId={workspace_id}'
-        )
+        workspace_id = cfg.get('workspaceId')
+        report_id = cfg.get('reportId')
+        dataset_id = cfg.get('datasetId') or ''
+        report_name = cfg.get('title')
+        service_url = cfg.get('serviceUrl')
+        discovered = False
 
-        def _get_report_meta(token):
+        def _get_report_meta(token, ws, rid):
             return requests.get(
-                meta_url,
+                f'https://api.powerbi.com/v1.0/myorg/groups/{ws}/reports/{rid}',
                 headers={
                     'Authorization': f'Bearer {token}',
                     'Content-Type': 'application/json',
@@ -2357,57 +2514,115 @@ def api_decommissioned_dashboard_embed_token():
                 timeout=45,
             )
 
-        meta_res = _get_report_meta(user_token)
-        # Stale session JWT: force MSAL refresh once and retry
-        if meta_res.status_code == 401:
-            print('   ⚠️ decomm embed: 401 on Get Report — refreshing user token…')
-            user_token = _fresh_user_token(force_refresh=True)
-            if not user_token:
-                return jsonify({
-                    'success': False,
-                    'error': 'Power BI session expired. Sign out and sign in again.',
-                    'serviceUrl': cfg.get('serviceUrl'),
-                }), 401
-            meta_res = _get_report_meta(user_token)
+        meta_res = None
+        if workspace_id and report_id:
+            meta_res = _get_report_meta(user_token, workspace_id, report_id)
+            if meta_res.status_code == 401:
+                print('   ⚠️ decomm embed: 401 on Get Report — refreshing user token…')
+                user_token = _fresh_user_token(force_refresh=True)
+                if not user_token:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Power BI session expired. Sign out and sign in again.',
+                        'serviceUrl': service_url,
+                    }), 401
+                meta_res = _get_report_meta(user_token, workspace_id, report_id)
 
-        embed_url = fallback_embed_url
-        dataset_id = cfg.get('datasetId') or ''
-        report_name = cfg.get('title')
+        # Configured IDs wrong / moved → discover by report name in user workspaces
+        need_discover = (
+            not workspace_id
+            or not report_id
+            or (meta_res is not None and meta_res.status_code in (404, 400))
+            or (meta_res is not None and not meta_res.ok and meta_res.status_code != 401)
+        )
+        if need_discover:
+            print(
+                f"   🔎 decomm embed: resolving report by name "
+                f"(cfg ws={workspace_id} rid={report_id} "
+                f"http={getattr(meta_res, 'status_code', None)})"
+            )
+            found = _discover_decomm_dashboard_report(
+                user_token,
+                prefer_name=cfg.get('discoverName') or cfg.get('title'),
+            )
+            if found and found.get('reportId') and found.get('workspaceId'):
+                workspace_id = found['workspaceId']
+                report_id = found['reportId']
+                dataset_id = dataset_id or found.get('datasetId') or ''
+                report_name = found.get('reportName') or report_name
+                service_url = found.get('serviceUrl') or service_url
+                discovered = True
+                meta_res = _get_report_meta(user_token, workspace_id, report_id)
 
-        if meta_res.status_code == 404:
+        if not workspace_id or not report_id:
             return jsonify({
                 'success': False,
                 'error': (
-                    'Report not found or you do not have access in that workspace. '
-                    'Open the report in Power BI and confirm you can view it, then Retry.'
+                    'Could not resolve the decommission programme report. '
+                    'Set DECOMM_DASHBOARD_SERVICE_URL to the full app.powerbi.com link '
+                    'that opens for you, or DECOMM_DASHBOARD_WORKSPACE_ID + REPORT_ID.'
                 ),
-                'serviceUrl': cfg.get('serviceUrl'),
-                'httpStatus': 404,
+                'serviceUrl': service_url,
             }), 404
 
-        if meta_res.status_code == 401:
-            # Still unauthorized after refresh — no access or wrong token audience
+        fallback_embed_url = (
+            f'https://app.powerbi.com/reportEmbed'
+            f'?reportId={report_id}&groupId={workspace_id}'
+        )
+        embed_url = fallback_embed_url
+
+        if meta_res is not None and meta_res.status_code == 401:
             return jsonify({
                 'success': False,
                 'error': (
                     'Not authorized to read this report via API (HTTP 401). '
-                    'Confirm workspace access (Fabric Admin Governance) and re-login. '
-                    'You can still use Open in Power BI if the service UI works.'
+                    'Confirm workspace access and re-login. '
+                    'If the report opens in Power BI service, paste that URL as '
+                    'DECOMM_DASHBOARD_SERVICE_URL on the App Service.'
                 ),
-                'serviceUrl': cfg.get('serviceUrl'),
+                'serviceUrl': service_url,
                 'detail': (meta_res.text or '')[:300],
             }), 401
 
-        if meta_res.ok:
+        if meta_res is not None and meta_res.status_code == 404:
+            return jsonify({
+                'success': False,
+                'error': (
+                    'Report still not found after name discovery (HTTP 404). '
+                    'Copy the browser URL from Power BI (groups/…/reports/…) into '
+                    'App Setting DECOMM_DASHBOARD_SERVICE_URL and restart the app.'
+                ),
+                'serviceUrl': service_url,
+                'configuredWorkspaceId': cfg.get('workspaceId'),
+                'configuredReportId': cfg.get('reportId'),
+                'httpStatus': 404,
+            }), 404
+
+        if meta_res is not None and meta_res.ok:
             meta = meta_res.json() or {}
             embed_url = meta.get('embedUrl') or fallback_embed_url
             dataset_id = dataset_id or meta.get('datasetId') or ''
             report_name = meta.get('name') or report_name
+            if meta.get('webUrl'):
+                service_url = meta.get('webUrl')
+        elif discovered:
+            # discovery already provided embedUrl
+            found_eu = None
+            try:
+                found_eu = (_DECOMM_DASH_RESOLVE_CACHE.get('payload') or {}).get('embedUrl')
+            except Exception:
+                found_eu = None
+            embed_url = found_eu or fallback_embed_url
         else:
-            # Non-fatal: still try AAD embed with constructed URL (common with RLS quirks)
             print(
-                f"   ⚠️ decomm embed: Get Report HTTP {meta_res.status_code} "
-                f"— using fallback embedUrl"
+                f"   ⚠️ decomm embed: Get Report HTTP "
+                f"{getattr(meta_res, 'status_code', '?')} — using fallback embedUrl"
+            )
+
+        if not service_url:
+            service_url = (
+                f'https://app.powerbi.com/groups/{workspace_id}/reports/{report_id}'
+                f'/Overview?experience=power-bi'
             )
 
         use_generate = (
@@ -2433,9 +2648,10 @@ def api_decommissioned_dashboard_embed_token():
                 'reportId': report_id,
                 'workspaceId': workspace_id,
                 'datasetId': dataset_id or None,
-                'serviceUrl': cfg.get('serviceUrl'),
+                'serviceUrl': service_url,
                 'title': report_name or cfg.get('title'),
                 'mode': 'aad',
+                'discovered': discovered,
             })
 
         # --- Optional: embed token via GenerateToken ---
@@ -2454,7 +2670,6 @@ def api_decommissioned_dashboard_embed_token():
         tok_res = requests.post(token_url, headers=headers, json=token_body, timeout=45)
         if not tok_res.ok:
             err_txt = (tok_res.text or '')[:400]
-            # Fall back to AAD embed rather than hard-fail
             print(f'   ⚠️ GenerateToken HTTP {tok_res.status_code} — falling back to Aad embed')
             return jsonify({
                 'success': True,
@@ -2464,9 +2679,10 @@ def api_decommissioned_dashboard_embed_token():
                 'reportId': report_id,
                 'workspaceId': workspace_id,
                 'datasetId': dataset_id or None,
-                'serviceUrl': cfg.get('serviceUrl'),
+                'serviceUrl': service_url,
                 'title': report_name or cfg.get('title'),
                 'mode': 'aad_fallback',
+                'discovered': discovered,
                 'warning': f'GenerateToken failed ({tok_res.status_code}); using AAD embed. {err_txt[:120]}',
             })
 
@@ -2480,9 +2696,10 @@ def api_decommissioned_dashboard_embed_token():
                 'embedUrl': embed_url,
                 'reportId': report_id,
                 'workspaceId': workspace_id,
-                'serviceUrl': cfg.get('serviceUrl'),
+                'serviceUrl': service_url,
                 'title': report_name or cfg.get('title'),
                 'mode': 'aad_fallback',
+                'discovered': discovered,
             })
 
         return jsonify({
@@ -2495,9 +2712,10 @@ def api_decommissioned_dashboard_embed_token():
             'reportId': report_id,
             'workspaceId': workspace_id,
             'datasetId': dataset_id or None,
-            'serviceUrl': cfg.get('serviceUrl'),
+            'serviceUrl': service_url,
             'title': report_name or cfg.get('title'),
             'mode': 'embed',
+            'discovered': discovered,
         })
     except Exception as e:
         import traceback
