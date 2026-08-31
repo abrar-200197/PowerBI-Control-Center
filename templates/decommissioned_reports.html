@@ -1,10 +1,44 @@
 {% extends "base.html" %}
 {% block title %}Decommissioned Reports - Power BI Control Center{% endblock %}
 {% block page_heading %}Decommissioned Reports{% endblock %}
-{% block page_subtitle %}SharePoint archive inventory (Report Decommission Activity){% endblock %}
+{% block page_subtitle %}Programme overview + SharePoint archive inventory{% endblock %}
 {% block extra_css %}
 <style>
 .page-shell{display:flex;flex-direction:column;gap:12px}
+.decomm-tabs{
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+  background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;
+  padding:8px 10px;box-shadow:var(--shadow-sm);
+}
+.decomm-tab{
+  height:34px;padding:0 14px;border-radius:6px;border:1px solid transparent;
+  background:transparent;color:var(--text-muted);font-size:13px;font-weight:600;
+  cursor:pointer;
+}
+.decomm-tab:hover{background:var(--table-hover);color:var(--text)}
+.decomm-tab.active{
+  background:rgba(43,108,176,.12);color:var(--text-strong);border-color:rgba(43,108,176,.35);
+}
+.decomm-tab-panel{display:none;flex-direction:column;gap:12px}
+.decomm-tab-panel.active{display:flex}
+.overview-toolbar{
+  display:flex;flex-wrap:wrap;align-items:center;gap:10px;
+  background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;
+  padding:10px 14px;box-shadow:var(--shadow-sm);
+}
+.overview-toolbar .ov-title{font-weight:600;color:var(--text-strong);font-size:13px;margin-right:auto}
+.overview-frame-wrap{
+  background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;
+  box-shadow:var(--shadow-sm);overflow:hidden;min-height:520px;
+  height:calc(100vh - 220px);
+  position:relative;
+}
+#pbiEmbedContainer{width:100%;height:100%;min-height:520px}
+.overview-fallback{
+  padding:28px 20px;text-align:center;color:var(--text-muted);max-width:560px;margin:40px auto;
+}
+.overview-fallback h3{color:var(--text-strong);margin:0 0 8px;font-size:16px}
+.overview-fallback p{margin:0 0 14px;font-size:13px;line-height:1.45}
 .stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 @media(max-width:900px){.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .stat-card{background:var(--bg-surface);padding:12px 14px;border-radius:8px;border:1px solid var(--border);box-shadow:var(--shadow-sm)}
@@ -85,35 +119,71 @@ html[data-theme="dark"] a.link{color:#63b3ed}
 </style>
 {% endblock %}
 {% block content %}
-<div class="page-shell">
-  <div class="note" id="noteBar">Loading archive inventory from SharePoint…</div>
-  <div class="stats-grid" id="stats" style="display:none">
-    <div class="stat-card"><div class="stat-label">Reports</div><div class="stat-value" id="stTotal">0</div></div>
-    <div class="stat-card"><div class="stat-label">Workspaces</div><div class="stat-value" id="stWs">0</div></div>
-    <div class="stat-card"><div class="stat-label">Batch folders</div><div class="stat-value" id="stBatch">0</div></div>
-    <div class="stat-card"><div class="stat-label">Source</div><div class="stat-value" style="font-size:14px" id="stSrc">SharePoint</div></div>
+{% set dd = decomm_dashboard or {} %}
+<div class="page-shell"
+     id="decommPage"
+     data-service-url="{{ dd.serviceUrl or '' }}"
+     data-embed-enabled="{{ '1' if dd.embedEnabled else '0' }}"
+     data-report-title="{{ dd.title or 'Decommissioning Programme' }}">
+
+  <div class="decomm-tabs" role="tablist" aria-label="Decommissioned reports sections">
+    <button type="button" class="decomm-tab" role="tab" id="tabOverviewBtn" data-tab="overview" aria-selected="false">Overview</button>
+    <button type="button" class="decomm-tab active" role="tab" id="tabDetailBtn" data-tab="detail" aria-selected="true">Detail</button>
   </div>
-  <div class="controls">
-    <div class="ws-filter-wrap">
-      <select id="wsFilter" aria-label="Filter by workspace"><option value="">All workspaces</option></select>
-      <button type="button" class="btn-clear-ws" id="clearWsBtn" hidden title="Show all workspaces">Clear</button>
+
+  <!-- Overview: embedded Power BI programme dashboard (optional) -->
+  <div class="decomm-tab-panel" id="panelOverview" role="tabpanel" aria-labelledby="tabOverviewBtn">
+    <div class="overview-toolbar">
+      <span class="ov-title" id="ovTitle">{{ dd.title or 'Decommissioning Programme' }}</span>
+      <button type="button" class="btn btn-secondary" id="ovReloadBtn" style="height:34px" title="Reload embedded report">Reload</button>
+      <a class="btn btn-primary" id="ovOpenServiceBtn" style="height:34px;display:inline-flex;align-items:center;text-decoration:none"
+         href="{{ dd.serviceUrl or '#' }}" target="_blank" rel="noopener"
+         {% if not dd.serviceUrl %}hidden{% endif %}>Open in Power BI</a>
     </div>
-    <input type="search" id="qFilter" placeholder="Search report, folder, batch…" />
-    <div class="ws-toggle-bar">
-      <button type="button" class="btn-ws-toggle" id="expandAllBtn" title="Expand all workspace groups">Expand all</button>
-      <button type="button" class="btn-ws-toggle" id="collapseAllBtn" title="Collapse all workspace groups">Collapse all</button>
+    <div class="overview-frame-wrap" id="overviewFrameWrap">
+      <div id="pbiEmbedContainer">
+        <div class="loading"><div class="spinner"></div>Loading dashboard…</div>
+      </div>
     </div>
-    <button type="button" class="btn btn-primary" id="exportBtn" style="height:34px" title="Download Excel of decommissioned reports (current filters)">Export</button>
-    <button type="button" class="btn btn-secondary" id="refreshBtn" style="height:34px">Refresh</button>
   </div>
-  <div class="table-wrap" id="tableHost">
-    <div class="loading"><div class="spinner"></div>Scanning SharePoint decommission folders…</div>
+
+  <!-- Detail: existing SharePoint inventory (unchanged behaviour) -->
+  <div class="decomm-tab-panel active" id="panelDetail" role="tabpanel" aria-labelledby="tabDetailBtn">
+    <div class="note" id="noteBar">Loading archive inventory from SharePoint…</div>
+    <div class="stats-grid" id="stats" style="display:none">
+      <div class="stat-card"><div class="stat-label">Reports</div><div class="stat-value" id="stTotal">0</div></div>
+      <div class="stat-card"><div class="stat-label">Workspaces</div><div class="stat-value" id="stWs">0</div></div>
+      <div class="stat-card"><div class="stat-label">Batch folders</div><div class="stat-value" id="stBatch">0</div></div>
+      <div class="stat-card"><div class="stat-label">Source</div><div class="stat-value" style="font-size:14px" id="stSrc">SharePoint</div></div>
+    </div>
+    <div class="controls">
+      <div class="ws-filter-wrap">
+        <select id="wsFilter" aria-label="Filter by workspace"><option value="">All workspaces</option></select>
+        <button type="button" class="btn-clear-ws" id="clearWsBtn" hidden title="Show all workspaces">Clear</button>
+      </div>
+      <input type="search" id="qFilter" placeholder="Search report, folder, batch…" />
+      <div class="ws-toggle-bar">
+        <button type="button" class="btn-ws-toggle" id="expandAllBtn" title="Expand all workspace groups">Expand all</button>
+        <button type="button" class="btn-ws-toggle" id="collapseAllBtn" title="Collapse all workspace groups">Collapse all</button>
+      </div>
+      <button type="button" class="btn btn-primary" id="exportBtn" style="height:34px" title="Download Excel of decommissioned reports (current filters)">Export</button>
+      <button type="button" class="btn btn-secondary" id="refreshBtn" style="height:34px">Refresh</button>
+    </div>
+    <div class="table-wrap" id="tableHost">
+      <div class="loading"><div class="spinner"></div>Scanning SharePoint decommission folders…</div>
+    </div>
   </div>
 </div>
 {% endblock %}
 {% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js"></script>
 <script>
 let CACHE = null;
+/** Active section: detail (default) | overview — detail load always runs */
+let ACTIVE_TAB = 'detail';
+let overviewLoaded = false;
+let overviewLoading = false;
+let pbiReport = null;
 /** Workspace names currently expanded. Empty = overview only (default). */
 const EXPANDED = new Set();
 /** Current render: group id -> workspace name */
@@ -369,6 +439,126 @@ $('tableHost').addEventListener('click',(e)=>{
   toggleGroupById(btn.getAttribute('data-gid-toggle'));
 });
 
+/* ── Overview | Detail tabs (Detail behaviour unchanged) ── */
+function pageMeta(){
+  const el=$('decommPage');
+  return {
+    serviceUrl:(el && el.getAttribute('data-service-url'))||'',
+    embedEnabled:(el && el.getAttribute('data-embed-enabled'))==='1',
+    title:(el && el.getAttribute('data-report-title'))||'Decommissioning Programme',
+  };
+}
+
+function setDecommTab(name){
+  if(name!=='overview' && name!=='detail') name='detail';
+  ACTIVE_TAB=name;
+  document.querySelectorAll('.decomm-tab').forEach(btn=>{
+    const on=btn.getAttribute('data-tab')===name;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', on?'true':'false');
+  });
+  const ov=$('panelOverview');
+  const det=$('panelDetail');
+  if(ov) ov.classList.toggle('active', name==='overview');
+  if(det) det.classList.toggle('active', name==='detail');
+  try{
+    const u=new URL(window.location.href);
+    if(name==='detail') u.searchParams.delete('tab');
+    else u.searchParams.set('tab', name);
+    window.history.replaceState({},'',u.pathname+u.search+u.hash);
+  }catch(e){/* ignore */}
+  if(name==='overview') ensureOverviewLoaded(false);
+}
+
+function showOverviewFallback(msg, serviceUrl){
+  const box=$('pbiEmbedContainer');
+  if(!box) return;
+  const url=serviceUrl||pageMeta().serviceUrl||'';
+  const link=url
+    ?`<p style="margin-top:16px"><a class="btn btn-primary" href="${esc(url)}" target="_blank" rel="noopener">Open in Power BI service</a></p>`
+    :'';
+  box.innerHTML=`<div class="overview-fallback">
+    <h3>Dashboard unavailable here</h3>
+    <p>${esc(msg||'Could not embed the programme report.')}</p>
+    <p style="font-size:12px;opacity:.85">Detail tab still works — SharePoint archive inventory is separate from this embed.</p>
+    ${link}
+  </div>`;
+}
+
+async function ensureOverviewLoaded(force){
+  if(overviewLoading) return;
+  if(overviewLoaded && !force && pbiReport) return;
+  const meta=pageMeta();
+  const openBtn=$('ovOpenServiceBtn');
+  if(openBtn && meta.serviceUrl){
+    openBtn.href=meta.serviceUrl;
+    openBtn.hidden=false;
+  }
+  const box=$('pbiEmbedContainer');
+  if(!box) return;
+  if(!meta.embedEnabled){
+    showOverviewFallback('Embed is disabled. Use Open in Power BI.', meta.serviceUrl);
+    return;
+  }
+  if(typeof powerbi==='undefined' || !powerbi.embed){
+    showOverviewFallback('Power BI JS client failed to load. Use Open in Power BI.', meta.serviceUrl);
+    return;
+  }
+  overviewLoading=true;
+  box.innerHTML='<div class="loading"><div class="spinner"></div>Loading dashboard…</div>';
+  try{
+    const res=await fetch('/api/decommissioned-reports/dashboard-embed-token',{credentials:'include'});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok || !data.success || !data.token || !data.embedUrl){
+      showOverviewFallback(
+        data.error||('HTTP '+res.status),
+        data.serviceUrl||meta.serviceUrl
+      );
+      return;
+    }
+    if(openBtn && data.serviceUrl){
+      openBtn.href=data.serviceUrl;
+      openBtn.hidden=false;
+    }
+    const models=window['powerbi-client'] && window['powerbi-client'].models
+      ? window['powerbi-client'].models
+      : (powerbi.models||null);
+    const cfg={
+      type:'report',
+      id:data.reportId,
+      embedUrl:data.embedUrl,
+      accessToken:data.token,
+      tokenType: models ? models.TokenType.Embed : 1,
+      settings:{
+        panes:{ filters:{ visible:true }, pageNavigation:{ visible:true } },
+        background: models ? models.BackgroundType.Transparent : 1,
+      }
+    };
+    // Reset container for clean re-embed
+    box.innerHTML='';
+    try{ if(pbiReport){ powerbi.reset(box); } }catch(e){/* ignore */}
+    pbiReport=powerbi.embed(box, cfg);
+    overviewLoaded=true;
+  }catch(e){
+    showOverviewFallback(e.message||String(e), meta.serviceUrl);
+  }finally{
+    overviewLoading=false;
+  }
+}
+
+document.querySelectorAll('.decomm-tab').forEach(btn=>{
+  btn.addEventListener('click',()=>setDecommTab(btn.getAttribute('data-tab')||'detail'));
+});
+const ovReload=$('ovReloadBtn');
+if(ovReload) ovReload.addEventListener('click',()=>{overviewLoaded=false;ensureOverviewLoaded(true);});
+
+// Detail inventory always loads (existing behaviour)
 loadData(false);
+
+// Optional deep-link ?tab=overview
+try{
+  const t=(new URLSearchParams(window.location.search).get('tab')||'').toLowerCase();
+  if(t==='overview') setDecommTab('overview');
+}catch(e){/* ignore */}
 </script>
 {% endblock %}

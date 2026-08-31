@@ -2157,11 +2157,181 @@ def orphaned_reports_page():
     return render_template('orphaned_reports.html')
 
 
+def _decomm_dashboard_config():
+    """
+    Overview-tab Power BI report settings (Estate Decommissioning Programme).
+    All optional — Detail tab never depends on these.
+    """
+    # Defaults match the published programme report in Fabric Admin Governance.
+    # Override via env without code change.
+    workspace_id = (
+        os.getenv('DECOMM_DASHBOARD_WORKSPACE_ID')
+        or '943b84dc-4f4f-8434-74396e772de1'
+    ).strip()
+    report_id = (
+        os.getenv('DECOMM_DASHBOARD_REPORT_ID')
+        or '5e4eb1ff-26b8-47d5-84ab-cecadcbb0c3f'
+    ).strip()
+    dataset_id = (os.getenv('DECOMM_DASHBOARD_DATASET_ID') or '').strip()
+    service_url = (os.getenv('DECOMM_DASHBOARD_SERVICE_URL') or '').strip()
+    if not service_url and workspace_id and report_id:
+        service_url = (
+            f'https://app.powerbi.com/groups/{workspace_id}/reports/{report_id}'
+            f'/Overview?experience=power-bi'
+        )
+    embed_enabled = (os.getenv('DECOMM_DASHBOARD_EMBED') or 'true').strip().lower() in (
+        '1', 'true', 'yes', 'on',
+    )
+    return {
+        'workspaceId': workspace_id or None,
+        'reportId': report_id or None,
+        'datasetId': dataset_id or None,
+        'serviceUrl': service_url or None,
+        'embedEnabled': embed_enabled and bool(workspace_id and report_id),
+        'title': os.getenv('DECOMM_DASHBOARD_TITLE')
+        or 'Power BI Estate Decommissioning Programme',
+    }
+
+
 @app.route('/decommissioned-reports')
 @login_required
 def decommissioned_reports_page():
     """Reports archived to SharePoint Report Decommission Activity (file inventory)."""
-    return render_template('decommissioned_reports.html')
+    return render_template(
+        'decommissioned_reports.html',
+        decomm_dashboard=_decomm_dashboard_config(),
+    )
+
+
+@app.route('/api/decommissioned-reports/dashboard-config')
+@login_required
+def api_decommissioned_dashboard_config():
+    """Public (auth) config for Overview tab — no secrets."""
+    cfg = _decomm_dashboard_config()
+    return jsonify({'success': True, **cfg})
+
+
+@app.route('/api/decommissioned-reports/dashboard-embed-token')
+@login_required
+def api_decommissioned_dashboard_embed_token():
+    """
+    Embed token for Overview tab using the signed-in user's Power BI token
+    (GenerateToken against the programme report). Falls back gracefully so
+    Detail tab and open-in-service still work if embed is blocked.
+    """
+    try:
+        cfg = _decomm_dashboard_config()
+        if not cfg.get('embedEnabled'):
+            return jsonify({
+                'success': False,
+                'error': 'Dashboard embed is disabled (DECOMM_DASHBOARD_EMBED).',
+                'serviceUrl': cfg.get('serviceUrl'),
+            }), 400
+        workspace_id = cfg.get('workspaceId')
+        report_id = cfg.get('reportId')
+        if not workspace_id or not report_id:
+            return jsonify({
+                'success': False,
+                'error': 'DECOMM_DASHBOARD_WORKSPACE_ID / REPORT_ID not configured.',
+                'serviceUrl': cfg.get('serviceUrl'),
+            }), 400
+
+        user_token = get_user_powerbi_token()
+        if not user_token:
+            return jsonify({
+                'success': False,
+                'error': 'No Power BI user token in session. Sign out and sign in again.',
+                'serviceUrl': cfg.get('serviceUrl'),
+            }), 401
+
+        headers = {
+            'Authorization': f'Bearer {user_token}',
+            'Content-Type': 'application/json',
+        }
+        # Report meta (for embedUrl + dataset if not set)
+        meta_url = (
+            f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}'
+        )
+        meta_res = requests.get(meta_url, headers=headers, timeout=45)
+        if meta_res.status_code == 401:
+            return jsonify({
+                'success': False,
+                'error': 'Power BI token expired or unauthorized for this report. Re-login.',
+                'serviceUrl': cfg.get('serviceUrl'),
+            }), 401
+        if meta_res.status_code == 404:
+            return jsonify({
+                'success': False,
+                'error': 'Report not found or you do not have access in that workspace.',
+                'serviceUrl': cfg.get('serviceUrl'),
+            }), 404
+        if not meta_res.ok:
+            return jsonify({
+                'success': False,
+                'error': f'Failed to load report metadata (HTTP {meta_res.status_code}).',
+                'detail': (meta_res.text or '')[:300],
+                'serviceUrl': cfg.get('serviceUrl'),
+            }), 502
+
+        meta = meta_res.json() or {}
+        embed_url = meta.get('embedUrl') or ''
+        dataset_id = cfg.get('datasetId') or meta.get('datasetId') or ''
+
+        token_body = {'accessLevel': 'View'}
+        if dataset_id:
+            token_body['datasetId'] = dataset_id
+            token_body['allowSaveAs'] = False
+
+        token_url = (
+            f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}'
+            f'/reports/{report_id}/GenerateToken'
+        )
+        tok_res = requests.post(token_url, headers=headers, json=token_body, timeout=45)
+        if not tok_res.ok:
+            # Common: GenerateToken needs workspace permission / capacity
+            err_txt = (tok_res.text or '')[:400]
+            return jsonify({
+                'success': False,
+                'error': (
+                    f'GenerateToken failed (HTTP {tok_res.status_code}). '
+                    'You can still open the report in Power BI service.'
+                ),
+                'detail': err_txt,
+                'serviceUrl': cfg.get('serviceUrl'),
+                'embedUrl': embed_url or None,
+                'reportId': report_id,
+            }), 502
+
+        tok = tok_res.json() or {}
+        access_token = tok.get('token')
+        if not access_token:
+            return jsonify({
+                'success': False,
+                'error': 'GenerateToken returned no token.',
+                'serviceUrl': cfg.get('serviceUrl'),
+            }), 502
+
+        return jsonify({
+            'success': True,
+            'token': access_token,
+            'tokenId': tok.get('tokenId'),
+            'expiration': tok.get('expiration'),
+            'embedUrl': embed_url,
+            'reportId': report_id,
+            'workspaceId': workspace_id,
+            'datasetId': dataset_id or None,
+            'serviceUrl': cfg.get('serviceUrl'),
+            'title': cfg.get('title'),
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        cfg = _decomm_dashboard_config()
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'serviceUrl': cfg.get('serviceUrl'),
+        }), 500
 
 
 @app.route('/api/decommissioned-reports')
