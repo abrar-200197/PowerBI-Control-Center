@@ -526,21 +526,40 @@ async function ensureOverviewLoaded(force){
     const models=window['powerbi-client'] && window['powerbi-client'].models
       ? window['powerbi-client'].models
       : (powerbi.models||null);
+    // Server returns tokenType: Aad (user SSO) or Embed (GenerateToken)
+    const isAad = String(data.tokenType||'Aad').toLowerCase()!=='embed';
+    let tokenType = 0; // Aad
+    if(models && models.TokenType){
+      tokenType = isAad ? models.TokenType.Aad : models.TokenType.Embed;
+    } else {
+      tokenType = isAad ? 0 : 1;
+    }
     const cfg={
       type:'report',
       id:data.reportId,
       embedUrl:data.embedUrl,
       accessToken:data.token,
-      tokenType: models ? models.TokenType.Embed : 1,
+      tokenType: tokenType,
       settings:{
         panes:{ filters:{ visible:true }, pageNavigation:{ visible:true } },
-        background: models ? models.BackgroundType.Transparent : 1,
+        navContentPaneEnabled: true,
+        background: models && models.BackgroundType ? models.BackgroundType.Transparent : undefined,
       }
     };
     // Reset container for clean re-embed
     box.innerHTML='';
     try{ if(pbiReport){ powerbi.reset(box); } }catch(e){/* ignore */}
     pbiReport=powerbi.embed(box, cfg);
+    // Surface embed errors in the panel instead of a blank frame
+    try{
+      pbiReport.on('error', function(event){
+        const msg=(event && event.detail && (event.detail.message||event.detail.detailedMessage))
+          || 'Power BI embed error';
+        console.error('PBI embed error', event && event.detail);
+        showOverviewFallback(String(msg), data.serviceUrl||meta.serviceUrl);
+        overviewLoaded=false;
+      });
+    }catch(e){/* ignore */}
     overviewLoaded=true;
   }catch(e){
     showOverviewFallback(e.message||String(e), meta.serviceUrl);

@@ -2297,9 +2297,15 @@ def api_decommissioned_publish_dataset_feed():
 @login_required
 def api_decommissioned_dashboard_embed_token():
     """
-    Embed token for Overview tab using the signed-in user's Power BI token
-    (GenerateToken against the programme report). Falls back gracefully so
-    Detail tab and open-in-service still work if embed is blocked.
+    Overview-tab embed credentials.
+
+    Primary path: user Azure AD token (TokenType.Aad) — same SSO session as the app.
+    Does NOT require GenerateToken / embed capacity (works for standard viewers).
+
+    Optional fallback: GenerateToken (TokenType.Embed) when
+    DECOMM_DASHBOARD_USE_GENERATE_TOKEN=true.
+
+    Detail tab is independent of this endpoint.
     """
     try:
         cfg = _decomm_dashboard_config()
@@ -2318,7 +2324,12 @@ def api_decommissioned_dashboard_embed_token():
                 'serviceUrl': cfg.get('serviceUrl'),
             }), 400
 
-        user_token = get_user_powerbi_token()
+        def _fresh_user_token(force_refresh=False):
+            if force_refresh:
+                session.pop('access_token', None)
+            return get_user_powerbi_token()
+
+        user_token = _fresh_user_token(force_refresh=False)
         if not user_token:
             return jsonify({
                 'success': False,
@@ -2326,76 +2337,157 @@ def api_decommissioned_dashboard_embed_token():
                 'serviceUrl': cfg.get('serviceUrl'),
             }), 401
 
+        meta_url = (
+            f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}'
+        )
+        # Built-in embed URL if Get Report is blocked but user can still view in service
+        fallback_embed_url = (
+            f'https://app.powerbi.com/reportEmbed'
+            f'?reportId={report_id}&groupId={workspace_id}'
+        )
+
+        def _get_report_meta(token):
+            return requests.get(
+                meta_url,
+                headers={
+                    'Authorization': f'Bearer {token}',
+                    'Content-Type': 'application/json',
+                },
+                timeout=45,
+            )
+
+        meta_res = _get_report_meta(user_token)
+        # Stale session JWT: force MSAL refresh once and retry
+        if meta_res.status_code == 401:
+            print('   ⚠️ decomm embed: 401 on Get Report — refreshing user token…')
+            user_token = _fresh_user_token(force_refresh=True)
+            if not user_token:
+                return jsonify({
+                    'success': False,
+                    'error': 'Power BI session expired. Sign out and sign in again.',
+                    'serviceUrl': cfg.get('serviceUrl'),
+                }), 401
+            meta_res = _get_report_meta(user_token)
+
+        embed_url = fallback_embed_url
+        dataset_id = cfg.get('datasetId') or ''
+        report_name = cfg.get('title')
+
+        if meta_res.status_code == 404:
+            return jsonify({
+                'success': False,
+                'error': (
+                    'Report not found or you do not have access in that workspace. '
+                    'Open the report in Power BI and confirm you can view it, then Retry.'
+                ),
+                'serviceUrl': cfg.get('serviceUrl'),
+                'httpStatus': 404,
+            }), 404
+
+        if meta_res.status_code == 401:
+            # Still unauthorized after refresh — no access or wrong token audience
+            return jsonify({
+                'success': False,
+                'error': (
+                    'Not authorized to read this report via API (HTTP 401). '
+                    'Confirm workspace access (Fabric Admin Governance) and re-login. '
+                    'You can still use Open in Power BI if the service UI works.'
+                ),
+                'serviceUrl': cfg.get('serviceUrl'),
+                'detail': (meta_res.text or '')[:300],
+            }), 401
+
+        if meta_res.ok:
+            meta = meta_res.json() or {}
+            embed_url = meta.get('embedUrl') or fallback_embed_url
+            dataset_id = dataset_id or meta.get('datasetId') or ''
+            report_name = meta.get('name') or report_name
+        else:
+            # Non-fatal: still try AAD embed with constructed URL (common with RLS quirks)
+            print(
+                f"   ⚠️ decomm embed: Get Report HTTP {meta_res.status_code} "
+                f"— using fallback embedUrl"
+            )
+
+        use_generate = (
+            os.getenv('DECOMM_DASHBOARD_USE_GENERATE_TOKEN') or ''
+        ).strip().lower() in ('1', 'true', 'yes', 'on')
+
+        # --- Preferred: user AAD token (TokenType.Aad) ---
+        if not use_generate:
+            exp = None
+            try:
+                left = _jwt_seconds_left(user_token)
+                if left is not None:
+                    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                    exp = (_dt.now(_tz.utc) + _td(seconds=max(0, int(left)))).isoformat()
+            except Exception:
+                exp = None
+            return jsonify({
+                'success': True,
+                'token': user_token,
+                'tokenType': 'Aad',
+                'expiration': exp,
+                'embedUrl': embed_url,
+                'reportId': report_id,
+                'workspaceId': workspace_id,
+                'datasetId': dataset_id or None,
+                'serviceUrl': cfg.get('serviceUrl'),
+                'title': report_name or cfg.get('title'),
+                'mode': 'aad',
+            })
+
+        # --- Optional: embed token via GenerateToken ---
         headers = {
             'Authorization': f'Bearer {user_token}',
             'Content-Type': 'application/json',
         }
-        # Report meta (for embedUrl + dataset if not set)
-        meta_url = (
-            f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}'
-        )
-        meta_res = requests.get(meta_url, headers=headers, timeout=45)
-        if meta_res.status_code == 401:
-            return jsonify({
-                'success': False,
-                'error': 'Power BI token expired or unauthorized for this report. Re-login.',
-                'serviceUrl': cfg.get('serviceUrl'),
-            }), 401
-        if meta_res.status_code == 404:
-            return jsonify({
-                'success': False,
-                'error': 'Report not found or you do not have access in that workspace.',
-                'serviceUrl': cfg.get('serviceUrl'),
-            }), 404
-        if not meta_res.ok:
-            return jsonify({
-                'success': False,
-                'error': f'Failed to load report metadata (HTTP {meta_res.status_code}).',
-                'detail': (meta_res.text or '')[:300],
-                'serviceUrl': cfg.get('serviceUrl'),
-            }), 502
-
-        meta = meta_res.json() or {}
-        embed_url = meta.get('embedUrl') or ''
-        dataset_id = cfg.get('datasetId') or meta.get('datasetId') or ''
-
         token_body = {'accessLevel': 'View'}
         if dataset_id:
             token_body['datasetId'] = dataset_id
             token_body['allowSaveAs'] = False
-
         token_url = (
             f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}'
             f'/reports/{report_id}/GenerateToken'
         )
         tok_res = requests.post(token_url, headers=headers, json=token_body, timeout=45)
         if not tok_res.ok:
-            # Common: GenerateToken needs workspace permission / capacity
             err_txt = (tok_res.text or '')[:400]
+            # Fall back to AAD embed rather than hard-fail
+            print(f'   ⚠️ GenerateToken HTTP {tok_res.status_code} — falling back to Aad embed')
             return jsonify({
-                'success': False,
-                'error': (
-                    f'GenerateToken failed (HTTP {tok_res.status_code}). '
-                    'You can still open the report in Power BI service.'
-                ),
-                'detail': err_txt,
-                'serviceUrl': cfg.get('serviceUrl'),
-                'embedUrl': embed_url or None,
+                'success': True,
+                'token': user_token,
+                'tokenType': 'Aad',
+                'embedUrl': embed_url,
                 'reportId': report_id,
-            }), 502
+                'workspaceId': workspace_id,
+                'datasetId': dataset_id or None,
+                'serviceUrl': cfg.get('serviceUrl'),
+                'title': report_name or cfg.get('title'),
+                'mode': 'aad_fallback',
+                'warning': f'GenerateToken failed ({tok_res.status_code}); using AAD embed. {err_txt[:120]}',
+            })
 
         tok = tok_res.json() or {}
         access_token = tok.get('token')
         if not access_token:
             return jsonify({
-                'success': False,
-                'error': 'GenerateToken returned no token.',
+                'success': True,
+                'token': user_token,
+                'tokenType': 'Aad',
+                'embedUrl': embed_url,
+                'reportId': report_id,
+                'workspaceId': workspace_id,
                 'serviceUrl': cfg.get('serviceUrl'),
-            }), 502
+                'title': report_name or cfg.get('title'),
+                'mode': 'aad_fallback',
+            })
 
         return jsonify({
             'success': True,
             'token': access_token,
+            'tokenType': 'Embed',
             'tokenId': tok.get('tokenId'),
             'expiration': tok.get('expiration'),
             'embedUrl': embed_url,
@@ -2403,7 +2495,8 @@ def api_decommissioned_dashboard_embed_token():
             'workspaceId': workspace_id,
             'datasetId': dataset_id or None,
             'serviceUrl': cfg.get('serviceUrl'),
-            'title': cfg.get('title'),
+            'title': report_name or cfg.get('title'),
+            'mode': 'embed',
         })
     except Exception as e:
         import traceback
