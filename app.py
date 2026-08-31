@@ -2493,17 +2493,67 @@ def api_decommissioned_publish_dataset_feed():
         if not result.get('success'):
             return jsonify(result), 502
 
-        out = {'success': True, 'publish': result, 'datasetRefresh': None}
+        out = {
+            'success': True,
+            'publish': result,
+            'datasetRefresh': None,
+            # SharePoint feed path for Power BI Get Data (always useful even if refresh fails)
+            'feedNote': (
+                'Inventory file updated. Point the dataset at SharePoint '
+                f"{result.get('xlsxPath') or result.get('folder') or '_dataset_feed'} "
+                'and schedule refresh if API refresh is not allowed.'
+            ),
+        }
         if do_refresh:
             cfg = _decomm_dashboard_config()
             token = get_user_powerbi_token()
+            if token and not session.get('access_token'):
+                pass
+            # Prefer fresh token
+            if not token:
+                session.pop('access_token', None)
+                token = get_user_powerbi_token()
+
+            workspace_id = cfg.get('workspaceId') or ''
+            report_id = cfg.get('reportId') or ''
             dataset_id = cfg.get('datasetId') or ''
-            # Resolve dataset from report if env not set (same report as Overview embed)
-            if not dataset_id and token and cfg.get('workspaceId') and cfg.get('reportId'):
+
+            # 1) Discovery cache from Overview embed
+            try:
+                cached = _DECOMM_DASH_RESOLVE_CACHE.get('payload') or {}
+                if cached:
+                    workspace_id = workspace_id or cached.get('workspaceId') or ''
+                    report_id = report_id or cached.get('reportId') or ''
+                    dataset_id = dataset_id or cached.get('datasetId') or ''
+            except Exception:
+                pass
+
+            # 2) Parse service URL env
+            if (not workspace_id or not report_id) and cfg.get('serviceUrl'):
+                w, r = _parse_pbi_service_url(cfg.get('serviceUrl') or '')
+                workspace_id = workspace_id or (w or '')
+                report_id = report_id or (r or '')
+
+            # 3) Discover report by name → datasetId
+            if token and (not dataset_id or not workspace_id):
+                try:
+                    found = _discover_decomm_dashboard_report(
+                        token,
+                        prefer_name=cfg.get('discoverName') or cfg.get('title'),
+                    )
+                    if found:
+                        workspace_id = workspace_id or found.get('workspaceId') or ''
+                        report_id = report_id or found.get('reportId') or ''
+                        dataset_id = dataset_id or found.get('datasetId') or ''
+                except Exception as discover_err:
+                    print(f"   ⚠️ decomm sync discover: {discover_err}")
+
+            # 4) Get Report for datasetId
+            if token and not dataset_id and workspace_id and report_id:
                 try:
                     meta_url = (
                         f"https://api.powerbi.com/v1.0/myorg/groups/"
-                        f"{cfg['workspaceId']}/reports/{cfg['reportId']}"
+                        f"{workspace_id}/reports/{report_id}"
                     )
                     mr = requests.get(
                         meta_url,
@@ -2514,17 +2564,46 @@ def api_decommissioned_publish_dataset_feed():
                         dataset_id = (mr.json() or {}).get('datasetId') or ''
                 except Exception as resolve_err:
                     print(f"   ⚠️ decomm dataset id resolve: {resolve_err}")
+
+            # 5) GET /reports/{id} without group
+            if token and not dataset_id and report_id:
+                try:
+                    mr = requests.get(
+                        f"https://api.powerbi.com/v1.0/myorg/reports/{report_id}",
+                        headers={'Authorization': f'Bearer {token}'},
+                        timeout=45,
+                    )
+                    if mr.ok:
+                        dataset_id = (mr.json() or {}).get('datasetId') or dataset_id
+                except Exception:
+                    pass
+
+            print(
+                f"   🔄 decomm sync refresh ws={workspace_id!r} "
+                f"ds={dataset_id!r} report={report_id!r}"
+            )
             refresh = trigger_decommission_dataset_refresh(
                 access_token=token or '',
-                workspace_id=cfg.get('workspaceId'),
+                workspace_id=workspace_id or None,
                 dataset_id=dataset_id or None,
             )
             out['datasetRefresh'] = refresh
+            out['resolved'] = {
+                'workspaceId': workspace_id or None,
+                'reportId': report_id or None,
+                'datasetId': dataset_id or None,
+            }
             # Publish OK even if refresh skipped/failed — feed is the critical path
             if refresh.get('skipped'):
                 out['warning'] = refresh.get('error')
             elif not refresh.get('success'):
-                out['warning'] = refresh.get('error') or 'Dataset refresh failed'
+                err = refresh.get('error') or 'Dataset refresh failed'
+                # Keep UI message short
+                if len(err) > 180:
+                    err = err[:177] + '…'
+                out['warning'] = err
+            else:
+                out['warning'] = None
         return jsonify(out)
     except Exception as e:
         import traceback

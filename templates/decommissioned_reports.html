@@ -606,13 +606,24 @@ async function syncDecommDatasetFeed(){
     const n=pub.rowCount!=null?pub.rowCount:'?';
     let msg=`Feed updated (${n} reports)`;
     const ref=data.datasetRefresh;
-    if(ref && ref.success) msg+=' · dataset refresh started';
-    else if(ref && ref.skipped) msg+=' · set DECOMM_DASHBOARD_DATASET_ID for auto-refresh';
-    else if(data.warning) msg+=' · '+data.warning;
+    if(ref && ref.success){
+      msg+=' · dataset refresh started';
+    } else if(ref && ref.skipped){
+      msg+=' · refresh skipped (no dataset id) — schedule refresh in PBI on the feed file';
+    } else if(ref && !ref.success){
+      // Feed OK is the important part; API refresh often needs Contributor
+      const short=(data.warning||ref.error||'refresh not allowed').toString();
+      msg+=' · feed OK; dataset API refresh failed';
+      console.warn('decomm dataset refresh', ref);
+      if(st) st.title=short;
+    } else if(data.warning){
+      msg+=' · '+data.warning;
+    }
+    if(pub.xlsxPath) msg+=` · ${pub.xlsxPath.split('/').slice(-2).join('/')}`;
     if(st) st.textContent=msg;
     // Soft reload embed after a short delay so refresh can start applying
-    if(ACTIVE_TAB==='overview'){
-      setTimeout(()=>{overviewLoaded=false;ensureOverviewLoaded(true);}, 2500);
+    if(ACTIVE_TAB==='overview' && ref && ref.success){
+      setTimeout(()=>{overviewLoaded=false;ensureOverviewLoaded(true);}, 4000);
     }
   }catch(e){
     if(st) st.textContent='Sync failed: '+(e.message||e);

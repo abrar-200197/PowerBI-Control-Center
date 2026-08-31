@@ -512,6 +512,9 @@ def trigger_decommission_dataset_refresh(
     """
     POST refreshes on the programme dataset (after feed publish).
     workspace_id/dataset_id from args or DECOMM_DASHBOARD_* env.
+
+    Tries workspace-scoped then tenant dataset URL; empty body then notifyOption.
+    Caller needs Dataset.ReadWrite.All / contributor on the dataset.
     """
     import os
     import requests
@@ -524,8 +527,8 @@ def trigger_decommission_dataset_refresh(
         return {
             "success": False,
             "error": (
-                "DECOMM_DASHBOARD_DATASET_ID is not set. "
-                "Publish feed still works; set dataset id to auto-refresh Power BI."
+                "Dataset id unknown. Feed was published; set DECOMM_DASHBOARD_DATASET_ID "
+                "or open Overview once so the report/dataset can be discovered."
             ),
             "stage": "config",
             "skipped": True,
@@ -535,38 +538,64 @@ def trigger_decommission_dataset_refresh(
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
-    # Prefer workspace-scoped endpoint when group id known
+    urls = []
     if workspace_id:
-        url = (
+        urls.append(
             f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}"
             f"/datasets/{dataset_id}/refreshes"
         )
-    else:
-        url = f"https://api.powerbi.com/v1.0/myorg/datasets/{dataset_id}/refreshes"
+    urls.append(f"https://api.powerbi.com/v1.0/myorg/datasets/{dataset_id}/refreshes")
+
+    # Empty body is widely accepted; notifyOption can 400 on some tenants
+    bodies = [None, {"notifyOption": "NoNotification"}]
+    last_err = ""
+    last_status = None
+    last_url = ""
 
     try:
-        resp = requests.post(
-            url,
-            headers=headers,
-            json={"notifyOption": "NoNotification"},
-            timeout=60,
-        )
-        # 202 Accepted is normal
-        if resp.status_code in (200, 202):
-            return {
-                "success": True,
-                "httpStatus": resp.status_code,
-                "workspaceId": workspace_id or None,
-                "datasetId": dataset_id,
-                "message": "Dataset refresh accepted",
-            }
+        for url in urls:
+            for body in bodies:
+                last_url = url
+                if body is None:
+                    resp = requests.post(url, headers=headers, timeout=60)
+                else:
+                    resp = requests.post(url, headers=headers, json=body, timeout=60)
+                last_status = resp.status_code
+                if resp.status_code in (200, 202):
+                    return {
+                        "success": True,
+                        "httpStatus": resp.status_code,
+                        "workspaceId": workspace_id or None,
+                        "datasetId": dataset_id,
+                        "message": "Dataset refresh accepted",
+                        "url": url,
+                    }
+                last_err = (resp.text or "")[:500]
+                # 404 on workspace path → try next URL; 401/403 → permission issue
+                if resp.status_code in (401, 403):
+                    break
+            if last_status in (401, 403):
+                break
+
+        hint = ""
+        if last_status in (401, 403):
+            hint = (
+                " Need Contributor (or higher) on the semantic model, "
+                "or Dataset.ReadWrite.All on the app registration."
+            )
+        elif last_status == 404:
+            hint = " Dataset id or workspace may be wrong."
+        elif last_status == 429 or (last_err and "capacity" in last_err.lower()):
+            hint = " Refresh limit or capacity — try again later in Power BI service."
+
         return {
             "success": False,
-            "httpStatus": resp.status_code,
-            "error": (resp.text or "")[:500],
+            "httpStatus": last_status,
+            "error": (last_err or f"HTTP {last_status}") + hint,
             "workspaceId": workspace_id or None,
             "datasetId": dataset_id,
             "stage": "refresh",
+            "url": last_url,
         }
     except Exception as ex:
         logger.exception("decomm dataset refresh failed")
