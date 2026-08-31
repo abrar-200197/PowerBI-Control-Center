@@ -60,8 +60,8 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'powerbi-doc-generator-secret
 
 # Session configuration
 # IMPORTANT: Client-side signed cookies overflow (~4KB) once we store Power BI
-# + Copilot JWTs + the MSAL token_cache. Browsers then drop the cookie → endless
-# login loop. Use server-side filesystem sessions (cookie only holds a small id).
+# JWTs + the MSAL token_cache. Browsers then drop the cookie → endless login
+# loop. Use server-side filesystem sessions (cookie only holds a small id).
 SESSION_MAX_HOURS = int(os.getenv('SESSION_MAX_HOURS', '12'))
 app.config['SESSION_PERMANENT'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=SESSION_MAX_HOURS)

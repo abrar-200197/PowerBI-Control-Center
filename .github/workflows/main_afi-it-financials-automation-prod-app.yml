@@ -24,8 +24,8 @@ jobs:
           python-version: '3.11'
 
       # Build antenv HERE and deploy it with the app. Do not rely only on Oryx
-      # remote pip — new packages (e.g. Copilot Studio SDK) were missing on prod
-      # when antenv was excluded from the artifact.
+      # remote pip — when antenv was excluded from the artifact, packages were
+      # missing on prod. Agent/Copilot SDK is not part of this app.
       - name: Create venv and install dependencies
         run: |
           set -euo pipefail
@@ -33,7 +33,7 @@ jobs:
           source antenv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -c "from microsoft_agents.copilotstudio.client import CopilotClient; print('copilot sdk ok')"
+          python -c "import flask, openpyxl, msal; print('core deps ok')"
 
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
