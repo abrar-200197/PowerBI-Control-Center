@@ -141,7 +141,7 @@ html[data-theme="dark"] a.link{color:#63b3ed}
       <button type="button" class="btn btn-secondary" id="ovReloadBtn" style="height:34px" title="Reload embedded report">Reload</button>
       <a class="btn btn-primary" id="ovOpenServiceBtn" style="height:34px;display:inline-flex;align-items:center;text-decoration:none"
          href="{{ dd.serviceUrl or '#' }}" target="_blank" rel="noopener"
-         {% if not dd.serviceUrl %}hidden{% endif %}>Open in Power BI</a>
+         {% if not dd.serviceUrl or 'groups/' not in (dd.serviceUrl or '') %}hidden{% endif %}>Open in Power BI</a>
     </div>
     <div class="overview-frame-wrap" id="overviewFrameWrap">
       <div id="pbiEmbedContainer">
@@ -493,10 +493,19 @@ async function ensureOverviewLoaded(force){
   if(overviewLoaded && !force && pbiReport) return;
   const meta=pageMeta();
   const openBtn=$('ovOpenServiceBtn');
-  if(openBtn && meta.serviceUrl){
-    openBtn.href=meta.serviceUrl;
-    openBtn.hidden=false;
+  function setOpenBtn(url){
+    if(!openBtn) return;
+    const u=(url||'').trim();
+    // Never point at a dead/incomplete link — that causes Power BI 404 artifact errors
+    if(u && /\/groups\/[0-9a-fA-F-]{36}\/reports\/[0-9a-fA-F-]{36}/i.test(u)){
+      openBtn.href=u;
+      openBtn.hidden=false;
+    } else {
+      openBtn.removeAttribute('href');
+      openBtn.hidden=true;
+    }
   }
+  setOpenBtn(meta.serviceUrl);
   const box=$('pbiEmbedContainer');
   if(!box) return;
   if(!meta.embedEnabled){
@@ -508,20 +517,22 @@ async function ensureOverviewLoaded(force){
     return;
   }
   overviewLoading=true;
-  box.innerHTML='<div class="loading"><div class="spinner"></div>Loading dashboard…</div>';
+  box.innerHTML='<div class="loading"><div class="spinner"></div>Finding and loading dashboard…</div>';
   try{
     const res=await fetch('/api/decommissioned-reports/dashboard-embed-token',{credentials:'include'});
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.success || !data.token || !data.embedUrl){
       showOverviewFallback(
         data.error||('HTTP '+res.status),
-        data.serviceUrl||meta.serviceUrl
+        data.serviceUrl||''
       );
+      setOpenBtn(data.serviceUrl||'');
       return;
     }
-    if(openBtn && data.serviceUrl){
-      openBtn.href=data.serviceUrl;
-      openBtn.hidden=false;
+    setOpenBtn(data.serviceUrl||'');
+    if(data.title){
+      const t=$('ovTitle');
+      if(t) t.textContent=data.title;
     }
     const models=window['powerbi-client'] && window['powerbi-client'].models
       ? window['powerbi-client'].models

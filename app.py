@@ -2197,18 +2197,15 @@ def _decomm_dashboard_config():
     workspace_id = (os.getenv('DECOMM_DASHBOARD_WORKSPACE_ID') or '').strip()
     report_id = (os.getenv('DECOMM_DASHBOARD_REPORT_ID') or '').strip()
 
-    # Prefer parsing a full working service URL (most reliable)
+    # Prefer parsing a full working service URL (most reliable — paste from browser).
     if service_url:
         w_from_url, r_from_url = _parse_pbi_service_url(service_url)
         if w_from_url and r_from_url:
             workspace_id = workspace_id or w_from_url
             report_id = report_id or r_from_url
 
-    # Defaults only when env is empty (override if wrong)
-    if not workspace_id:
-        workspace_id = '943b84dc-a22b-4f4f-8434-74396e772de1'
-    if not report_id:
-        report_id = '5e4eb1ff-26b8-47d5-84ab-cecadcbb0c3f'
+    # NO hard-coded GUIDs — wrong IDs caused service 404 + embed failure.
+    # Resolve at runtime via DECOMM_DASHBOARD_* env or name discovery.
 
     if not service_url and workspace_id and report_id:
         service_url = (
@@ -2216,6 +2213,7 @@ def _decomm_dashboard_config():
             f'/Overview?experience=power-bi'
         )
 
+    # Embed UI is shown when enabled; IDs may be filled by discovery on first load
     embed_enabled = (os.getenv('DECOMM_DASHBOARD_EMBED') or 'true').strip().lower() in (
         '1', 'true', 'yes', 'on',
     )
@@ -2224,22 +2222,40 @@ def _decomm_dashboard_config():
         'reportId': report_id or None,
         'datasetId': dataset_id or None,
         'serviceUrl': service_url or None,
-        'embedEnabled': embed_enabled and bool(workspace_id and report_id),
+        'embedEnabled': embed_enabled,
         'title': title or 'Power BI Estate Decommissioning Programme',
         'discoverName': (
             os.getenv('DECOMM_DASHBOARD_DISCOVER_NAME')
             or 'Power BI Estate Decommissioning Programme'
         ).strip(),
+        'needsConfig': not bool(workspace_id and report_id) and not bool(service_url),
     }
+
+
+def _score_decomm_report_name(rname: str, name_keys_l: list) -> int:
+    rl = (rname or '').casefold()
+    if not rl:
+        return 0
+    score = 0
+    if rl in name_keys_l:
+        return 100
+    for nk in name_keys_l:
+        if nk and nk in rl:
+            score = max(score, 80)
+    if 'decommission' in rl and ('estate' in rl or 'programme' in rl or 'program' in rl):
+        score = max(score, 70)
+    if 'summary decommission' in rl:
+        score = max(score, 75)
+    return score
 
 
 def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None):
     """
     Find the programme report in workspaces the signed-in user can access.
-    Used when configured workspace/report IDs return 404.
+    1) GET /reports (all accessible)
+    2) Fallback: scan groups + reports
     """
     import time as _time
-    import re
 
     global _DECOMM_DASH_RESOLVE_CACHE
     now = _time.time()
@@ -2264,81 +2280,138 @@ def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
     }
+    hits = []
+
+    def _add_hit(rep, workspace_id=None, workspace_name='', priority=0):
+        rname = (rep.get('name') or '').strip()
+        rid = rep.get('id')
+        if not rname or not rid:
+            return
+        score = _score_decomm_report_name(rname, name_keys_l)
+        if score <= 0:
+            return
+        wid = workspace_id or rep.get('datasetWorkspaceId') or rep.get('workspaceId')
+        # webUrl often has the correct groups/{id}/reports/{id}
+        web = rep.get('webUrl') or ''
+        if not wid:
+            w2, _r2 = _parse_pbi_service_url(web)
+            wid = w2
+        hits.append({
+            'score': score + priority,
+            'workspaceId': wid,
+            'workspaceName': workspace_name,
+            'reportId': rid,
+            'reportName': rname,
+            'datasetId': rep.get('datasetId') or '',
+            'embedUrl': rep.get('embedUrl') or '',
+            'webUrl': web,
+        })
+
+    # Pass 1: all reports the user can see (fast, single call)
     try:
-        gr = requests.get(
-            'https://api.powerbi.com/v1.0/myorg/groups?$top=5000',
+        rr = requests.get(
+            'https://api.powerbi.com/v1.0/myorg/reports',
             headers=headers,
-            timeout=60,
+            timeout=90,
         )
-        if not gr.ok:
-            print(f'   ⚠️ decomm discover groups HTTP {gr.status_code}')
-            return None
-        groups = (gr.json() or {}).get('value') or []
+        if rr.ok:
+            for rep in (rr.json() or {}).get('value') or []:
+                _add_hit(rep)
+            print(f'   🔎 decomm discover /reports hits={len(hits)}')
+        else:
+            print(f'   ⚠️ decomm discover /reports HTTP {rr.status_code}')
     except Exception as e:
-        print(f'   ⚠️ decomm discover groups: {e}')
+        print(f'   ⚠️ decomm discover /reports: {e}')
+
+    # Pass 2: if nothing, walk workspaces (slower)
+    if not hits:
+        try:
+            gr = requests.get(
+                'https://api.powerbi.com/v1.0/myorg/groups?$top=5000',
+                headers=headers,
+                timeout=60,
+            )
+            if not gr.ok:
+                print(f'   ⚠️ decomm discover groups HTTP {gr.status_code}')
+            else:
+                groups = (gr.json() or {}).get('value') or []
+                for g in groups:
+                    gid = g.get('id')
+                    gname = g.get('name') or ''
+                    if not gid:
+                        continue
+                    gname_l = gname.casefold()
+                    priority = 0
+                    if 'fabric' in gname_l and 'admin' in gname_l:
+                        priority = 2
+                    elif 'governance' in gname_l or 'decommission' in gname_l:
+                        priority = 1
+                    try:
+                        r2 = requests.get(
+                            f'https://api.powerbi.com/v1.0/myorg/groups/{gid}/reports',
+                            headers=headers,
+                            timeout=45,
+                        )
+                        if not r2.ok:
+                            continue
+                        for rep in (r2.json() or {}).get('value') or []:
+                            _add_hit(rep, workspace_id=gid, workspace_name=gname, priority=priority)
+                    except Exception as e:
+                        print(f'   ⚠️ decomm discover reports in {gname}: {e}')
+        except Exception as e:
+            print(f'   ⚠️ decomm discover groups: {e}')
+
+    if not hits:
+        print('   ⚠️ decomm discover: no matching report in user scope')
         return None
 
-    hits = []
-    for g in groups:
-        gid = g.get('id')
-        gname = g.get('name') or ''
-        if not gid:
-            continue
-        # Prefer Fabric Admin / Governance sounding workspaces first
-        gname_l = gname.casefold()
-        priority = 0
-        if 'fabric' in gname_l and 'admin' in gname_l:
-            priority = 2
-        elif 'governance' in gname_l or 'admin' in gname_l:
-            priority = 1
+    # Prefer hits that have a workspace id
+    hits.sort(
+        key=lambda h: (
+            -h['score'],
+            0 if h.get('workspaceId') else 1,
+            (h.get('reportName') or '').lower(),
+        )
+    )
+    best = hits[0]
+    rid = best['reportId']
+    wid = best.get('workspaceId')
+
+    # If workspace missing, try to parse from webUrl or fetch report detail
+    if not wid and best.get('webUrl'):
+        wid, _ = _parse_pbi_service_url(best['webUrl'])
+    if not wid:
         try:
-            rr = requests.get(
-                f'https://api.powerbi.com/v1.0/myorg/groups/{gid}/reports',
+            det = requests.get(
+                f'https://api.powerbi.com/v1.0/myorg/reports/{rid}',
                 headers=headers,
                 timeout=45,
             )
-            if not rr.ok:
-                continue
-            for rep in (rr.json() or {}).get('value') or []:
-                rname = (rep.get('name') or '').strip()
-                if not rname:
-                    continue
-                rl = rname.casefold()
-                score = 0
-                if rl in name_keys_l:
-                    score = 100
-                else:
-                    for nk in name_keys_l:
-                        if nk and nk in rl:
-                            score = max(score, 80)
-                        if nk and re.search(r'decommission', rl) and 'estate' in rl:
-                            score = max(score, 60)
-                if score <= 0:
-                    continue
-                hits.append({
-                    'score': score + priority,
-                    'workspaceId': gid,
-                    'workspaceName': gname,
-                    'reportId': rep.get('id'),
-                    'reportName': rname,
-                    'datasetId': rep.get('datasetId') or '',
-                    'embedUrl': rep.get('embedUrl') or '',
-                    'webUrl': rep.get('webUrl') or '',
-                })
+            if det.ok:
+                d = det.json() or {}
+                best['embedUrl'] = best.get('embedUrl') or d.get('embedUrl') or ''
+                best['webUrl'] = best.get('webUrl') or d.get('webUrl') or ''
+                best['datasetId'] = best.get('datasetId') or d.get('datasetId') or ''
+                wid, _ = _parse_pbi_service_url(best.get('webUrl') or '')
+                # embedUrl sometimes: ...?reportId=&groupId=
+                if not wid and best.get('embedUrl'):
+                    import re
+                    m = re.search(r'groupId=([0-9a-fA-F-]{36})', best['embedUrl'], re.I)
+                    if m:
+                        wid = m.group(1)
         except Exception as e:
-            print(f'   ⚠️ decomm discover reports in {gname}: {e}')
-            continue
+            print(f'   ⚠️ decomm discover report detail: {e}')
 
-    if not hits:
-        print('   ⚠️ decomm discover: no matching report in user workspaces')
+    if not wid:
+        print(f'   ⚠️ decomm discover: found report {rid} but no workspaceId')
         return None
 
-    hits.sort(key=lambda h: (-h['score'], (h.get('reportName') or '').lower()))
-    best = hits[0]
-    wid, rid = best['workspaceId'], best['reportId']
     service_url = best.get('webUrl') or (
         f'https://app.powerbi.com/groups/{wid}/reports/{rid}'
         f'/Overview?experience=power-bi'
+    )
+    embed_url = best.get('embedUrl') or (
+        f'https://app.powerbi.com/reportEmbed?reportId={rid}&groupId={wid}'
     )
     payload = {
         'workspaceId': wid,
@@ -2346,9 +2419,7 @@ def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None
         'reportId': rid,
         'reportName': best.get('reportName'),
         'datasetId': best.get('datasetId') or '',
-        'embedUrl': best.get('embedUrl') or (
-            f'https://app.powerbi.com/reportEmbed?reportId={rid}&groupId={wid}'
-        ),
+        'embedUrl': embed_url,
         'serviceUrl': service_url,
         'discovered': True,
         'candidates': len(hits),
@@ -2356,7 +2427,7 @@ def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None
     _DECOMM_DASH_RESOLVE_CACHE = {'ts': now, 'payload': payload}
     print(
         f"   ✅ decomm discover: {payload.get('reportName')!r} "
-        f"ws={payload.get('workspaceName')!r} id={rid}"
+        f"ws={payload.get('workspaceName') or wid!r} id={rid}"
     )
     return dict(payload)
 
@@ -2528,10 +2599,12 @@ def api_decommissioned_dashboard_embed_token():
                     }), 401
                 meta_res = _get_report_meta(user_token, workspace_id, report_id)
 
-        # Configured IDs wrong / moved → discover by report name in user workspaces
+        # Always discover when IDs missing or Get Report failed (404/400).
+        # Never keep using a dead GUID that makes Open-in-service 404 in the browser.
         need_discover = (
             not workspace_id
             or not report_id
+            or meta_res is None
             or (meta_res is not None and meta_res.status_code in (404, 400))
             or (meta_res is not None and not meta_res.ok and meta_res.status_code != 401)
         )
