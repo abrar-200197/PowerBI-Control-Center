@@ -271,3 +271,308 @@ def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, An
             "rows": [],
             "workspaces": [],
         }
+
+
+def _dataset_feed_folder() -> str:
+    """
+    Stable SharePoint folder for the Power BI programme dataset source files.
+    Default: sibling of archive batches — …/Report Decommission Activity/_dataset_feed
+    """
+    import os
+    from catalog_service import catalog_config as cfg
+
+    override = (os.getenv("DECOMM_DATASET_FEED_FOLDER") or "").strip().strip("/")
+    if override:
+        return override
+    base = (getattr(cfg, "SHAREPOINT_DECOMM_FOLDER_PATH", None) or "").strip("/")
+    if not base:
+        return "_dataset_feed"
+    return f"{base}/_dataset_feed"
+
+
+def _excel_bytes_from_rows(rows: List[Dict[str, Any]], *, generated_at: str) -> bytes:
+    """Stable flat sheet for Power BI Get Data → Excel (SharePoint)."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "DecommissionedReports"
+
+    headers = [
+        "Report",
+        "FileName",
+        "Workspace",
+        "Folder",
+        "Type",
+        "Decommissioned",
+        "DecommissionedAt",
+        "Batch",
+        "Size",
+        "SizeBytes",
+        "SizeGB",
+        "FileURL",
+        "SharePointPath",
+        "GeneratedAtUTC",
+    ]
+    header_fill = PatternFill(start_color="2B6CB0", end_color="2B6CB0", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    ws.append(headers)
+    for col in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for r in rows:
+        size_b = int(r.get("sizeBytes") or 0)
+        size_gb = round(size_b / (1024 ** 3), 6) if size_b else 0.0
+        ws.append([
+            r.get("reportName") or "",
+            r.get("fileName") or "",
+            r.get("workspaceName") or "",
+            r.get("folderName") or "",
+            r.get("fileType") or "",
+            r.get("decommissionedAtDisplay") or "",
+            r.get("decommissionedAt") or "",
+            r.get("batchFolder") or "",
+            r.get("sizeDisplay") or "",
+            size_b,
+            size_gb,
+            r.get("webUrl") or "",
+            r.get("sharePointPath") or "",
+            generated_at,
+        ])
+
+    ws.auto_filter.ref = f"A1:N1"
+    ws.freeze_panes = "A2"
+    for letter, w in {
+        "A": 36, "B": 36, "C": 28, "D": 22, "E": 10, "F": 22, "G": 24,
+        "H": 36, "I": 12, "J": 14, "K": 12, "L": 40, "M": 48, "N": 22,
+    }.items():
+        ws.column_dimensions[letter].width = w
+
+    # Meta sheet for refresh diagnostics in Power BI
+    meta = wb.create_sheet("Meta")
+    meta.append(["Key", "Value"])
+    meta.append(["GeneratedAtUTC", generated_at])
+    meta.append(["RowCount", len(rows)])
+    meta.append(["Source", "Power BI Control Center decommission inventory"])
+    meta.append([
+        "Note",
+        "Overwrite target for scheduled dataset refresh. Do not rename this workbook.",
+    ])
+    meta.column_dimensions["A"].width = 20
+    meta.column_dimensions["B"].width = 80
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _csv_bytes_from_rows(rows: List[Dict[str, Any]], *, generated_at: str) -> bytes:
+    import csv
+    import io
+
+    buf = io.StringIO(newline="")
+    w = csv.writer(buf)
+    w.writerow([
+        "Report", "FileName", "Workspace", "Folder", "Type",
+        "Decommissioned", "DecommissionedAt", "Batch", "Size", "SizeBytes",
+        "SizeGB", "FileURL", "SharePointPath", "GeneratedAtUTC",
+    ])
+    for r in rows:
+        size_b = int(r.get("sizeBytes") or 0)
+        size_gb = round(size_b / (1024 ** 3), 6) if size_b else 0.0
+        w.writerow([
+            r.get("reportName") or "",
+            r.get("fileName") or "",
+            r.get("workspaceName") or "",
+            r.get("folderName") or "",
+            r.get("fileType") or "",
+            r.get("decommissionedAtDisplay") or "",
+            r.get("decommissionedAt") or "",
+            r.get("batchFolder") or "",
+            r.get("sizeDisplay") or "",
+            size_b,
+            size_gb,
+            r.get("webUrl") or "",
+            r.get("sharePointPath") or "",
+            generated_at,
+        ])
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def publish_decommission_dataset_feed(
+    *,
+    force_inventory_refresh: bool = True,
+    inventory: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Build flat inventory files and overwrite a fixed SharePoint path so a
+    Power BI import dataset can refresh on a schedule (true 'live' overview).
+
+    Files (replace in place):
+      {DECOMM_DATASET_FEED_FOLDER}/Decommissioned_Inventory_Latest.xlsx
+      {DECOMM_DATASET_FEED_FOLDER}/Decommissioned_Inventory_Latest.csv
+
+    Does not modify archive batch folders or the Detail UI API contract.
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    if inventory is None:
+        inventory = build_decommission_inventory(force_refresh=force_inventory_refresh)
+    if not inventory.get("success"):
+        return {
+            "success": False,
+            "error": inventory.get("error") or "Inventory build failed",
+            "stage": "inventory",
+        }
+
+    rows = list(inventory.get("rows") or [])
+    generated_at = (
+        inventory.get("generatedAt")
+        or datetime.now(timezone.utc).isoformat()
+    )
+    folder = _dataset_feed_folder()
+    xlsx_name = (
+        os.getenv("DECOMM_DATASET_FEED_XLSX_NAME")
+        or "Decommissioned_Inventory_Latest.xlsx"
+    ).strip() or "Decommissioned_Inventory_Latest.xlsx"
+    csv_name = (
+        os.getenv("DECOMM_DATASET_FEED_CSV_NAME")
+        or "Decommissioned_Inventory_Latest.csv"
+    ).strip() or "Decommissioned_Inventory_Latest.csv"
+
+    try:
+        from catalog_service.metadata_lib.sharepoint_client import SharePointClient
+
+        xlsx_bytes = _excel_bytes_from_rows(rows, generated_at=generated_at)
+        csv_bytes = _csv_bytes_from_rows(rows, generated_at=generated_at)
+
+        sp = SharePointClient()
+        sp.resolve_site_and_drive()
+        sp.ensure_folder(folder)
+
+        uploaded = []
+        with tempfile.TemporaryDirectory(prefix="decomm_feed_") as td:
+            tdir = Path(td)
+            xlsx_path = tdir / xlsx_name
+            csv_path = tdir / csv_name
+            xlsx_path.write_bytes(xlsx_bytes)
+            csv_path.write_bytes(csv_bytes)
+
+            for local, remote_name in ((xlsx_path, xlsx_name), (csv_path, csv_name)):
+                remote = f"{folder}/{remote_name}"
+                item = sp.upload_file(local, remote)
+                uploaded.append({
+                    "name": remote_name,
+                    "remotePath": remote,
+                    "webUrl": item.get("webUrl") or "",
+                    "size": item.get("size") or local.stat().st_size,
+                    "id": item.get("id"),
+                })
+                logger.info("decomm dataset feed uploaded %s", remote)
+
+        return {
+            "success": True,
+            "folder": folder,
+            "rowCount": len(rows),
+            "generatedAt": generated_at,
+            "files": uploaded,
+            "xlsxPath": f"{folder}/{xlsx_name}",
+            "csvPath": f"{folder}/{csv_name}",
+            "xlsxUrl": next((f.get("webUrl") for f in uploaded if f["name"] == xlsx_name), ""),
+            "csvUrl": next((f.get("webUrl") for f in uploaded if f["name"] == csv_name), ""),
+            "note": (
+                "Point the Power BI dataset at Decommissioned_Inventory_Latest.xlsx "
+                "(or .csv) under this SharePoint folder, then schedule refresh."
+            ),
+        }
+    except Exception as ex:
+        logger.exception("decomm dataset feed publish failed")
+        return {
+            "success": False,
+            "error": str(ex),
+            "stage": "upload",
+            "folder": folder,
+            "rowCount": len(rows),
+        }
+
+
+def trigger_decommission_dataset_refresh(
+    *,
+    access_token: str,
+    workspace_id: Optional[str] = None,
+    dataset_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    POST refreshes on the programme dataset (after feed publish).
+    workspace_id/dataset_id from args or DECOMM_DASHBOARD_* env.
+    """
+    import os
+    import requests
+
+    workspace_id = (workspace_id or os.getenv("DECOMM_DASHBOARD_WORKSPACE_ID") or "").strip()
+    dataset_id = (dataset_id or os.getenv("DECOMM_DASHBOARD_DATASET_ID") or "").strip()
+    if not access_token:
+        return {"success": False, "error": "access_token required", "stage": "auth"}
+    if not dataset_id:
+        return {
+            "success": False,
+            "error": (
+                "DECOMM_DASHBOARD_DATASET_ID is not set. "
+                "Publish feed still works; set dataset id to auto-refresh Power BI."
+            ),
+            "stage": "config",
+            "skipped": True,
+        }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    # Prefer workspace-scoped endpoint when group id known
+    if workspace_id:
+        url = (
+            f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}"
+            f"/datasets/{dataset_id}/refreshes"
+        )
+    else:
+        url = f"https://api.powerbi.com/v1.0/myorg/datasets/{dataset_id}/refreshes"
+
+    try:
+        resp = requests.post(
+            url,
+            headers=headers,
+            json={"notifyOption": "NoNotification"},
+            timeout=60,
+        )
+        # 202 Accepted is normal
+        if resp.status_code in (200, 202):
+            return {
+                "success": True,
+                "httpStatus": resp.status_code,
+                "workspaceId": workspace_id or None,
+                "datasetId": dataset_id,
+                "message": "Dataset refresh accepted",
+            }
+        return {
+            "success": False,
+            "httpStatus": resp.status_code,
+            "error": (resp.text or "")[:500],
+            "workspaceId": workspace_id or None,
+            "datasetId": dataset_id,
+            "stage": "refresh",
+        }
+    except Exception as ex:
+        logger.exception("decomm dataset refresh failed")
+        return {
+            "success": False,
+            "error": str(ex),
+            "stage": "refresh",
+            "datasetId": dataset_id,
+        }

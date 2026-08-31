@@ -2208,7 +2208,89 @@ def decommissioned_reports_page():
 def api_decommissioned_dashboard_config():
     """Public (auth) config for Overview tab — no secrets."""
     cfg = _decomm_dashboard_config()
-    return jsonify({'success': True, **cfg})
+    # Include feed path hints (no secrets) for UI help text
+    try:
+        from features.decommission_inventory import _dataset_feed_folder
+        feed_folder = _dataset_feed_folder()
+    except Exception:
+        feed_folder = None
+    return jsonify({
+        'success': True,
+        **cfg,
+        'datasetFeedFolder': feed_folder,
+        'datasetFeedFile': 'Decommissioned_Inventory_Latest.xlsx',
+        'hasDatasetId': bool(cfg.get('datasetId')),
+    })
+
+
+@app.route('/api/decommissioned-reports/publish-dataset-feed', methods=['POST'])
+@login_required
+def api_decommissioned_publish_dataset_feed():
+    """
+    Scan SharePoint archive → overwrite fixed inventory Excel/CSV for Power BI.
+    Optional body/query: refresh_dataset=1 to trigger dataset refresh after publish
+    (requires DECOMM_DASHBOARD_DATASET_ID + user permission to refresh).
+    Does not change Detail inventory API or archive folders.
+    """
+    try:
+        from features.decommission_inventory import (
+            publish_decommission_dataset_feed,
+            trigger_decommission_dataset_refresh,
+        )
+
+        body = request.get_json(silent=True) or {}
+        refresh_flag = (
+            str(request.args.get('refresh_dataset') or body.get('refresh_dataset') or '')
+            .strip()
+            .lower()
+        )
+        do_refresh = refresh_flag in ('1', 'true', 'yes', 'on')
+
+        force = str(
+            request.args.get('refresh') or body.get('force_inventory_refresh') or '1'
+        ).lower() in ('1', 'true', 'yes', 'on')
+
+        result = publish_decommission_dataset_feed(force_inventory_refresh=force)
+        if not result.get('success'):
+            return jsonify(result), 502
+
+        out = {'success': True, 'publish': result, 'datasetRefresh': None}
+        if do_refresh:
+            cfg = _decomm_dashboard_config()
+            token = get_user_powerbi_token()
+            dataset_id = cfg.get('datasetId') or ''
+            # Resolve dataset from report if env not set (same report as Overview embed)
+            if not dataset_id and token and cfg.get('workspaceId') and cfg.get('reportId'):
+                try:
+                    meta_url = (
+                        f"https://api.powerbi.com/v1.0/myorg/groups/"
+                        f"{cfg['workspaceId']}/reports/{cfg['reportId']}"
+                    )
+                    mr = requests.get(
+                        meta_url,
+                        headers={'Authorization': f'Bearer {token}'},
+                        timeout=45,
+                    )
+                    if mr.ok:
+                        dataset_id = (mr.json() or {}).get('datasetId') or ''
+                except Exception as resolve_err:
+                    print(f"   ⚠️ decomm dataset id resolve: {resolve_err}")
+            refresh = trigger_decommission_dataset_refresh(
+                access_token=token or '',
+                workspace_id=cfg.get('workspaceId'),
+                dataset_id=dataset_id or None,
+            )
+            out['datasetRefresh'] = refresh
+            # Publish OK even if refresh skipped/failed — feed is the critical path
+            if refresh.get('skipped'):
+                out['warning'] = refresh.get('error')
+            elif not refresh.get('success'):
+                out['warning'] = refresh.get('error') or 'Dataset refresh failed'
+        return jsonify(out)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/decommissioned-reports/dashboard-embed-token')
