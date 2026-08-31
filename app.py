@@ -2241,6 +2241,180 @@ def api_decommissioned_reports():
         return jsonify({'success': False, 'error': str(e), 'rows': [], 'workspaces': []}), 500
 
 
+@app.route('/api/decommissioned-reports/export')
+@login_required
+def export_decommissioned_reports():
+    """
+    Excel export of SharePoint decommissioned-report inventory.
+    Same columns as the Decommissioned Reports UI table.
+    Honors optional workspace + q filters (same as list API).
+    """
+    try:
+        import io
+        from datetime import datetime, timezone
+
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from flask import send_file
+
+        from features.decommission_inventory import build_decommission_inventory
+
+        force = request.args.get('refresh', '').lower() in ('1', 'true', 'yes')
+        payload = build_decommission_inventory(force_refresh=force)
+        if not payload.get('success'):
+            return jsonify({
+                'success': False,
+                'error': payload.get('error') or 'Failed to load decommission inventory',
+            }), 502
+
+        ws_filter = (request.args.get('workspace') or '').strip()
+        q = (request.args.get('q') or '').strip().lower()
+
+        rows = list(payload.get('rows') or [])
+        if ws_filter:
+            wsl = ws_filter.lower()
+            rows = [r for r in rows if (r.get('workspaceName') or '').lower() == wsl]
+        if q:
+            def _match(r):
+                blob = " ".join([
+                    str(r.get('reportName') or ''),
+                    str(r.get('workspaceName') or ''),
+                    str(r.get('folderName') or ''),
+                    str(r.get('batchFolder') or ''),
+                    str(r.get('fileName') or ''),
+                ]).lower()
+                return q in blob
+            rows = [r for r in rows if _match(r)]
+
+        # Workspace A-Z, within each workspace newest decommissioned first
+        from collections import defaultdict
+        by_ws = defaultdict(list)
+        for r in rows:
+            by_ws[r.get('workspaceName') or 'Unknown'].append(r)
+        ordered = []
+        for wn in sorted(by_ws.keys(), key=lambda x: x.lower()):
+            grp = by_ws[wn]
+            grp.sort(
+                key=lambda r: r.get('decommissionedAt') or r.get('lastModifiedAt') or '',
+                reverse=True,
+            )
+            ordered.extend(grp)
+        rows = ordered
+
+        wb = Workbook()
+        ws_out = wb.active
+        ws_out.title = 'Decommissioned Reports'
+
+        header_fill = PatternFill(start_color='2B6CB0', end_color='2B6CB0', fill_type='solid')
+        header_font = Font(color='FFFFFF', bold=True, size=11)
+        center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+        headers = [
+            '#',
+            'Report',
+            'File Name',
+            'Workspace',
+            'Folder',
+            'Type',
+            'Decommissioned',
+            'Batch',
+            'Size',
+            'Size (bytes)',
+            'File URL',
+            'SharePoint Path',
+        ]
+        ws_out.append(headers)
+        for col_num, _h in enumerate(headers, 1):
+            cell = ws_out.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_align
+
+        ws_out.auto_filter.ref = f'A1:L1'
+        ws_out.freeze_panes = 'A2'
+
+        for i, r in enumerate(rows, 1):
+            ws_out.append([
+                i,
+                r.get('reportName') or '',
+                r.get('fileName') or '',
+                r.get('workspaceName') or '',
+                r.get('folderName') or '—',
+                r.get('fileType') or '',
+                r.get('decommissionedAtDisplay') or r.get('decommissionedAt') or '—',
+                r.get('batchFolder') or '—',
+                r.get('sizeDisplay') or '—',
+                r.get('sizeBytes') if r.get('sizeBytes') is not None else '',
+                r.get('webUrl') or '',
+                r.get('sharePointPath') or '',
+            ])
+            rn = ws_out.max_row
+            for c in range(1, 13):
+                cell = ws_out.cell(row=rn, column=c)
+                cell.alignment = center_align if c in (1, 6, 9) else left_align
+            # Hyperlink file URL when present
+            url = r.get('webUrl') or ''
+            if url:
+                link_cell = ws_out.cell(row=rn, column=11)
+                try:
+                    link_cell.hyperlink = url
+                    link_cell.font = Font(color='0563C1', underline='single')
+                except Exception:
+                    pass
+
+        if not rows:
+            ws_out.append([
+                '', 'No decommissioned report files found', '', '', '', '', '', '', '', '', '', ''
+            ])
+
+        widths = {
+            'A': 6, 'B': 36, 'C': 36, 'D': 28, 'E': 22, 'F': 10,
+            'G': 22, 'H': 40, 'I': 12, 'J': 14, 'K': 40, 'L': 50,
+        }
+        for letter, w in widths.items():
+            ws_out.column_dimensions[letter].width = w
+
+        # Meta sheet
+        ws_meta = wb.create_sheet('Summary')
+        ws_meta.append(['Decommissioned Reports export'])
+        ws_meta.append(['Generated (UTC)', datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')])
+        ws_meta.append(['Source', 'SharePoint archive inventory'])
+        ws_meta.append(['Base path', payload.get('basePath') or ''])
+        ws_meta.append(['Reports in export', len(rows)])
+        ws_meta.append(['Batch folders (all)', payload.get('batchCount') or 0])
+        ws_meta.append(['Workspace filter', ws_filter or '(all)'])
+        ws_meta.append(['Search filter', q or '(none)'])
+        ws_meta.append([])
+        ws_meta.append(['Note', payload.get('note') or ''])
+        ws_meta.column_dimensions['A'].width = 28
+        ws_meta.column_dimensions['B'].width = 80
+        ws_meta.cell(row=1, column=1).font = Font(bold=True, size=13, color='FFFFFF')
+        ws_meta.cell(row=1, column=1).fill = header_fill
+
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%d')
+        safe_ws = ''.join(
+            c if c.isalnum() or c in ('-', '_') else '_' for c in (ws_filter or 'All')
+        )[:40]
+        filename = f'Decommissioned_Reports_{safe_ws}_{stamp}.xlsx'
+        print(f"📁 decommissioned export rows={len(rows)} file={filename}")
+
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename,
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/similarity-analysis')
 @login_required
 def similarity_analysis_page():

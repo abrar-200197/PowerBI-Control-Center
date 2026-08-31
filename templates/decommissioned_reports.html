@@ -103,6 +103,7 @@ html[data-theme="dark"] a.link{color:#63b3ed}
       <button type="button" class="btn-ws-toggle" id="expandAllBtn" title="Expand all workspace groups">Expand all</button>
       <button type="button" class="btn-ws-toggle" id="collapseAllBtn" title="Collapse all workspace groups">Collapse all</button>
     </div>
+    <button type="button" class="btn btn-primary" id="exportBtn" style="height:34px" title="Download Excel of decommissioned reports (current filters)">Export</button>
     <button type="button" class="btn btn-secondary" id="refreshBtn" style="height:34px">Refresh</button>
   </div>
   <div class="table-wrap" id="tableHost">
@@ -322,6 +323,42 @@ $('expandAllBtn').addEventListener('click',(e)=>{e.preventDefault();expandAllGro
 $('collapseAllBtn').addEventListener('click',(e)=>{e.preventDefault();collapseAllGroups();});
 $('qFilter').addEventListener('input',()=>{clearTimeout(window._dq);window._dq=setTimeout(render,200)});
 $('refreshBtn').addEventListener('click',()=>loadData(true));
+
+async function exportDecommissionedExcel(){
+  const btn=$('exportBtn');
+  const original=btn?btn.innerHTML:'Export';
+  try{
+    if(btn){btn.disabled=true;btn.innerHTML='Exporting…';}
+    const params=new URLSearchParams();
+    const ws=($('wsFilter').value||'').trim();
+    const q=($('qFilter').value||'').trim();
+    if(ws) params.set('workspace', ws);
+    if(q) params.set('q', q);
+    const url='/api/decommissioned-reports/export'+(params.toString()?'?'+params.toString():'');
+    const res=await fetch(url,{credentials:'include'});
+    if(!res.ok){
+      let msg='HTTP '+res.status;
+      try{const b=await res.json();msg=b.error||b.message||msg;}catch(e){
+        try{msg=await res.text()||msg;}catch(e2){}
+      }
+      throw new Error(msg);
+    }
+    const blob=await res.blob();
+    let filename='Decommissioned_Reports.xlsx';
+    const cd=res.headers.get('Content-Disposition')||'';
+    const m=/filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(cd);
+    if(m&&m[1]) filename=decodeURIComponent(m[1].replace(/"/g,'').trim());
+    const a=document.createElement('a');
+    const href=URL.createObjectURL(blob);
+    a.href=href;a.download=filename;document.body.appendChild(a);a.click();
+    URL.revokeObjectURL(href);a.remove();
+  }catch(e){
+    alert('Export failed: '+(e.message||e));
+  }finally{
+    if(btn){btn.disabled=false;btn.innerHTML=original;}
+  }
+}
+$('exportBtn').addEventListener('click',()=>exportDecommissionedExcel());
 
 // Event delegation — survives table re-render (btn listeners on old nodes would die)
 $('tableHost').addEventListener('click',(e)=>{
