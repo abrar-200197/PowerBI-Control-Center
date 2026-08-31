@@ -8262,22 +8262,8 @@ def decommission_list_candidates(workspace_id):
             if (views_known or report.get('view_count') is not None) and int(views or 0) == 0:
                 reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
 
-            # Same as Excel export: include Verify in PBI / Unverified
-            refresh_src = str(
-                report.get('refresh_source') or report.get('refreshSource') or ''
-            ).lower().replace('-', '_').replace(' ', '')
-            status_l = str(refresh_status or '').lower()
-            note_l = str(report.get('refresh_note') or report.get('refreshNote') or '').lower()
-            needs_verify = (
-                status_l in {'unverified', 'estimated'}
-                or refresh_src in {
-                    'content_modified', 'content_created', 'contentcreated', 'created',
-                }
-                or 'verify in power bi' in note_l
-                or 'verify in pbi' in note_l
-            )
-            if needs_verify and not live_dq:
-                reasons.append('Verify in PBI (unconfirmed refresh)')
+            # Bulk SharePoint archive: original rules only (stale / no history / 0 views).
+            # Verify-in-PBI is Excel decommission-list only — not auto-archived here.
 
             if not reasons:
                 continue
