@@ -7829,6 +7829,23 @@ def export_inactive_reports(workspace_id):
                 zero_views = True
                 reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
 
+            # Rule 4: Verify in PBI (content-modified / Unverified — not confirmed refresh history)
+            refresh_src = str(
+                report.get('refresh_source') or report.get('refreshSource') or ''
+            ).lower().replace('-', '_').replace(' ', '')
+            status_l = str(refresh_status or '').lower()
+            note_l = str(report.get('refresh_note') or report.get('refreshNote') or '').lower()
+            needs_verify = (
+                status_l in {'unverified', 'estimated'}
+                or refresh_src in {
+                    'content_modified', 'content_created', 'contentcreated', 'created',
+                }
+                or 'verify in power bi' in note_l
+                or 'verify in pbi' in note_l
+            )
+            if needs_verify and not live_dq:
+                reasons.append('Verify in PBI (unconfirmed refresh)')
+
             is_candidate = len(reasons) > 0
 
             owner = _clean_person(
@@ -7863,10 +7880,13 @@ def export_inactive_reports(workspace_id):
             if last_ref and str(last_ref) not in {'—', '-', 'Unknown', 'None'}:
                 last_ref_disp = str(last_ref)[:19].replace('T', ' ')
 
-            # Comments: note zero views (no Views column in export)
-            comments = ''
+            # Comments: verify flag first, then zero views
+            comment_parts = []
+            if needs_verify and not live_dq:
+                comment_parts.append('Verify in PBI — last refresh unconfirmed')
             if zero_views:
-                comments = f'Zero views in last {VIEW_LOOKBACK_LABEL}'
+                comment_parts.append(f'Zero views in last {VIEW_LOOKBACK_LABEL}')
+            comments = '; '.join(comment_parts)
 
             return {
                 'report_id': rid,
@@ -7884,6 +7904,7 @@ def export_inactive_reports(workspace_id):
                 'is_candidate': is_candidate,
                 'reasons': reasons,
                 'zero_views': zero_views,
+                'needs_verify': bool(needs_verify and not live_dq),
             }
 
         evaluated = []
@@ -7913,6 +7934,9 @@ def export_inactive_reports(workspace_id):
         header_font = Font(color='FFFFFF', bold=True, size=11)
         center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
         left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        # Verify-in-PBI rows: light red so reviewers know to check before acting
+        verify_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+        verify_font = Font(color='9C0006')
 
         days_header = f'LastRefresh in days till {data_as_of_label}'
         headers = [
@@ -7965,10 +7989,14 @@ def export_inactive_reports(workspace_id):
                 r['can_decommission'],  # empty
                 r['review_comments'],  # empty
             ])
-            # Left-align text columns
+            # Left-align text columns; red highlight = Verify in PBI
             rn = ws_out.max_row
             for c in range(1, 12):
-                ws_out.cell(row=rn, column=c).alignment = left_align if c != 6 else center_align
+                cell = ws_out.cell(row=rn, column=c)
+                cell.alignment = left_align if c != 6 else center_align
+                if r.get('needs_verify'):
+                    cell.fill = verify_fill
+                    cell.font = verify_font
 
         if not candidates:
             ws_out.append(
@@ -7997,8 +8025,10 @@ def export_inactive_reports(workspace_id):
         ws_rules.append(['1', f'Days since last refresh > {REFRESH_STALE_DAYS} (through {data_as_of_label})'])
         ws_rules.append(['2', 'No import refresh history (not applied alone to DirectQuery/Live)'])
         ws_rules.append(['3', f'Views in last {VIEW_LOOKBACK_LABEL} == 0'])
+        ws_rules.append(['4', 'Verify in PBI — Unverified / content-modified fallback (not confirmed Scheduled refresh)'])
         ws_rules.append([])
-        ws_rules.append(['Comments column', f'Pre-filled with "Zero views in last {VIEW_LOOKBACK_LABEL}" when views known and == 0'])
+        ws_rules.append(['Comments column', f'Pre-filled with verify note and/or "Zero views in last {VIEW_LOOKBACK_LABEL}" when applicable'])
+        ws_rules.append(['Red rows', 'Verify in PBI — last refresh unconfirmed; review in Power BI before acting. You may change the fill color after review.'])
         ws_rules.append(['Archived Status / Can Decommission / Review Comments', 'Left blank for reviewers'])
         ws_rules.append(['Excluded', 'Usage Metrics Report, Report Usage Metrics Report, Dashboard Usage Metrics Report, [App] copies'])
         ws_rules.column_dimensions['A'].width = 40
@@ -8231,6 +8261,23 @@ def decommission_list_candidates(workspace_id):
                 reasons.append('No refresh history')
             if (views_known or report.get('view_count') is not None) and int(views or 0) == 0:
                 reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
+
+            # Same as Excel export: include Verify in PBI / Unverified
+            refresh_src = str(
+                report.get('refresh_source') or report.get('refreshSource') or ''
+            ).lower().replace('-', '_').replace(' ', '')
+            status_l = str(refresh_status or '').lower()
+            note_l = str(report.get('refresh_note') or report.get('refreshNote') or '').lower()
+            needs_verify = (
+                status_l in {'unverified', 'estimated'}
+                or refresh_src in {
+                    'content_modified', 'content_created', 'contentcreated', 'created',
+                }
+                or 'verify in power bi' in note_l
+                or 'verify in pbi' in note_l
+            )
+            if needs_verify and not live_dq:
+                reasons.append('Verify in PBI (unconfirmed refresh)')
 
             if not reasons:
                 continue
