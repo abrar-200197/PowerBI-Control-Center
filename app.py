@@ -2162,11 +2162,12 @@ def _decomm_dashboard_config():
     Overview-tab Power BI report settings (Estate Decommissioning Programme).
     All optional — Detail tab never depends on these.
     """
-    # Defaults match the published programme report in Fabric Admin Governance.
+    # Defaults match the published programme report (from working app.powerbi.com URL).
     # Override via env without code change.
+    # Workspace GUID must be full 8-4-4-4-12 (was missing middle segment earlier).
     workspace_id = (
         os.getenv('DECOMM_DASHBOARD_WORKSPACE_ID')
-        or '943b84dc-4f4f-8434-74396e772de1'
+        or '943b84dc-a22b-4f4f-8434-74396e772de1'
     ).strip()
     report_id = (
         os.getenv('DECOMM_DASHBOARD_REPORT_ID')
