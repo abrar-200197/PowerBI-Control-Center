@@ -41,19 +41,24 @@
 }
 .overview-fallback h3{color:var(--text-strong);margin:0 0 8px;font-size:16px}
 .overview-fallback p{margin:0 0 14px;font-size:13px;line-height:1.45}
-/* Single dense chrome: KPIs + filters + actions in one surface */
+/* Single dense chrome: left = KPIs + filters stacked; right = actions */
 .detail-chrome{
   display:flex;flex-direction:column;gap:6px;
   background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;
   padding:8px 10px;box-shadow:var(--shadow-sm);
 }
 .detail-chrome-row{
-  display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;
+  display:flex;flex-wrap:nowrap;align-items:flex-start;justify-content:space-between;
+  gap:12px 16px;
+}
+.detail-chrome-left{
+  display:flex;flex-direction:column;gap:6px;
+  flex:1 1 auto;min-width:0;
 }
 /* Inline metric chips (not full-width cards) */
 .stats-grid{
   display:flex;flex-wrap:wrap;align-items:stretch;gap:6px;
-  flex:1 1 auto;min-width:0;
+  min-width:0;
 }
 .stat-card{
   display:inline-flex;align-items:baseline;gap:6px;
@@ -72,14 +77,15 @@
 .controls{
   display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;
   background:transparent;border:0;border-radius:0;padding:0;box-shadow:none;
-  flex:1 1 320px;min-width:0;
+  min-width:0;width:100%;max-width:520px;
 }
 .controls input,.controls select{
   height:28px;border:1px solid var(--border);border-radius:6px;
   padding:0 8px;background:var(--input-bg);color:var(--text);font-size:12px;min-width:140px;
 }
-.controls input[type="search"]{flex:1 1 160px;min-width:140px;max-width:280px}
-.ws-filter-wrap{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.controls select{flex:0 1 200px;max-width:240px}
+.controls input[type="search"]{flex:1 1 180px;min-width:160px;max-width:280px}
+.ws-filter-wrap{display:flex;align-items:center;gap:4px;flex-wrap:wrap;flex:0 1 auto}
 .btn-clear-ws{
   height:28px;padding:0 10px;font-size:11px;font-weight:600;
   border:1px solid var(--border);border-radius:6px;
@@ -96,16 +102,20 @@
 .table-wrap{
   background:var(--bg-surface);border-radius:8px;border:1px solid var(--border);
   box-shadow:var(--shadow-sm);overflow:auto;flex:1;min-height:280px;
-  max-height:calc(100vh - 210px);
+  max-height:calc(100vh - 230px);
 }
-.detail-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto}
+.detail-actions{
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  flex:0 0 auto;margin-left:auto;padding-top:1px;
+}
 .detail-actions .btn,
 .detail-actions .btn-ws-toggle,
 .overview-toolbar .btn{height:28px !important;padding:0 10px;font-size:12px;line-height:1}
 @media(max-width:720px){
   .detail-chrome-row{flex-direction:column;align-items:stretch}
   .detail-actions{margin-left:0;justify-content:flex-start}
-  .controls input[type="search"]{max-width:none}
+  .controls{max-width:none}
+  .controls input[type="search"],.controls select{max-width:none;flex:1 1 auto}
 }
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;background:var(--bg-surface);z-index:1}
@@ -204,18 +214,20 @@ html[data-theme="dark"] a.link{color:#63b3ed}
   <div class="decomm-tab-panel active" id="panelDetail" role="tabpanel" aria-labelledby="tabDetailBtn">
     <div class="detail-chrome">
       <div class="detail-chrome-row">
-        <div class="stats-grid" id="stats" style="display:none" aria-live="polite">
-          <div class="stat-card"><span class="stat-label">Reports</span><span class="stat-value" id="stTotal">0</span></div>
-          <div class="stat-card"><span class="stat-label">Workspaces</span><span class="stat-value" id="stWs">0</span></div>
-          <div class="stat-card"><span class="stat-label">Batches</span><span class="stat-value" id="stBatch">0</span></div>
-          <div class="stat-card"><span class="stat-label">Source</span><span class="stat-value" id="stSrc">SharePoint</span></div>
-        </div>
-        <div class="controls">
-          <div class="ws-filter-wrap">
-            <select id="wsFilter" aria-label="Filter by workspace"><option value="">All workspaces</option></select>
-            <button type="button" class="btn-clear-ws" id="clearWsBtn" hidden title="Show all workspaces">Clear</button>
+        <div class="detail-chrome-left">
+          <div class="stats-grid" id="stats" style="display:none" aria-live="polite">
+            <div class="stat-card"><span class="stat-label">Reports</span><span class="stat-value" id="stTotal">0</span></div>
+            <div class="stat-card"><span class="stat-label">Workspaces</span><span class="stat-value" id="stWs">0</span></div>
+            <div class="stat-card"><span class="stat-label">Batches</span><span class="stat-value" id="stBatch">0</span></div>
+            <div class="stat-card"><span class="stat-label">Source</span><span class="stat-value" id="stSrc">SharePoint</span></div>
           </div>
-          <input type="search" id="qFilter" placeholder="Search report, folder, batch…" aria-label="Search reports" />
+          <div class="controls">
+            <div class="ws-filter-wrap">
+              <select id="wsFilter" aria-label="Filter by workspace"><option value="">All workspaces</option></select>
+              <button type="button" class="btn-clear-ws" id="clearWsBtn" hidden title="Show all workspaces">Clear</button>
+            </div>
+            <input type="search" id="qFilter" placeholder="Search report, folder, batch…" aria-label="Search reports" />
+          </div>
         </div>
         <div class="detail-actions">
           <div class="ws-toggle-bar">
