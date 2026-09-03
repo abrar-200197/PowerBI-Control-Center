@@ -632,15 +632,25 @@ async function syncDecommDatasetFeed(){
       } else if(wait && wait.error){
         msg+=' · refresh started (wait: '+(wait.error||'n/a')+')';
       } else {
-        msg+=' · dataset refresh started';
+        msg+=' · dataset refresh started'+(ref.auth?(' via '+ref.auth):'');
       }
     } else if(ref && ref.skipped){
       msg+=' · refresh skipped (no dataset id) — use PBI schedule on the feed file';
     } else if(ref && !ref.success){
-      const short=(data.warning||ref.error||'refresh not allowed').toString();
-      msg+=' · feed OK; dataset API refresh failed';
+      // Show real API reason (403 vs wrong dataset id vs already refreshing)
+      let short=(data.warning||ref.error||'refresh not allowed').toString();
+      if(short.length>140) short=short.slice(0,137)+'…';
+      msg+=' · feed OK; refresh failed: '+short;
       console.warn('decomm dataset refresh', ref);
-      if(st) st.title=(st.title?st.title+'\n':'')+short;
+      const detail=[
+        short,
+        ref.httpStatus!=null?('HTTP '+ref.httpStatus):'',
+        ref.auth?('auth='+ref.auth):'',
+        ref.datasetId?('dataset='+ref.datasetId):'',
+        ref.workspaceId?('workspace='+ref.workspaceId):'',
+        data.resolved?JSON.stringify(data.resolved):'',
+      ].filter(Boolean).join('\n');
+      if(st) st.title=(st.title?st.title+'\n':'')+detail;
     } else if(data.warning){
       msg+=' · '+data.warning;
     }

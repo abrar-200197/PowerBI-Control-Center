@@ -2191,11 +2191,24 @@ def _decomm_dashboard_config():
         os.getenv('DECOMM_DASHBOARD_TITLE')
         or 'Power BI Estate Decommissioning Programme'
     ).strip()
-    dataset_id = (os.getenv('DECOMM_DASHBOARD_DATASET_ID') or '').strip()
+    # Prefer DECOMM_DASHBOARD_*; accept short aliases if someone set plain names in App Service
+    dataset_id = (
+        os.getenv('DECOMM_DASHBOARD_DATASET_ID')
+        or os.getenv('DECOMM_DATASET_ID')
+        or ''
+    ).strip()
     service_url = (os.getenv('DECOMM_DASHBOARD_SERVICE_URL') or '').strip()
 
-    workspace_id = (os.getenv('DECOMM_DASHBOARD_WORKSPACE_ID') or '').strip()
-    report_id = (os.getenv('DECOMM_DASHBOARD_REPORT_ID') or '').strip()
+    workspace_id = (
+        os.getenv('DECOMM_DASHBOARD_WORKSPACE_ID')
+        or os.getenv('DECOMM_WORKSPACE_ID')
+        or ''
+    ).strip()
+    report_id = (
+        os.getenv('DECOMM_DASHBOARD_REPORT_ID')
+        or os.getenv('DECOMM_REPORT_ID')
+        or ''
+    ).strip()
 
     # Prefer parsing a full working service URL (most reliable — paste from browser).
     if service_url:
@@ -2638,9 +2651,9 @@ def api_decommissioned_publish_dataset_feed():
                 out['warning'] = refresh.get('error')
             elif not refresh.get('success'):
                 err = refresh.get('error') or 'Dataset refresh failed'
-                # Keep UI message short
-                if len(err) > 180:
-                    err = err[:177] + '…'
+                # Keep UI readable but leave enough for 403/404 diagnostics
+                if len(err) > 320:
+                    err = err[:317] + '…'
                 out['warning'] = err
             else:
                 out['warning'] = None
