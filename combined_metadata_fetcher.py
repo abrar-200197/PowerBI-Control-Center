@@ -25,23 +25,27 @@ class CombinedMetadataFetcher:
     Combines Scanner API and JavaScript Embed API for complete metadata
     """
     
-    def __init__(self, client_id: str, client_secret: str, tenant_id: str):
+    def __init__(self, client_id: str, client_secret: str, tenant_id: str, user_token: str = None):
         """
         Initialize the combined fetcher
-        
+
         Args:
             client_id: Azure AD application client ID
             client_secret: Azure AD application client secret
             tenant_id: Azure AD tenant ID
+            user_token: Optional SSO token so Playwright can render as the signed-in user
         """
         self.client_id = client_id
         self.client_secret = client_secret
         self.tenant_id = tenant_id
+        self.user_token = user_token
 
         # Initialize both connectors
         # NOTE: PowerBIScanner reads credentials from environment variables (.env file)
         self.scanner = PowerBIScanner()  # Reads from .env
-        self.visual_extractor = VisualMetadataExtractor(client_id, client_secret, tenant_id)
+        self.visual_extractor = VisualMetadataExtractor(
+            client_id, client_secret, tenant_id, user_token=user_token
+        )
     
     async def get_complete_metadata(
         self, 

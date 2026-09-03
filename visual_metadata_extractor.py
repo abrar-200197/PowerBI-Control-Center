@@ -436,11 +436,77 @@ class VisualMetadataExtractor:
 
         return visual_fields
 
-    def get_embed_token(self, workspace_id: str, report_id: str) -> Dict:
-        """Get embed token for the report
+    def _merge_render_scan(self, export_result: Dict, playwright_result: Dict) -> Dict:
+        """Keep export field bindings and overlay Playwright runtime errors."""
+        export_pages = export_result.get('pages') or []
+        pw_pages = playwright_result.get('pages') or []
 
-        Note: Service Principals CANNOT generate embed tokens.
-        This method will only work with user-delegated tokens (SSO).
+        def _norm(value):
+            return str(value or '').strip().lower()
+
+        by_name = {_norm(p.get('name')): p for p in export_pages if p.get('name')}
+        by_display = {
+            _norm(p.get('displayName') or p.get('name')): p
+            for p in export_pages
+            if (p.get('displayName') or p.get('name'))
+        }
+        used = set()
+        merged_pages = []
+
+        for pw in pw_pages:
+            key_name = _norm(pw.get('name'))
+            key_disp = _norm(pw.get('displayName') or pw.get('name'))
+            exp = by_name.get(key_name) or by_display.get(key_disp)
+            if not exp:
+                merged_pages.append(pw)
+                continue
+
+            used.add(id(exp))
+            page = dict(exp)
+            page['name'] = pw.get('name') or page.get('name')
+            page['displayName'] = pw.get('displayName') or page.get('displayName')
+            page['hasErrors'] = bool(pw.get('hasErrors'))
+            page['errors'] = pw.get('errors') or []
+            page['order'] = pw.get('order', page.get('order'))
+            page['isActive'] = pw.get('isActive', page.get('isActive'))
+
+            pw_visuals = { _norm(v.get('title') or v.get('name')): v for v in (pw.get('visuals') or []) }
+            overlayed = []
+            for visual in page.get('visuals') or []:
+                match = pw_visuals.get(_norm(visual.get('title') or visual.get('name')))
+                if match:
+                    visual = dict(visual)
+                    if match.get('isBlank'):
+                        visual['isBlank'] = True
+                    if match.get('type') and not visual.get('type'):
+                        visual['type'] = match.get('type')
+                    if match.get('layout') and not visual.get('layout'):
+                        visual['layout'] = match.get('layout')
+                    if match.get('fields') and not visual.get('fields'):
+                        visual['fields'] = match.get('fields')
+                overlayed.append(visual)
+            page['visuals'] = overlayed
+            page['visualCount'] = len(overlayed)
+            merged_pages.append(page)
+
+        for exp in export_pages:
+            if id(exp) not in used:
+                merged_pages.append(exp)
+
+        export_result['pages'] = merged_pages
+        export_result['totalPages'] = len(merged_pages)
+        export_result['totalVisuals'] = sum(len(p.get('visuals') or []) for p in merged_pages)
+        export_result['method'] = 'report_definition_export+playwright_render_scan'
+        export_result['render_scan_performed'] = True
+        export_result['success'] = True
+        return export_result
+
+    def get_embed_token(self, workspace_id: str, report_id: str) -> Dict:
+        """Get credentials for embedding the report.
+
+        Prefers GenerateToken (TokenType.Embed). If that fails — typical for
+        service principals — fall back to the caller's AAD token so Playwright
+        can still render the report the same way the signed-in user sees it.
         """
         if not self.access_token:
             self.access_token = self.get_access_token()
@@ -455,63 +521,54 @@ class VisualMetadataExtractor:
         print(f"   🔐 Getting embed token...")
         response = requests.post(url, headers=headers, json=body)
 
+        if response.status_code == 200:
+            payload = response.json()
+            payload['tokenType'] = 'Embed'
+            return payload
+
+        # Only fall back to TokenType.Aad with a real user SSO token — never a service principal.
+        if self.user_token and response.status_code in (400, 401, 403):
+            print(f"   ⚠️  GenerateToken failed ({response.status_code}); falling back to AAD user-token embed")
+            return {
+                "token": self.user_token,
+                "tokenType": "Aad"
+            }
+
         if response.status_code == 400:
-            # Service Principal limitation
             print(f"   ⚠️  Embed token generation failed (Service Principals cannot generate embed tokens)")
             print(f"   💡 Tip: For visual extraction with SP, use Report Definition Export only")
             raise Exception("Service Principal cannot generate embed tokens. Use Report Definition Export method instead.")
-        elif response.status_code != 200:
-            print(f"   ❌ Error getting embed token: {response.status_code} {response.reason}")
-            response.raise_for_status()
 
+        print(f"   ❌ Error getting embed token: {response.status_code} {response.reason}")
+        response.raise_for_status()
         return response.json()
 
-    async def extract_visuals(self, workspace_id: str, report_id: str, timeout: int = 60) -> Dict:
+    async def extract_visuals(self, workspace_id: str, report_id: str, timeout: int = 60, detect_render_errors: bool = False) -> Dict:
         """
         Extract visual metadata from a Power BI report
 
-        NEW APPROACH: Uses Report Definition Export API which includes ALL field bindings
-        This is much faster and more reliable than Playwright automation
+        Default: Report Definition Export (fast, includes field bindings).
+        When detect_render_errors=True (Crash Test), also walk rendered pages
+        with Playwright so runtime errors like "See details" are captured.
 
         Args:
             workspace_id: Power BI workspace GUID
             report_id: Power BI report GUID
-            timeout: Maximum time to wait for report to render (seconds) - IGNORED in new approach
-
-        Returns:
-            {
-                "success": True,
-                "reportId": "...",
-                "extractedAt": "2026-06-03T15:30:00Z",
-                "pages": [
-                    {
-                        "name": "ReportSection1",
-                        "displayName": "Overview",
-                        "order": 0,
-                        "isActive": True,
-                        "visuals": [
-                            {
-                                "name": "VisualContainer1",
-                                "type": "clusteredBarChart",
-                                "title": "Sales by Category",
-                                "fields": ["ProductCategory", "TotalSales"],  # NEW!
-                                "layout": {
-                                    "x": 10,
-                                    "y": 50,
-                                    "width": 300,
-                                    "height": 200,
-                                    "z": 1000
-                                }
-                            }
-                        ],
-                        "visualCount": 1
-                    }
-                ],
-                "totalPages": 1,
-                "totalVisuals": 1
-            }
+            timeout: Maximum time to wait for report to render (seconds)
+            detect_render_errors: If True, force a Playwright page walk after export
         """
         print(f"\n🔍 Extracting visual metadata for report {report_id}...")
+        export_result = None
+
+        def _finalize_playwright(pw_result: Dict) -> Dict:
+            if export_result:
+                if pw_result.get('success'):
+                    return self._merge_render_scan(export_result, pw_result)
+                export_result['render_scan_error'] = pw_result.get('error')
+                export_result['render_scan_performed'] = False
+                print(f"   ⚠️ Render scan failed, keeping export metadata: {pw_result.get('error')}")
+                return export_result
+            return pw_result
 
         # TRY NEW APPROACH FIRST: Report Definition Export (faster, includes fields!)
         print(f"   🚀 Trying optimized Report Definition approach...")
@@ -552,7 +609,9 @@ class VisualMetadataExtractor:
                     pages_map[page_name] = {
                         'name': page_name,
                         'displayName': page_name,
-                        'visuals': []
+                        'visuals': [],
+                        'hasErrors': False,
+                        'errors': []
                     }
 
                 # visual_info['fields'] is already a list of dicts with name, displayName, etc.
@@ -568,10 +627,17 @@ class VisualMetadataExtractor:
             result['totalVisuals'] = sum(len(p['visuals']) for p in result['pages'])
 
             print(f"   ✅ Extracted {result['totalVisuals']} visuals from {result['totalPages']} pages using Report Definition")
-            return result
+            if not detect_render_errors:
+                return result
 
-        # FALLBACK: If report definition approach failed, use Playwright (slower but works)
-        print(f"   ⚠️ Report Definition approach failed, falling back to Playwright...")
+            print(f"   🔎 Crash Test: scanning rendered pages for broken visuals...")
+            export_result = result
+
+        # Playwright: fallback when export failed, or extra render scan for Crash Test
+        if export_result:
+            print(f"   🔎 Running Playwright render scan to detect broken visuals...")
+        else:
+            print(f"   ⚠️ Report Definition approach failed, falling back to Playwright...")
 
         result = {
             "success": False,
@@ -584,12 +650,13 @@ class VisualMetadataExtractor:
             "error": None,
             "method": "playwright_automation"
         }
-        
+
         try:
-            # Get embed token
+            # Get embed token (GenerateToken) or fall back to AAD user token
             print("   🔐 Getting embed token...")
             embed_data = self.get_embed_token(workspace_id, report_id)
             embed_token = embed_data["token"]
+            js_token_type = "Aad" if str(embed_data.get("tokenType", "Embed")).lower() == "aad" else "Embed"
 
             # Get embed URL
             if not self.access_token:
@@ -601,11 +668,11 @@ class VisualMetadataExtractor:
             response.raise_for_status()
             embed_url = response.json()["embedUrl"]
 
-            print(f"   🌐 Embed URL: {embed_url}")
+            print(f"   🌐 Embed URL: {embed_url} (tokenType={js_token_type})")
         except Exception as e:
             print(f"   ❌ Error getting embed token: {e}")
             result["error"] = f"Failed to get embed token: {str(e)}"
-            return result
+            return _finalize_playwright(result)
         
         # Launch headless browser with optimized settings
         try:
@@ -665,9 +732,10 @@ class VisualMetadataExtractor:
                             console.log('🚀 Power BI Report Authoring SDK loaded:', window['powerbi-report-authoring'] ? 'OK' : 'Extended');
 
                             const models = window['powerbi-client'].models;
+                            const tokenType = '{js_token_type}' === 'Aad' ? models.TokenType.Aad : models.TokenType.Embed;
                             const config = {{
                                 type: 'report',
-                                tokenType: models.TokenType.Embed,
+                                tokenType: tokenType,
                                 accessToken: '{embed_token}',
                                 embedUrl: '{embed_url}',
                                 id: '{report_id}',
@@ -751,13 +819,13 @@ class VisualMetadataExtractor:
                         print(f"      ❌ SDK load timeout: {e}")
                         result["error"] = "Power BI SDK failed to load"
                         await browser.close()
-                        return result
+                        return _finalize_playwright(result)
 
                     # Step 2: Wait for report to load (30 seconds)
                     print("      ⏳ Step 2/3: Waiting for report to load...")
                     try:
                         await page.wait_for_function(
-                            "window.reportLoaded === true || window.reportError !== undefined",
+                            "window.reportLoaded === true || window.reportError !== null",
                             timeout=30000  # 30 seconds for report load
                         )
 
@@ -778,7 +846,7 @@ class VisualMetadataExtractor:
                     print("      ⏳ Step 3/3: Waiting for report to render...")
                     try:
                         await page.wait_for_function(
-                            "window.reportReady === true || window.reportError !== undefined",
+                            "window.reportReady === true || window.reportError !== null",
                             timeout=max(timeout * 1000 - 40000, 20000)  # Remaining time, min 20s
                         )
 
@@ -818,7 +886,22 @@ class VisualMetadataExtractor:
                                 "See details"
                             ];
 
-                            const pageText = document.body.innerText || document.body.textContent || '';
+                            const collectText = (doc) => {
+                                let text = '';
+                                try { text += (doc.body && (doc.body.innerText || doc.body.textContent)) || ''; } catch (e) {}
+                                try {
+                                    const iframes = doc.querySelectorAll('iframe');
+                                    for (const iframe of iframes) {
+                                        try {
+                                            const child = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
+                                            if (child) text += '\\n' + collectText(child);
+                                        } catch (e) {}
+                                    }
+                                } catch (e) {}
+                                return text;
+                            };
+
+                            const pageText = collectText(document);
                             const foundErrors = [];
 
                             for (const pattern of errorPatterns) {
@@ -839,9 +922,11 @@ class VisualMetadataExtractor:
                         error_list = ', '.join(page_errors.get('errors', []))
                         print(f"   🔴 ERRORS DETECTED ON PAGE: {error_list}")
 
+                    skip_field_extraction = bool(export_result)
                     visuals_data = await page.evaluate(f"""
                         async () => {{
                             const log = (msg) => console.log('    🔍 ' + msg);
+                            const skipFieldExtraction = {str(skip_field_extraction).lower()};
 
                             try {{
                                 log('Starting visual extraction...');
@@ -897,8 +982,46 @@ class VisualMetadataExtractor:
 
                                         // Check if any NEW errors occurred after navigating to this page
                                         const errorsAfter = window.reportErrors.length;
-                                        const hasPageErrors = errorsAfter > errorsBefore;
-                                        const pageErrors = hasPageErrors ? window.reportErrors.slice(errorsBefore) : [];
+                                        let hasPageErrors = errorsAfter > errorsBefore;
+                                        let pageErrors = hasPageErrors ? window.reportErrors.slice(errorsBefore) : [];
+
+                                        // Canvas fallback: "See details" / missing-field banners may not fire report.on('error')
+                                        const canvasPatterns = [
+                                            "Something's wrong with one or more fields",
+                                            "We are not able to identify the following fields",
+                                            "This visual has exceeded the available resources",
+                                            "Couldn't retrieve the data for this visual",
+                                            "Something went wrong",
+                                            "See details"
+                                        ];
+                                        const collectText = (doc) => {{
+                                            let text = '';
+                                            try {{ text += (doc.body && (doc.body.innerText || doc.body.textContent)) || ''; }} catch (e) {{}}
+                                            try {{
+                                                const iframes = doc.querySelectorAll('iframe');
+                                                for (const iframe of iframes) {{
+                                                    try {{
+                                                        const child = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
+                                                        if (child) text += '\\n' + collectText(child);
+                                                    }} catch (e) {{}}
+                                                }}
+                                            }} catch (e) {{}}
+                                            return text;
+                                        }};
+                                        const pageText = collectText(document);
+                                        const canvasHits = canvasPatterns.filter(p => pageText.includes(p));
+                                        if (canvasHits.length) {{
+                                            log(`  🔴 CANVAS ERROR on page "${{page.displayName}}": ${{canvasHits.join(', ')}}`);
+                                            if (!hasPageErrors) {{
+                                                hasPageErrors = true;
+                                                pageErrors.push({{
+                                                    visualTitle: 'Unknown Visual',
+                                                    message: canvasHits[0],
+                                                    detailedMessage: canvasHits.join(' | '),
+                                                    timestamp: new Date().toISOString()
+                                                }});
+                                            }}
+                                        }}
 
                                         if (hasPageErrors) {{
                                             log(`  🔴 ERROR DETECTED on page "${{page.displayName}}" - ${{pageErrors.length}} error(s)`);
@@ -942,7 +1065,18 @@ class VisualMetadataExtractor:
                                                 }}
 
                                                 // Extract field bindings (columns/measures used in visual) using getDataFields API
+                                                // Skip when export already provided bindings — Crash Test only needs runtime errors.
                                                 let fields = [];
+                                                if (skipFieldExtraction) {{
+                                                    return {{
+                                                        name: visualName,
+                                                        type: visualType,
+                                                        title: visualTitle,
+                                                        fields: fields,
+                                                        layout: v.layout || {{}},
+                                                        isBlank: isBlank
+                                                    }};
+                                                }}
                                                 try {{
                                                     // CORRECT METHOD: Use getDataFields() for each data role
                                                     // Common data roles: Values, Category, Y, X, Series, Legend, Details, Tooltips, etc.
@@ -1092,7 +1226,7 @@ class VisualMetadataExtractor:
                         print(f"   ❌ Error extracting visuals: {visuals_data.get('error')}")
                         result["error"] = visuals_data.get('error')
                         await browser.close()
-                        return result
+                        return _finalize_playwright(result)
 
                     # Calculate totals
                     pages = visuals_data["pages"]
@@ -1108,25 +1242,25 @@ class VisualMetadataExtractor:
                     result["error"] = None
 
                     await browser.close()
-                    return result
+                    return _finalize_playwright(result)
 
                 except PlaywrightTimeoutError as e:
                     print(f"   ⏱️ Timeout waiting for report: {e}")
                     result["error"] = f"Timeout: Report took longer than {timeout}s to render"
                     if 'browser' in locals():
                         await browser.close()
-                    return result
+                    return _finalize_playwright(result)
                 except Exception as e:
                     print(f"   ❌ Error during extraction: {e}")
                     result["error"] = f"Extraction error: {str(e)}"
                     if 'browser' in locals():
                         await browser.close()
-                    return result
+                    return _finalize_playwright(result)
 
         except Exception as e:
             print(f"   ❌ Browser automation error: {e}")
             result["error"] = f"Browser error: {str(e)}"
-            return result
+            return _finalize_playwright(result)
 
 
 # Example usage

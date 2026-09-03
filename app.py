@@ -11317,15 +11317,23 @@ def crash_test_report(report_id):
         except Exception as e:
             print(f"      ⚠️  Could not fetch report metadata from Scanner API: {e}")
 
-        # Initialize analyzer with credentials for Enhanced Mode
+        # Prefer the signed-in user's token so Playwright can render the report
+        # the same way Service does (GenerateToken often fails for service principals).
+        user_token = None
+        try:
+            user_token = get_user_powerbi_token()
+        except Exception as token_err:
+            print(f"   ⚠️  Could not get user Power BI token: {token_err}")
+
         analyzer = CrashTestAnalyzer(
             workspace_id=workspace_id,
             report_id=report_id,
             dataset_id=dataset_id,
-            access_token=None,  # Will use service principal
+            access_token=user_token,
             client_id=client_id,
             client_secret=client_secret,
-            tenant_id=tenant_id
+            tenant_id=tenant_id,
+            user_token=user_token
         )
 
         # Set report metadata on analyzer

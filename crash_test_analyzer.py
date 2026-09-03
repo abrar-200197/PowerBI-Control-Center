@@ -29,7 +29,7 @@ except ImportError:
 class CrashTestAnalyzer:
     """Analyzes Power BI reports for crashes, broken visuals, and data issues"""
 
-    def __init__(self, workspace_id, report_id, dataset_id, access_token, client_id=None, client_secret=None, tenant_id=None):
+    def __init__(self, workspace_id, report_id, dataset_id, access_token, client_id=None, client_secret=None, tenant_id=None, user_token=None):
         """
         Initialize crash test analyzer
 
@@ -41,17 +41,19 @@ class CrashTestAnalyzer:
             client_id: Azure AD client ID (for visual extraction)
             client_secret: Azure AD client secret (for visual extraction)
             tenant_id: Azure AD tenant ID (for visual extraction)
+            user_token: Signed-in user's SSO token (for Playwright embed)
         """
         self.workspace_id = workspace_id
         self.report_id = report_id
         self.dataset_id = dataset_id
-        self.access_token = access_token
+        self.access_token = access_token or user_token
         self.base_url = "https://api.powerbi.com/v1.0/myorg"
 
         # Credentials for enhanced metadata
         self.client_id = client_id
         self.client_secret = client_secret
         self.tenant_id = tenant_id
+        self.user_token = user_token or access_token
 
         # Results storage
         self.issues = []
@@ -103,8 +105,11 @@ class CrashTestAnalyzer:
         print("\n3️⃣  Phase 3: Visual Integrity Check")
         visual_analysis_performed = False
 
-        if include_visual_analysis and CombinedMetadataFetcher and all([self.client_id, self.client_secret, self.tenant_id]):
-            print("   🚀 Using ENHANCED visual analysis (JavaScript Embed API)")
+        can_run_enhanced = CombinedMetadataFetcher and (
+            all([self.client_id, self.client_secret, self.tenant_id]) or self.user_token
+        )
+        if include_visual_analysis and can_run_enhanced:
+            print("   🚀 Using ENHANCED visual analysis (JavaScript Embed API + render scan)")
             try:
                 # Run async visual extraction
                 # CRITICAL FIX: Must actually await or run the async function!
@@ -151,8 +156,8 @@ class CrashTestAnalyzer:
                 self._check_visual_integrity()
                 visual_analysis_performed = False
         else:
-            if include_visual_analysis and not all([self.client_id, self.client_secret, self.tenant_id]):
-                print("   ℹ️  Enhanced visual analysis requires client credentials")
+            if include_visual_analysis and not can_run_enhanced:
+                print("   ℹ️  Enhanced visual analysis requires client credentials or a signed-in user token")
             self._check_visual_integrity()
             visual_analysis_performed = False
 
@@ -380,14 +385,16 @@ class CrashTestAnalyzer:
             fetcher = CombinedMetadataFetcher(
                 self.client_id,
                 self.client_secret,
-                self.tenant_id
+                self.tenant_id,
+                user_token=self.user_token
             )
 
-            # Extract visual metadata
+            # Extract visual metadata AND walk rendered pages for runtime errors
             result = await fetcher.visual_extractor.extract_visuals(
                 self.workspace_id,
                 self.report_id,
-                timeout=90
+                timeout=180,
+                detect_render_errors=True
             )
 
             if not result.get('success'):
@@ -449,10 +456,19 @@ class CrashTestAnalyzer:
 
             # Store visual metadata
             self.visual_metadata = result.get('pages', [])
+            if result.get('render_scan_error'):
+                self.warnings.append({
+                    'category': 'Visual Integrity',
+                    'severity': 'Warning',
+                    'message': 'Runtime render scan could not complete — broken visuals on canvas may be missed',
+                    'description': str(result.get('render_scan_error')),
+                    'recommendation': 'Re-run Crash Test after confirming Playwright/Chromium is available and you are signed in.'
+                })
 
             # Analyze visuals for issues
             total_visuals = sum(len(page.get('visuals', [])) for page in self.visual_metadata)
             print(f"   ✓ Analyzing {total_visuals} visuals across {len(self.visual_metadata)} pages")
+            print(f"   ℹ️  Extraction method: {result.get('method', 'unknown')}")
 
             broken_visuals = 0
             blank_visuals = 0

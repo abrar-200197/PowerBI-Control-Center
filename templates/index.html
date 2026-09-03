@@ -422,16 +422,118 @@
 
     .action-buttons {
         display: flex;
-        gap: 6px;
-        justify-content: center;
-        flex-wrap: wrap;
+        flex-direction: column;
+        gap: 4px;
+        align-items: stretch;
+        min-width: 96px;
+        max-width: 120px;
     }
 
     .action-buttons .btn {
-        padding: 6px 10px;
+        padding: 5px 8px;
         font-size: 11px;
         white-space: nowrap;
+        width: 100%;
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        line-height: 1.2;
+        box-sizing: border-box;
     }
+
+    .action-buttons .btn.is-busy {
+        opacity: 0.85;
+        cursor: wait;
+        pointer-events: none;
+    }
+
+    /* Crash test results modal — theme-aware, no layout break */
+    .ct-backdrop {
+        position: fixed; inset: 0; z-index: 10000;
+        background: rgba(15, 20, 25, 0.62);
+        display: flex; align-items: center; justify-content: center;
+        padding: 16px; overflow-y: auto;
+    }
+    .ct-modal {
+        background: var(--bg-surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+        width: min(920px, 100%);
+        max-height: min(90vh, 880px);
+        display: flex; flex-direction: column;
+        overflow: hidden;
+    }
+    .ct-head {
+        display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+        padding: 14px 16px;
+        background: linear-gradient(135deg, #4C51BF 0%, #553C9A 100%);
+        color: #fff; flex-shrink: 0;
+    }
+    .ct-head h2 { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.3; word-break: break-word; }
+    .ct-head .ct-kicker { font-size: 11px; opacity: 0.9; font-weight: 600; margin-bottom: 4px; }
+    .ct-head-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .ct-head-actions a, .ct-head-actions button {
+        height: 30px; padding: 0 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.35);
+        background: rgba(255,255,255,0.18); color: #fff; font-size: 12px; font-weight: 600;
+        cursor: pointer; text-decoration: none; display: inline-flex; align-items: center;
+    }
+    .ct-summary {
+        display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+        padding: 10px 16px; border-bottom: 1px solid var(--border);
+        background: var(--bg-surface-2); flex-shrink: 0;
+    }
+    .ct-score {
+        display: inline-flex; align-items: baseline; gap: 6px;
+        padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border);
+        background: var(--bg-surface); font-variant-numeric: tabular-nums;
+    }
+    .ct-score .n { font-size: 22px; font-weight: 800; line-height: 1; }
+    .ct-score .l { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
+    .ct-chip {
+        display: inline-flex; align-items: center; gap: 6px;
+        height: 28px; padding: 0 10px; border-radius: 999px;
+        border: 1px solid var(--border); background: var(--bg-surface);
+        font-size: 12px; font-weight: 600; color: var(--text);
+    }
+    .ct-body { flex: 1; overflow: auto; padding: 14px 16px 18px; min-height: 0; }
+    .ct-section { margin-bottom: 14px; }
+    .ct-section h3 {
+        margin: 0 0 8px; font-size: 13px; font-weight: 700; color: var(--text-strong);
+        display: flex; align-items: center; gap: 8px;
+    }
+    .ct-badge {
+        display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
+        border-radius: 999px; font-size: 10px; font-weight: 700; color: #fff;
+    }
+    .ct-issue {
+        border: 1px solid var(--border); border-left: 3px solid #F56565;
+        border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+        background: var(--bg-surface-2);
+    }
+    .ct-issue .cat { font-size: 12px; font-weight: 700; color: #E53E3E; margin-bottom: 4px; }
+    .ct-issue .desc { font-size: 13px; color: var(--text); line-height: 1.45; word-break: break-word; }
+    .ct-issue .rec { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+    .ct-table-wrap {
+        border: 1px solid var(--border); border-radius: 8px; overflow: auto; max-height: 320px;
+        background: var(--bg-surface);
+    }
+    .ct-table-wrap table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .ct-table-wrap th {
+        text-align: left; padding: 8px 10px; position: sticky; top: 0; z-index: 1;
+        background: var(--bg-surface-2); color: var(--text-muted); font-size: 10px;
+        text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border);
+    }
+    .ct-table-wrap td {
+        padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text);
+        vertical-align: top; word-break: break-word;
+    }
+    .ct-empty {
+        text-align: center; padding: 28px 16px; color: var(--text-muted);
+        border: 1px dashed var(--border); border-radius: 8px; background: var(--bg-surface-2);
+    }
+    .ct-empty .big { font-size: 28px; font-weight: 800; color: var(--text-strong); margin: 8px 0 4px; }
 
     .table-wrapper {
         overflow: auto;
@@ -3219,17 +3321,21 @@
 
         console.log('🔬 Running crash test:', reportId, reportName, datasetId, 'Mode:', mode);
 
-        // Find the button
-        const button = event.target;
-        const originalContent = button.innerHTML;
+        // Prefer the actual button (click may land on a child node)
+        const button = (event && event.target && event.target.closest)
+            ? (event.target.closest('button') || event.target)
+            : null;
+        const originalContent = button ? button.innerHTML : 'Crash test';
 
-        // Show loading state
-        button.disabled = true;
-        button.innerHTML = '⏳ Testing... (60-120s)';
-        showAlert('info', 'Running crash test with visual detection. This may take 60-120 seconds...');
+        if (button) {
+            button.disabled = true;
+            button.classList.add('is-busy');
+            button.innerHTML = 'Testing…';
+            button.title = 'Crash test running (often 60–120 seconds)';
+        }
+        showAlert('info', 'Running crash test with visual detection. This may take 60–120 seconds…');
 
         try {
-            // ⭐ NEW: Extract visual field bindings from embedded report (if available)
             let visualFieldBindings = null;
             try {
                 visualFieldBindings = await extractVisualFieldBindings(reportId);
@@ -3240,22 +3346,18 @@
                 }
             } catch (extractError) {
                 console.warn('⚠️  Visual field extraction failed:', extractError);
-                // Continue with crash test even if extraction fails
             }
 
-            // Build request body
             const requestBody = {
                 workspace_id: currentWorkspaceId,
                 dataset_id: datasetId,
                 mode: mode,
-                visual_field_bindings: visualFieldBindings  // ⭐ NEW!
+                visual_field_bindings: visualFieldBindings
             };
 
             const response = await fetch(`/api/reports/crash-test/${reportId}`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody)
             });
 
@@ -3266,41 +3368,21 @@
             const result = await response.json();
 
             if (result.success) {
-                console.log('✅ Crash test completed successfully');
-                console.log('Result data:', result);
-
-                // Show success
-                button.innerHTML = '✅ Done';
-
-                // Show results in alert
-                const healthScore = result.health_score;
-                const status = result.status;
-                const issueCount = result.issues.length;
-                const warningCount = result.warnings.length;
-
-                console.log(`Health Score: ${healthScore}, Issues: ${issueCount}, Warnings: ${warningCount}`);
-
-                let healthIcon = healthScore >= 90 ? '🟢' : healthScore >= 70 ? '🟡' : '🔴';
-                let message = `${healthIcon} Crash Test Results for "${reportName}"\n\n` +
-                             `Health Score: ${healthScore}/100 (${status.toUpperCase()})\n` +
-                             `Issues: ${issueCount}`;
-
-                // Always show detailed modal (even if no issues, to show health score, refresh status, and lineage)
-                console.log('🎯 Calling showCrashTestModal...');
+                console.log('✅ Crash test completed', result);
+                if (button) button.innerHTML = 'Done';
                 try {
                     showCrashTestModal(reportName, result, reportId, currentWorkspaceId);
-                    console.log('✅ Modal function called successfully');
                 } catch (modalError) {
                     console.error('❌ Error showing modal:', modalError);
-                    alert('Error displaying results: ' + modalError.message);
+                    showAlert('error', 'Error displaying results: ' + modalError.message);
                 }
-
-                // Restore button after delay
                 setTimeout(() => {
+                    if (!button) return;
                     button.disabled = false;
+                    button.classList.remove('is-busy');
                     button.innerHTML = originalContent;
-                }, 2000);
-
+                    button.title = 'Deep analysis with visual detection';
+                }, 1500);
             } else {
                 throw new Error(result.error || 'Unknown error');
             }
@@ -3308,10 +3390,12 @@
         } catch (error) {
             console.error('Crash test error:', error);
             showAlert('error', 'Crash test failed: ' + error.message);
-
-            // Restore button
-            button.disabled = false;
-            button.innerHTML = '🔍 Crash Test';
+            if (button) {
+                button.disabled = false;
+                button.classList.remove('is-busy');
+                button.innerHTML = originalContent;
+                button.title = 'Deep analysis with visual detection';
+            }
         }
     }
 
@@ -3339,633 +3423,200 @@
     }
 
     function showCrashTestModal(reportName, result, reportId, workspaceId) {
-        const healthScore = result.health_score;
-        const status = result.status;
+        const healthScore = Number(result.health_score ?? 0);
+        const status = String(result.status || 'unknown');
         const issues = result.issues || [];
         const warnings = result.warnings || [];
         const refreshInfo = result.refresh_info || null;
-        const lineageAnalysis = result.lineage_analysis || null;
         const rootCauseAnalysis = result.root_cause_analysis || [];
-
-        console.log('🔬 Root Cause Analysis:', rootCauseAnalysis);
-        console.log('📊 Refresh Info:', refreshInfo);
-
-        let healthColor = healthScore >= 90 ? '#48BB78' : healthScore >= 70 ? '#ECC94B' : '#F56565';
+        const scoreBreakdown = result.score_breakdown || null;
         const reportLink = `https://app.powerbi.com/groups/${workspaceId}/reports/${reportId}`;
 
-        // Helper function to format datetime
+        const esc = (s) => {
+            if (s == null) return '';
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        };
+
         const formatDateTime = (dateStr) => {
             if (!dateStr) return 'N/A';
             try {
-                const date = new Date(dateStr);
-                return date.toLocaleString('en-US', {
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric',
-                    hour: 'numeric',
-                    minute: '2-digit',
-                    hour12: true
+                return new Date(dateStr).toLocaleString('en-US', {
+                    month: 'short', day: 'numeric', year: 'numeric',
+                    hour: 'numeric', minute: '2-digit', hour12: true
                 });
-            } catch {
-                return dateStr;
-            }
+            } catch (e) { return String(dateStr); }
         };
 
-        // Create centered modal with backdrop
-        let modalHtml = `
-            <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;" onclick="this.remove()">
-                <div style="background: white; border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-width: 95%; width: 100%; max-height: 90vh; display: flex; flex-direction: column;" onclick="event.stopPropagation()">
+        const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+        const scoreColor = healthScore >= 90 ? '#38A169' : healthScore >= 70 ? '#D69E2E' : healthScore >= 50 ? '#DD6B20' : '#E53E3E';
+        const brokenVisuals = issues.filter(i => (i.category || '') === 'Broken Visual');
+        const otherIssues = issues.filter(i => {
+            const c = i.category || '';
+            return c !== 'Broken Visual' && c !== 'Blank Visual';
+        });
+        const blankVisuals = issues.filter(i => (i.category || '') === 'Blank Visual');
 
-                    <!-- Compact Header -->
-                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 18px 24px; border-radius: 8px 8px 0 0; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;">
-                        <div style="flex: 1;">
-                            <div style="color: rgba(255,255,255,0.9); font-size: 13px; font-weight: 600; margin-bottom: 6px;">🔍 Crash Test Results</div>
-                            <div style="color: white; font-size: 22px; font-weight: 800; text-shadow: 0 2px 4px rgba(0,0,0,0.2); letter-spacing: -0.5px; margin-bottom: 8px;">${reportName}</div>
-        `;
-
-        // Generate consistent ID for refresh details section
-        const refreshDetailsId = 'refreshDetails_' + Date.now();
-
-        // Add last refresh as collapsible bar (shown inline in header)
+        let refreshChip = '';
         if (refreshInfo) {
-            const refreshColor = refreshInfo.status === 'Completed' ? '#48BB78' : refreshInfo.status === 'Failed' ? '#F56565' : '#ECC94B';
-            const refreshIcon = refreshInfo.status === 'Completed' ? '✅' : refreshInfo.status === 'Failed' ? '❌' : '⚠️';
-
-            modalHtml += `
-                            <div style="display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.3);">
-                                <span style="font-size: 16px;">${refreshIcon}</span>
-                                <span style="color: white; font-size: 11px; font-weight: 600;">Last Refresh: <strong>${refreshInfo.status}</strong></span>
-                                <span style="color: rgba(255,255,255,0.8); font-size: 10px;">${formatDateTime(refreshInfo.endTime)}</span>
-            `;
-
-            // Add expand button ONLY if refresh failed (to show error details)
-            if (refreshInfo.status === 'Failed') {
-                modalHtml += `
-                                <button onclick="event.stopPropagation(); toggleRefreshDetails('${refreshDetailsId}');" style="margin-left: 4px; background: rgba(255,255,255,0.3); border: none; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; cursor: pointer; font-weight: 600;" title="Show error details">
-                                    ▼ Details
-                                </button>
-                `;
-            }
-
-            modalHtml += `
-                            </div>
-            `;
+            const st = refreshInfo.status || 'Unknown';
+            const when = formatDateTime(refreshInfo.endTime);
+            refreshChip = `<span class="ct-chip" title="${esc(st)} ${esc(when)}">Refresh: <strong>${esc(st)}</strong> · ${esc(when)}</span>`;
+        } else {
+            refreshChip = `<span class="ct-chip">Refresh: not available</span>`;
         }
 
-        modalHtml += `
-                        </div>
-                        <div style="display: flex; gap: 8px;">
-                            <a href="${reportLink}" target="_blank" style="padding: 8px 16px; background: rgba(255,255,255,0.25); color: white; text-decoration: none; border-radius: 5px; font-size: 12px; font-weight: 600; border: 1px solid rgba(255,255,255,0.4); box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                                🔗 Open Report
-                            </a>
-                            <button onclick="this.closest('[style*=\\'position: fixed\\']').remove()" style="padding: 8px 16px; background: rgba(255,255,255,0.25); color: white; border: 1px solid rgba(255,255,255,0.4); border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                                ✕ Close
-                            </button>
-                        </div>
-                    </div>
-        `;
+        let meaning;
+        if (healthScore >= 90) meaning = '— report looks healthy.';
+        else if (healthScore >= 70) meaning = '— minor issues; review warnings.';
+        else meaning = '— issues need attention before you rely on this report.';
 
-        // Add collapsible refresh error details section (ONLY if refresh failed)
-        if (refreshInfo && refreshInfo.status === 'Failed') {
-            // Simple: just show whatever error info we have
-            let errorMessage = 'No error details available from Power BI';
-
-            // Power BI Error Code Translator - converts cryptic codes to human-readable messages
-            const translateErrorCode = (errorCode) => {
-                const errorCodeMap = {
-                    'DMTS_MonikerWithUnboundDataSources': {
-                        title: 'Data Source Connection Missing',
-                        description: 'The dataset cannot connect to its data source because the connection details are not configured.',
-                        causes: [
-                            'The report was copied or moved without preserving data source connections',
-                            'The data source credentials have not been set up in Power BI Service',
-                            'The dataset is missing binding to a gateway or cloud connection'
-                        ],
-                        solutions: [
-                            'Open the dataset settings in Power BI Service',
-                            'Go to "Data source credentials" section',
-                            'Click "Edit credentials" and enter the connection details',
-                            'If using an on-premises data source, ensure a gateway is configured',
-                            'Re-bind the data source to the correct gateway or cloud connection'
-                        ]
-                    },
-                    'DMTS_DatasourceHasNoCredentialError': {
-                        title: 'Data Source Credentials Not Set',
-                        description: 'The data source exists but no credentials have been configured for authentication.',
-                        causes: [
-                            'First-time dataset publish without credentials',
-                            'Credentials expired or were removed',
-                            'OAuth token expired for cloud data sources'
-                        ],
-                        solutions: [
-                            'Navigate to dataset Settings → Data source credentials',
-                            'Click "Edit credentials" for each data source',
-                            'Enter the correct username and password',
-                            'For OAuth sources (SharePoint, Dynamics), re-authenticate',
-                            'Ensure the credentials have proper permissions to access the data'
-                        ]
-                    },
-                    'DMTS_GatewayNotReachable': {
-                        title: 'Data Gateway Offline or Unreachable',
-                        description: 'Power BI cannot connect to the on-premises data gateway.',
-                        causes: [
-                            'Gateway service is stopped or crashed',
-                            'Gateway machine is powered off or unreachable',
-                            'Network firewall blocking connection',
-                            'Gateway was uninstalled or moved to different machine'
-                        ],
-                        solutions: [
-                            'Verify the gateway machine is powered on and connected to network',
-                            'Check gateway service is running (services.msc → "On-premises data gateway service")',
-                            'Open the gateway configuration app and verify status',
-                            'Check firewall allows outbound HTTPS (443) to *.powerbi.com',
-                            'Restart the gateway service if showing as degraded'
-                        ]
-                    },
-                    'Premium_ASWL_Error': {
-                        title: 'Premium Workspace Query Error',
-                        description: 'The dataset query failed due to a Premium capacity or Analysis Services issue.',
-                        causes: [
-                            'Premium capacity is overloaded or paused',
-                            'Query timeout due to complex calculations',
-                            'Calculated tables or columns referencing Single Sign-On data sources',
-                            'DirectQuery schema changes not reflected'
-                        ],
-                        solutions: [
-                            'Check if Premium capacity is active (not paused)',
-                            'Review calculated tables/columns - avoid SSO data sources in calculated items',
-                            'For DirectQuery, use explicit connection settings instead of SSO',
-                            'Optimize DAX queries to reduce processing time',
-                            'Contact workspace admin to check capacity health'
-                        ]
-                    },
-                    'DMTS_RefreshFailedInvalidDataSource': {
-                        title: 'Invalid Data Source Configuration',
-                        description: 'The data source configuration is invalid or incompatible with Power BI Service.',
-                        causes: [
-                            'File path using local drive (C:\\) instead of network path',
-                            'Data source URL changed or no longer exists',
-                            'Unsupported authentication method',
-                            'Web URL requires parameters not supported in Service'
-                        ],
-                        solutions: [
-                            'For files: Use SharePoint, OneDrive, or network UNC path (\\\\server\\share)',
-                            'Verify web URLs are still accessible',
-                            'Check connection strings use supported authentication',
-                            'Replace local file references with cloud-accessible locations',
-                            'Use gateway for on-premises file sources'
-                        ]
-                    }
-                };
-
-                return errorCodeMap[errorCode] || null;
-            };
-
-            // Try to extract error message from serviceExceptionJson
-            let translatedError = null;
-            if (refreshInfo.serviceExceptionJson) {
-                try {
-                    let errorData = refreshInfo.serviceExceptionJson;
-                    if (typeof errorData === 'string' && errorData.trim() !== '') {
-                        errorData = JSON.parse(errorData);
-                    }
-
-                    // Extract error message based on different Power BI error formats
-                    if (errorData.errorDescription) {
-                        // Format 1: Direct errorDescription field
-                        errorMessage = errorData.errorDescription;
-                    } else if (errorData.error) {
-                        // Format 2: Nested error object
-                        if (typeof errorData.error === 'string') {
-                            errorMessage = errorData.error;
-                        } else if (errorData.error['pbi.error']) {
-                            // Format 3: Deep nested pbi.error structure
-                            const pbiError = errorData.error['pbi.error'];
-                            const details = pbiError.details || [];
-
-                            // Check for error code to translate
-                            if (pbiError.code) {
-                                translatedError = translateErrorCode(pbiError.code);
-                            }
-
-                            // Build full error message from nested structure
-                            let fullMessage = [];
-
-                            // Add main error code/message
-                            if (pbiError.code) fullMessage.push(`Error Code: ${pbiError.code}`);
-                            if (pbiError.parameters && pbiError.parameters.details) {
-                                fullMessage.push(pbiError.parameters.details);
-                            }
-
-                            // Add all detail messages
-                            details.forEach(detail => {
-                                if (detail.detail) {
-                                    if (typeof detail.detail === 'string') {
-                                        fullMessage.push(detail.detail);
-                                    } else if (detail.detail.value) {
-                                        fullMessage.push(detail.detail.value);
-                                    }
-                                }
-                            });
-
-                            // Add exceptionCulprit if available
-                            if (pbiError.exceptionCulprit) {
-                                fullMessage.push(`\nCulprit: ${pbiError.exceptionCulprit}`);
-                            }
-
-                            errorMessage = fullMessage.join('\n\n');
-                        } else {
-                            errorMessage = JSON.stringify(errorData.error, null, 2);
-                        }
-                    } else if (errorData.message) {
-                        errorMessage = errorData.message;
-                    } else if (errorData.errorCode) {
-                        // Format 4: Just an error code (like "DMTS_MonikerWithUnboundDataSources")
-                        translatedError = translateErrorCode(errorData.errorCode);
-                        errorMessage = errorData.errorCode;
-                    } else {
-                        // Fallback: show the entire JSON formatted
-                        errorMessage = JSON.stringify(errorData, null, 2);
-                    }
-                } catch (e) {
-                    // If parsing fails, just show the raw string
-                    errorMessage = refreshInfo.serviceExceptionJson || 'Failed to parse error details';
-                }
-            }
-
-            // Build the error details HTML
-            let errorDetailsHtml = '';
-
-            if (translatedError) {
-                // Show user-friendly translated error with structured sections
-                errorDetailsHtml = `
-                    <div style="margin-bottom: 16px;">
-                        <div style="font-size: 15px; font-weight: 600; color: #C53030; margin-bottom: 8px;">
-                            🚨 ${translatedError.title}
-                        </div>
-                        <div style="font-size: 13px; color: #742A2A; line-height: 1.6; margin-bottom: 12px;">
-                            ${translatedError.description}
-                        </div>
-                    </div>
-
-                    <div style="background: #FFFBEB; border-left: 3px solid #F59E0B; padding: 12px; margin-bottom: 12px; border-radius: 4px;">
-                        <div style="font-size: 12px; font-weight: 600; color: #92400E; margin-bottom: 6px;">
-                            ⚠️ COMMON CAUSES:
-                        </div>
-                        <ul style="margin: 0; padding-left: 20px; font-size: 12px; color: #78350F; line-height: 1.8;">
-                            ${translatedError.causes.map(cause => `<li>${cause}</li>`).join('')}
-                        </ul>
-                    </div>
-
-                    <div style="background: #DBEAFE; border-left: 3px solid #3B82F6; padding: 12px; margin-bottom: 12px; border-radius: 4px;">
-                        <div style="font-size: 12px; font-weight: 600; color: #1E40AF; margin-bottom: 6px;">
-                            ✅ HOW TO FIX:
-                        </div>
-                        <ol style="margin: 0; padding-left: 20px; font-size: 12px; color: #1E3A8A; line-height: 1.8;">
-                            ${translatedError.solutions.map(solution => `<li>${solution}</li>`).join('')}
-                        </ol>
-                    </div>
-
-                    <div style="background: #F3F4F6; border-radius: 4px; padding: 10px; margin-top: 12px;">
-                        <details style="cursor: pointer;">
-                            <summary style="font-size: 11px; color: #6B7280; font-weight: 600;">
-                                🔍 Technical Details (Click to expand)
-                            </summary>
-                            <div style="margin-top: 8px; font-size: 11px; color: #4B5563; font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-word;">
-                                Error Code: ${errorMessage}
-                            </div>
-                        </details>
-                    </div>
-                `;
-            } else {
-                // Show raw error message if no translation available
-                errorDetailsHtml = `
-                    <div style="background: white; border: 1px solid #FEB2B2; border-radius: 6px; padding: 14px; max-height: 400px; overflow-y: auto;">
-                        <div style="font-size: 13px; color: #742A2A; line-height: 1.8; white-space: pre-wrap; word-break: break-word; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">${errorMessage}</div>
-                    </div>
-                `;
-            }
-
-            modalHtml += `
-                <!-- Refresh Failure Reason -->
-                <div id="${refreshDetailsId}" style="display: none; background: #FFF5F5; border-left: 4px solid #F56565; padding: 16px 20px; margin: 0;">
-                    <div style="display: flex; align-items: start; gap: 12px;">
-                        <div style="font-size: 24px;">❌</div>
-                        <div style="flex: 1;">
-                            <div style="font-weight: 700; color: #C53030; font-size: 14px; margin-bottom: 12px;">Refresh Failure Reason:</div>
-                            ${errorDetailsHtml}
-                            <div style="margin-top: 12px; font-size: 12px; color: #718096;">
-                                <strong>Failed at:</strong> ${formatDateTime(refreshInfo.endTime)}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }
-
-        // Add issues section with enhanced broken visual details
-        if (issues.length > 0) {
-            // Check if we have broken visual issues
-            const brokenVisuals = issues.filter(issue => issue.category === 'Broken Visual');
-            const otherIssues = issues.filter(issue => issue.category !== 'Broken Visual');
-
-            // Separate broken and blank visuals
-            const actuallyBroken = brokenVisuals.filter(v => v.category !== 'Blank Visual');
-            const blankVisuals = brokenVisuals.filter(v => v.category === 'Blank Visual');
-
-            // NEW: Show success message if NO issues found
-            if (actuallyBroken.length === 0 && otherIssues.length === 0 && warnings.length === 0) {
-                modalHtml += `
-                    <div style="flex: 1; overflow-y: auto; padding: 24px;">
-                        <div style="background: linear-gradient(135deg, #48BB78 0%, #38A169 100%); border-radius: 12px; padding: 32px; text-align: center; box-shadow: 0 4px 12px rgba(72, 187, 120, 0.3);">
-                            <div style="font-size: 64px; margin-bottom: 16px;">✅</div>
-                            <h3 style="color: white; font-size: 24px; font-weight: 800; margin: 0 0 12px 0; text-shadow: 0 2px 4px rgba(0,0,0,0.2);">No Issues Found!</h3>
-                            <p style="color: rgba(255,255,255,0.95); font-size: 16px; margin: 0 0 20px 0; line-height: 1.6;">
-                                This report is working perfectly. All visuals are rendering correctly, and no data field issues were detected.
-                            </p>
-                            <div style="background: rgba(255,255,255,0.2); border-radius: 8px; padding: 16px; display: inline-block;">
-                                <div style="color: white; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Health Score</div>
-                                <div style="color: white; font-size: 32px; font-weight: 800;">${healthScore}/100</div>
-                            </div>
-                        </div>
-                `;
-
-                // Still show refresh info if available
-                if (refreshInfo) {
-                    modalHtml += `
-                        <div style="background: #F0FFF4; border: 1px solid #9AE6B4; border-radius: 8px; padding: 16px; margin-top: 16px;">
-                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                                <span style="font-size: 20px;">🔄</span>
-                                <span style="font-weight: 600; color: #22543D; font-size: 14px;">Refresh Status</span>
-                            </div>
-                            <div style="color: #2F855A; font-size: 13px;">
-                                <div><strong>Last Refresh:</strong> ${refreshInfo.last_refresh || 'Never'}</div>
-                                <div><strong>Status:</strong> ${refreshInfo.status || 'Unknown'}</div>
-                            </div>
-                        </div>
-                    `;
-                }
-
-                modalHtml += `</div>`;
-            }
-
-            // Show broken visuals section with enhanced schema details
-            else if (actuallyBroken.length > 0) {
-                modalHtml += `
-                    <div style="flex: 1; overflow-y: auto; padding: 16px;">
-                        <h3 style="font-size: 13px; color: #2D3748; margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px; font-weight: 700;">
-                            🔴 Broken Visuals Detected
-                            <span style="background: #F56565; color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;">${actuallyBroken.length}</span>
-                        </h3>
-                        <div style="border: 1px solid #E2E8F0; border-radius: 6px; overflow: hidden;">
-                            <div style="overflow-x: auto;">
-                                <table style="width: 100%; border-collapse: collapse; font-size: 12px; min-width: 1200px;">
-                                    <thead style="background: #F7FAFC; position: sticky; top: 0; z-index: 5;">
-                                        <tr>
-                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 140px;">PAGE</th>
-                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 200px;">VISUAL NAME</th>
-                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 140px;">TYPE</th>
-                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 160px;">ERROR</th>
-                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; min-width: 280px;">MISSING FIELDS</th>
-                                            <th style="padding: 10px 12px; text-align: left; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; min-width: 200px;">MODIFIED BY</th>
-                                            <th style="padding: 10px 12px; text-align: center; font-weight: 700; color: #2D3748; border-bottom: 2px solid #CBD5E0; white-space: nowrap; width: 80px;">DETAILS</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                `;
-
-                actuallyBroken.forEach((issue, idx) => {
-                    const bgColor = idx % 2 === 0 ? '#FFFFFF' : '#FAFAFA';
-                    const visualName = issue.visual || issue.visual_name || 'Unknown Visual';
-                    const visualType = issue.visual_type || 'Unknown';
-                    const pageName = issue.page || 'Unknown Page';
-                    const errorType = issue.error_type || '';
-                    const errorReason = issue.error_reason || errorType || issue.message || 'Unknown error';
-                    const missingFields = issue.missing_fields || [];
-
-                    // Better display for visual type
-                    let typeDisplay = visualType;
-                    if (visualType === 'Broken Visual (Unable to Load)') {
-                        typeDisplay = '<span style="color: #E53E3E;">⚠️ Failed to Load</span>';
-                    } else if (visualType === 'Unknown' || visualType === 'Unknown Visual Type') {
-                        typeDisplay = '<span style="color: #A0AEC0;">Unknown</span>';
-                    } else {
-                        typeDisplay = visualType.replace(/([A-Z])/g, ' $1').trim();
-                    }
-
-                    // Find root cause analysis
-                    const rootCauseData = rootCauseAnalysis.find(rca =>
-                        rca.visual === visualName && rca.page === pageName
-                    );
-
-                    console.log(`🔍 Issue ${idx}:`, {
-                        visualName,
-                        pageName,
-                        missingFields,
-                        rootCauseData,
-                        hasRootCause: !!rootCauseData
-                    });
-
-                    // Build compact missing fields list (show all missing fields)
-                    let missingFieldsList = '';
-                    if (missingFields && missingFields.length > 0) {
-                        missingFieldsList = missingFields.map(f => {
-                            const fieldName = f.field || f.name || f;
-                            const tableName = f.table || '';
-                            const prefix = tableName && tableName !== 'Unknown' ? `${tableName}.` : '';
-                            return `${prefix}${fieldName}`;
-                        }).filter(f => f).join(', ');
-                    } else if (visualType === 'Broken Visual (Unable to Load)') {
-                        missingFieldsList = '<span style="color: #A0AEC0; font-style: italic;">Unable to extract - visual failed to load</span>';
-                    } else {
-                        missingFieldsList = '<span style="color: #A0AEC0; font-style: italic;">No missing fields detected</span>';
-                    }
-
-                    // For detailed view, filter verified ones
-                    const verifiedMissing = missingFields.filter(f => f.verified !== false || !f.hasOwnProperty('verified'));
-
-                    console.log(`   Missing fields for ${visualName}:`, {
-                        total: missingFields.length,
-                        verified: verifiedMissing.length,
-                        fieldsList: missingFieldsList,
-                        rawMissingFields: missingFields
-                    });
-
-                    // Extract Modified By with timestamp
-                    let modifiedByDisplay = 'N/A';
-                    if (rootCauseData && rootCauseData.likely_culprit) {
-                        const culprit = rootCauseData.likely_culprit;
-                        // Try to get modification time from timeline analysis
-                        let modifiedTime = '';
-
-                        if (rootCauseData.timeline_analysis && rootCauseData.timeline_analysis.estimated_break_time) {
-                            modifiedTime = `<div style="font-size: 10px; color: #718096; margin-top: 2px;">${formatDateTime(rootCauseData.timeline_analysis.estimated_break_time)}</div>`;
-                        } else if (rootCauseData.breaking_change_correlation && rootCauseData.breaking_change_correlation.timestamp_estimate) {
-                            modifiedTime = `<div style="font-size: 10px; color: #718096; margin-top: 2px;">${formatDateTime(rootCauseData.breaking_change_correlation.timestamp_estimate)}</div>`;
-                        } else if (refreshInfo && refreshInfo.endTime) {
-                            // Fallback to refresh time if no specific modification time
-                            modifiedTime = `<div style="font-size: 10px; color: #718096; margin-top: 2px;">${formatDateTime(refreshInfo.endTime)}</div>`;
-                        }
-
-                        modifiedByDisplay = `<div style="color: #C05621; font-weight: 600;">${culprit}</div>${modifiedTime}`;
-                    }
-
-                    // Confidence badge
-                    let confidenceBadge = '';
-                    if (rootCauseData) {
-                        const conf = rootCauseData.confidence || 'Unknown';
-                        const confColor = conf === 'Very High' || conf === 'High' ? '#48BB78' : conf === 'Medium' ? '#ECC94B' : '#A0AEC0';
-                        confidenceBadge = `<span style="background: ${confColor}; color: white; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 600;">${conf}</span>`;
-                    }
-
-                    // Build detailed panel (hidden by default)
-                    let detailsHtml = '';
-                    if (rootCauseData) {
-                        detailsHtml = `
-                            <tr id="details-${idx}" style="display: none; background: #F7FAFC;">
-                                <td colspan="7" style="padding: 16px; border-bottom: 1px solid #E2E8F0;">
-                                    <div style="font-size: 12px; font-weight: 700; color: #2D3748; margin-bottom: 10px;">🔬 Root Cause Analysis ${confidenceBadge}</div>
-                                    <div style="font-size: 12px; color: #2D3748; font-weight: 600; margin-bottom: 12px;">${rootCauseData.root_cause_category}: ${rootCauseData.symptom}</div>
-                        `;
-
-                        // Missing fields detail (show all missing fields, not just verified)
-                        if (missingFields.length > 0) {
-                            detailsHtml += `<div style="margin-bottom: 12px;"><strong style="color: #C53030; font-size: 12px;">Missing Fields:</strong><br/>`;
-                            missingFields.forEach(f => {
-                                const fieldName = f.field || f.name || f;
-                                const tableName = f.table || '';
-                                const fieldType = f.type || 'column';
-                                const prefix = tableName && tableName !== 'Unknown' ? `<span style="color: #805AD5; font-weight: 600;">${tableName}</span>.` : '';
-                                detailsHtml += `<div style="font-family: 'Consolas', monospace; font-size: 11px; margin: 4px 0; color: #2D3748; font-weight: 600;">${prefix}<span style="color: #E53E3E; font-weight: 700;">${fieldName}</span> <span style="color: #718096; font-weight: 500;">(${fieldType})</span></div>`;
-                            });
-                            detailsHtml += `</div>`;
-                        }
-
-                        // Resolution options
-                        if (rootCauseData.actionable_resolution && rootCauseData.actionable_resolution.length > 0) {
-                            detailsHtml += `<div><strong style="color: #2D3748; font-size: 12px;">Resolution Options:</strong>`;
-                            rootCauseData.actionable_resolution.slice(0, 2).forEach(res => {
-                                detailsHtml += `<div style="margin-top: 8px; padding: 10px; background: white; border-radius: 4px; font-size: 11px; border-left: 3px solid #4299E1;">`;
-                                detailsHtml += `<strong style="color: #2D3748; font-weight: 700;">${res.priority}. ${res.action}</strong><br/><span style="color: #4A5568; font-weight: 500;">${res.details}</span>`;
-                                detailsHtml += `</div>`;
-                            });
-                            detailsHtml += `</div>`;
-                        }
-
-                        detailsHtml += `</td></tr>`;
-                    }
-
-                    modalHtml += `
-                        <tr style="background: ${bgColor}; border-bottom: 1px solid #E2E8F0;">
-                            <td style="padding: 10px 12px; color: #2D3748; font-weight: 600; vertical-align: middle; font-size: 12px;">${pageName}</td>
-                            <td style="padding: 10px 12px; color: #2D3748; font-weight: 700; vertical-align: middle; font-size: 12px;">${visualName}</td>
-                            <td style="padding: 10px 12px; color: #805AD5; font-weight: 600; vertical-align: middle; font-size: 12px;">${typeDisplay}</td>
-                            <td style="padding: 10px 12px; color: #E53E3E; font-family: 'Consolas', monospace; font-size: 11px; font-weight: 700; vertical-align: middle;">${errorType || 'Missing_References'}</td>
-                            <td style="padding: 10px 12px; font-family: 'Consolas', monospace; font-size: 11px; color: #2D3748; font-weight: 600; vertical-align: middle; word-break: break-word;">
-                                ${missingFieldsList}
-                            </td>
-                            <td style="padding: 10px 12px; vertical-align: middle; font-size: 11px;">${modifiedByDisplay}</td>
-                            <td style="padding: 10px 12px; text-align: center; vertical-align: middle;">
-                                ${detailsHtml ? `<button onclick="const row = document.getElementById('details-${idx}'); row.style.display = row.style.display === 'none' ? 'table-row' : 'none'; this.textContent = row.style.display === 'none' ? '▼' : '▲';" style="background: #4299E1; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 700; color: white;">▼</button>` : '—'}
-                            </td>
-                        </tr>
-                        ${detailsHtml}
-                    `;
-                });
-
-                modalHtml += `
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }
-
-            // Show blank visuals section (NEW)
-            if (blankVisuals.length > 0) {
-                modalHtml += `
-                    <div style="margin-bottom: 20px;">
-                        <h3 style="font-size: 15px; color: #2D3748; margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px;">
-                            ⚪ Blank/Empty Visuals
-                            <span style="background: #A0AEC0; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">${blankVisuals.length}</span>
-                        </h3>
-                        <div style="border: 1px solid #E2E8F0; border-radius: 8px; overflow-x: auto;">
-                            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                                <thead style="background: #F7FAFC;">
-                                    <tr>
-                                        <th style="padding: 12px 14px; text-align: left; font-weight: 700; color: #4A5568; border-bottom: 2px solid #E2E8F0; white-space: nowrap;">Visual Name</th>
-                                        <th style="padding: 12px 14px; text-align: left; font-weight: 700; color: #4A5568; border-bottom: 2px solid #E2E8F0; white-space: nowrap;">Page</th>
-                                        <th style="padding: 12px 14px; text-align: left; font-weight: 700; color: #4A5568; border-bottom: 2px solid #E2E8F0; width: 100%;">Reason</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                `;
-
-                blankVisuals.forEach((issue, idx) => {
-                    const bgColor = idx % 2 === 0 ? '#FFFFFF' : '#F7FAFC';
-                    const visualName = issue.visual || issue.visual_name || 'Unnamed';
-                    const pageName = issue.page || 'Unknown Page';
-                    const reason = issue.root_cause || issue.error_reason || 'Visual has no type configuration';
-
-                    modalHtml += `
-                        <tr style="background: ${bgColor}; border-bottom: 1px solid #E2E8F0;">
-                            <td style="padding: 12px 14px; color: #2D3748; font-weight: 600; white-space: nowrap;">
-                                <div style="display: flex; align-items: center; gap: 6px;">
-                                    <span>⚪</span>
-                                    <span>${visualName}</span>
-                                </div>
-                            </td>
-                            <td style="padding: 12px 14px; color: #4A5568; font-size: 12px; white-space: nowrap;">${pageName}</td>
-                            <td style="padding: 12px 14px; color: #4A5568; font-size: 12px;">${reason}</td>
-                        </tr>
-                    `;
-                });
-
-                modalHtml += `
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                `;
-            }
-
-            // Show other issues if any
-            if (otherIssues.length > 0) {
-                modalHtml += `
-                    <div style="margin-bottom: 20px;">
-                        <h3 style="font-size: 15px; color: #2D3748; margin: 0 0 10px 0;">❌ Other Critical Issues</h3>
-                `;
-                otherIssues.forEach((issue, idx) => {
-                    // Check if this is a Dataset Health issue with an error message
-                    const errorMessage = issue.error_message || null;
-                    const showErrorDetails = issue.category === 'Dataset Health' && errorMessage;
-
-                    modalHtml += `
-                        <div style="background: #FFF5F5; padding: 12px; border-radius: 6px; margin-bottom: 8px; border-left: 3px solid #F56565;">
-                            <div style="font-weight: 600; color: #C53030; font-size: 13px; margin-bottom: 4px;">${issue.category || 'Issue'}</div>
-                            <div style="font-size: 13px; color: #2D3748;">${issue.message || issue.description || 'No description'}</div>
-                            ${showErrorDetails ? `
-                                <div style="background: #FFFBEB; border: 1px solid #FCD34D; border-radius: 4px; padding: 10px; margin-top: 8px;">
-                                    <div style="font-weight: 600; color: #B45309; font-size: 12px; margin-bottom: 4px;">🔍 Error Details:</div>
-                                    <div style="font-family: 'Courier New', monospace; font-size: 12px; color: #92400E; white-space: pre-wrap; word-break: break-word;">${errorMessage}</div>
-                                </div>
-                            ` : ''}
-                            ${issue.recommendation ? `<div style="font-size: 12px; color: #718096; margin-top: 4px;">💡 ${issue.recommendation}</div>` : ''}
-                        </div>
-                    `;
-                });
-                modalHtml += `</div>`;
-            }
-        }
-
-        // Close container
-        modalHtml += `
-                </div>
+        let bodyHtml = `
+          <div class="ct-section">
+            <div class="ct-empty" style="text-align:left;padding:12px 14px">
+              <div style="font-size:12px;font-weight:700;color:var(--text-strong);margin-bottom:4px">What this means</div>
+              <div style="font-size:12px;line-height:1.5">
+                Health score starts at <strong>100</strong> and drops for each finding
+                (Critical −20, High −10, Medium −5, Warning −2).
+                <strong style="color:${scoreColor}">${healthScore}/100 (${esc(statusLabel)})</strong>
+                ${meaning}
+              </div>
             </div>
-        `;
+          </div>`;
 
-        // Add to DOM
+        if (scoreBreakdown) {
+            bodyHtml += `
+              <div class="ct-section">
+                <h3>Score breakdown</h3>
+                <div style="display:flex;flex-wrap:wrap;gap:6px">
+                  <span class="ct-chip">Start ${esc(scoreBreakdown.starting_score ?? 100)}</span>
+                  <span class="ct-chip">Critical ×${esc(scoreBreakdown.critical_issues || 0)} (−${esc(scoreBreakdown.critical_deduction || 0)})</span>
+                  <span class="ct-chip">High ×${esc(scoreBreakdown.high_issues || 0)} (−${esc(scoreBreakdown.high_deduction || 0)})</span>
+                  <span class="ct-chip">Medium ×${esc(scoreBreakdown.medium_issues || 0)} (−${esc(scoreBreakdown.medium_deduction || 0)})</span>
+                  <span class="ct-chip">Warnings ×${esc(scoreBreakdown.warnings || 0)} (−${esc(scoreBreakdown.warning_deduction || 0)})</span>
+                </div>
+              </div>`;
+        }
+
+        if (brokenVisuals.length) {
+            const rows = brokenVisuals.map((issue) => {
+                const visualName = issue.visual || issue.visual_name || 'Unknown visual';
+                const pageName = issue.page || '—';
+                const err = issue.error_type || issue.error_reason || issue.message || 'Error';
+                const missing = (issue.missing_fields || []).map(f => {
+                    if (typeof f === 'string') return f;
+                    const t = f.table && f.table !== 'Unknown' ? f.table + '.' : '';
+                    return t + (f.field || f.name || '');
+                }).filter(Boolean).join(', ') || '—';
+                const rca = rootCauseAnalysis.find(r => r.visual === visualName) || {};
+                const who = rca.likely_culprit || issue.modified_by || '—';
+                return `<tr>
+                  <td>${esc(pageName)}</td>
+                  <td><strong>${esc(visualName)}</strong></td>
+                  <td style="color:#E53E3E;font-family:ui-monospace,monospace;font-size:11px">${esc(err)}</td>
+                  <td style="font-family:ui-monospace,monospace;font-size:11px">${esc(missing)}</td>
+                  <td>${esc(who)}</td>
+                </tr>`;
+            }).join('');
+            bodyHtml += `
+              <div class="ct-section">
+                <h3>Broken visuals <span class="ct-badge" style="background:#E53E3E">${brokenVisuals.length}</span></h3>
+                <div class="ct-table-wrap"><table>
+                  <thead><tr>
+                    <th>Page</th><th>Visual</th><th>Error</th><th>Missing fields</th><th>Modified by</th>
+                  </tr></thead>
+                  <tbody>${rows}</tbody>
+                </table></div>
+              </div>`;
+        }
+
+        if (otherIssues.length) {
+            bodyHtml += `<div class="ct-section"><h3>Issues <span class="ct-badge" style="background:#E53E3E">${otherIssues.length}</span></h3>`;
+            otherIssues.forEach((issue) => {
+                const cat = issue.category || 'Issue';
+                const desc = issue.message || issue.description || 'No description';
+                const rec = issue.recommendation || '';
+                const detail = issue.error_message
+                    ? `<div class="rec" style="margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap">${esc(issue.error_message)}</div>`
+                    : '';
+                bodyHtml += `
+                  <div class="ct-issue">
+                    <div class="cat">${esc(cat)}${issue.severity ? ' · ' + esc(issue.severity) : ''}</div>
+                    <div class="desc">${esc(desc)}</div>
+                    ${detail}
+                    ${rec ? `<div class="rec">Fix: ${esc(rec)}</div>` : ''}
+                  </div>`;
+            });
+            bodyHtml += `</div>`;
+        }
+
+        if (blankVisuals.length) {
+            bodyHtml += `<div class="ct-section"><h3>Blank / empty visuals <span class="ct-badge" style="background:#718096">${blankVisuals.length}</span></h3>`;
+            blankVisuals.forEach((issue) => {
+                bodyHtml += `
+                  <div class="ct-issue" style="border-left-color:#A0AEC0">
+                    <div class="cat" style="color:var(--text-muted)">${esc(issue.visual || issue.visual_name || 'Visual')} · ${esc(issue.page || '—')}</div>
+                    <div class="desc">${esc(issue.root_cause || issue.error_reason || issue.description || 'Empty visual')}</div>
+                  </div>`;
+            });
+            bodyHtml += `</div>`;
+        }
+
+        if (warnings.length) {
+            bodyHtml += `<div class="ct-section"><h3>Warnings <span class="ct-badge" style="background:#D69E2E">${warnings.length}</span></h3>`;
+            warnings.forEach((w) => {
+                bodyHtml += `
+                  <div class="ct-issue" style="border-left-color:#D69E2E">
+                    <div class="cat" style="color:#B7791F">${esc(w.category || 'Warning')}</div>
+                    <div class="desc">${esc(w.message || w.description || 'Warning')}</div>
+                    ${w.recommendation ? `<div class="rec">${esc(w.recommendation)}</div>` : ''}
+                  </div>`;
+            });
+            bodyHtml += `</div>`;
+        }
+
+        if (!issues.length && !warnings.length) {
+            bodyHtml += `
+              <div class="ct-section">
+                <div class="ct-empty">
+                  <div>No issues found</div>
+                  <div class="big" style="color:${scoreColor}">${healthScore}/100</div>
+                  <div>All checked areas look healthy for this run.</div>
+                </div>
+              </div>`;
+        }
+
+        document.querySelectorAll('.ct-backdrop').forEach(el => el.remove());
+
+        const modalHtml = `
+          <div class="ct-backdrop" role="dialog" aria-modal="true" aria-label="Crash test results" onclick="if(event.target===this)this.remove()">
+            <div class="ct-modal">
+              <div class="ct-head">
+                <div style="min-width:0">
+                  <div class="ct-kicker">Crash test results</div>
+                  <h2>${esc(reportName)}</h2>
+                </div>
+                <div class="ct-head-actions">
+                  <a href="${esc(reportLink)}" target="_blank" rel="noopener">Open report</a>
+                  <button type="button" onclick="this.closest('.ct-backdrop').remove()">Close</button>
+                </div>
+              </div>
+              <div class="ct-summary">
+                <div class="ct-score">
+                  <span class="n" style="color:${scoreColor}">${healthScore}</span>
+                  <span class="l">/ 100 · ${esc(statusLabel)}</span>
+                </div>
+                <span class="ct-chip">Issues: <strong>${issues.length}</strong></span>
+                <span class="ct-chip">Warnings: <strong>${warnings.length}</strong></span>
+                ${refreshChip}
+              </div>
+              <div class="ct-body">${bodyHtml}</div>
+            </div>
+          </div>`;
+
         document.body.insertAdjacentHTML('beforeend', modalHtml);
     }
 
