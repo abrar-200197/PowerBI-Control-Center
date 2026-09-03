@@ -276,7 +276,14 @@ def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, An
 def _dataset_feed_folder() -> str:
     """
     Stable SharePoint folder for the Power BI programme dataset source files.
-    Default: sibling of archive batches — …/Report Decommission Activity/_dataset_feed
+
+    Default (requested):
+      …/Backup - Reports & Archives/PowerBI Reports MetaData/_dataset_feed
+
+    Uses SHAREPOINT_FOLDER_PATH (catalog metadata root), NOT the PBIX archive tree
+    under Report Decommission Activity.
+
+    Override: DECOMM_DATASET_FEED_FOLDER
     """
     import os
     from catalog_service import catalog_config as cfg
@@ -284,10 +291,37 @@ def _dataset_feed_folder() -> str:
     override = (os.getenv("DECOMM_DATASET_FEED_FOLDER") or "").strip().strip("/")
     if override:
         return override
-    base = (getattr(cfg, "SHAREPOINT_DECOMM_FOLDER_PATH", None) or "").strip("/")
-    if not base:
-        return "_dataset_feed"
-    return f"{base}/_dataset_feed"
+
+    meta = (getattr(cfg, "SHAREPOINT_FOLDER_PATH", None) or "").strip().strip("/")
+    decomm = (getattr(cfg, "SHAREPOINT_DECOMM_FOLDER_PATH", None) or "").strip().strip("/")
+    archives_parent = ""
+    if decomm:
+        p = str(PurePosixPath(decomm).parent).strip("/")
+        if p and p != ".":
+            archives_parent = p  # …/Backup - Reports & Archives
+
+    def _under_meta(meta_path: str) -> str:
+        m = meta_path.strip().strip("/")
+        if not m:
+            return ""
+        low = m.lower()
+        if low.endswith("/_dataset_feed") or low == "_dataset_feed":
+            return m
+        return f"{m}/_dataset_feed"
+
+    # Full metadata root already configured (preferred production value)
+    if meta and ("/" in meta or meta.lower().startswith("ba ")):
+        return _under_meta(meta)
+
+    # Short default "PowerBI Reports MetaData" → nest under Backup… Archives
+    if meta and archives_parent:
+        return _under_meta(f"{archives_parent}/{meta}")
+    if meta:
+        return _under_meta(meta)
+
+    if archives_parent:
+        return _under_meta(f"{archives_parent}/PowerBI Reports MetaData")
+    return "PowerBI Reports MetaData/_dataset_feed"
 
 
 def _excel_bytes_from_rows(rows: List[Dict[str, Any]], *, generated_at: str) -> bytes:
