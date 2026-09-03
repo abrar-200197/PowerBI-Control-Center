@@ -4,33 +4,35 @@
 {% block page_subtitle %}Programme overview + SharePoint archive inventory{% endblock %}
 {% block extra_css %}
 <style>
-.page-shell{display:flex;flex-direction:column;gap:12px}
+.page-shell{display:flex;flex-direction:column;gap:8px;min-height:0}
+/* Compact segmented tabs (inline, not a full card block) */
 .decomm-tabs{
-  display:flex;flex-wrap:wrap;align-items:center;gap:8px;
-  background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;
-  padding:8px 10px;box-shadow:var(--shadow-sm);
+  display:inline-flex;flex-wrap:wrap;align-items:center;gap:2px;
+  background:var(--bg-surface-2,var(--bg-surface));border:1px solid var(--border);border-radius:8px;
+  padding:3px;box-shadow:none;align-self:flex-start;
 }
 .decomm-tab{
-  height:34px;padding:0 14px;border-radius:6px;border:1px solid transparent;
-  background:transparent;color:var(--text-muted);font-size:13px;font-weight:600;
-  cursor:pointer;
+  height:28px;padding:0 12px;border-radius:6px;border:1px solid transparent;
+  background:transparent;color:var(--text-muted);font-size:12px;font-weight:600;
+  cursor:pointer;line-height:1;
 }
 .decomm-tab:hover{background:var(--table-hover);color:var(--text)}
 .decomm-tab.active{
-  background:rgba(43,108,176,.12);color:var(--text-strong);border-color:rgba(43,108,176,.35);
+  background:var(--bg-surface);color:var(--text-strong);border-color:var(--border);
+  box-shadow:var(--shadow-sm);
 }
-.decomm-tab-panel{display:none;flex-direction:column;gap:12px}
+.decomm-tab-panel{display:none;flex-direction:column;gap:8px;min-height:0;flex:1}
 .decomm-tab-panel.active{display:flex}
 .overview-toolbar{
-  display:flex;flex-wrap:wrap;align-items:center;gap:10px;
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px;
   background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;
-  padding:10px 14px;box-shadow:var(--shadow-sm);
+  padding:6px 10px;box-shadow:var(--shadow-sm);
 }
 .overview-toolbar .ov-title{font-weight:600;color:var(--text-strong);font-size:13px;margin-right:auto}
 .overview-frame-wrap{
   background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;
   box-shadow:var(--shadow-sm);overflow:hidden;min-height:520px;
-  height:calc(100vh - 220px);
+  height:calc(100vh - 180px);
   position:relative;
 }
 #pbiEmbedContainer{width:100%;height:100%;min-height:520px}
@@ -39,53 +41,101 @@
 }
 .overview-fallback h3{color:var(--text-strong);margin:0 0 8px;font-size:16px}
 .overview-fallback p{margin:0 0 14px;font-size:13px;line-height:1.45}
-.stats-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-@media(max-width:900px){.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.stat-card{background:var(--bg-surface);padding:12px 14px;border-radius:8px;border:1px solid var(--border);box-shadow:var(--shadow-sm)}
-.stat-value{font-size:22px;font-weight:700;margin:4px 0 0;font-variant-numeric:tabular-nums;color:var(--text-strong)}
-.stat-label{color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;box-shadow:var(--shadow-sm)}
-.controls input,.controls select{height:34px;border:1px solid var(--border);border-radius:6px;padding:0 10px;background:var(--input-bg);color:var(--text);font-size:13px;min-width:160px}
-.ws-filter-wrap{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+/* Single dense chrome: KPIs + filters + actions in one surface */
+.detail-chrome{
+  display:flex;flex-direction:column;gap:6px;
+  background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;
+  padding:8px 10px;box-shadow:var(--shadow-sm);
+}
+.detail-chrome-row{
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;
+}
+/* Inline metric chips (not full-width cards) */
+.stats-grid{
+  display:flex;flex-wrap:wrap;align-items:stretch;gap:6px;
+  flex:1 1 auto;min-width:0;
+}
+.stat-card{
+  display:inline-flex;align-items:baseline;gap:6px;
+  background:var(--bg-surface-2,var(--input-bg));
+  padding:4px 10px;border-radius:6px;border:1px solid var(--border);
+  box-shadow:none;min-height:28px;line-height:1.2;
+}
+.stat-value{
+  font-size:14px;font-weight:700;margin:0;
+  font-variant-numeric:tabular-nums;color:var(--text-strong);white-space:nowrap;
+}
+.stat-label{
+  color:var(--text-muted);font-size:10px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;
+}
+.controls{
+  display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;
+  background:transparent;border:0;border-radius:0;padding:0;box-shadow:none;
+  flex:1 1 320px;min-width:0;
+}
+.controls input,.controls select{
+  height:28px;border:1px solid var(--border);border-radius:6px;
+  padding:0 8px;background:var(--input-bg);color:var(--text);font-size:12px;min-width:140px;
+}
+.controls input[type="search"]{flex:1 1 160px;min-width:140px;max-width:280px}
+.ws-filter-wrap{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .btn-clear-ws{
-  height:34px;padding:0 12px;font-size:12px;font-weight:600;
+  height:28px;padding:0 10px;font-size:11px;font-weight:600;
   border:1px solid var(--border);border-radius:6px;
   background:var(--bg-surface-2,var(--input-bg));color:var(--text);
   cursor:pointer;white-space:nowrap;
 }
 .btn-clear-ws:hover{background:var(--table-hover);border-color:var(--text-muted)}
 .btn-clear-ws[hidden]{display:none !important}
-.note{font-size:12px;color:var(--text-muted);padding:8px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px}
-.table-wrap{background:var(--bg-surface);border-radius:8px;border:1px solid var(--border);box-shadow:var(--shadow-sm);overflow:auto;max-height:calc(100vh - 300px)}
+.note{
+  font-size:11px;color:var(--text-muted);padding:0;margin:0;
+  background:transparent;border:0;border-radius:0;
+  line-height:1.35;max-width:100%;
+}
+.table-wrap{
+  background:var(--bg-surface);border-radius:8px;border:1px solid var(--border);
+  box-shadow:var(--shadow-sm);overflow:auto;flex:1;min-height:280px;
+  max-height:calc(100vh - 210px);
+}
+.detail-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto}
+.detail-actions .btn,
+.detail-actions .btn-ws-toggle,
+.overview-toolbar .btn{height:28px !important;padding:0 10px;font-size:12px;line-height:1}
+@media(max-width:720px){
+  .detail-chrome-row{flex-direction:column;align-items:stretch}
+  .detail-actions{margin-left:0;justify-content:flex-start}
+  .controls input[type="search"]{max-width:none}
+}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;background:var(--bg-surface);z-index:1}
-td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:top}
+th{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;background:var(--bg-surface);z-index:1}
+td{padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:top}
 tr:hover td{background:rgba(127,127,127,.06)}
 .ws-head td{background:rgba(43,108,176,.08);font-weight:600;color:var(--text-strong);padding:0}
 .ws-head-btn{
-  width:100%;display:flex;align-items:center;gap:10px;justify-content:space-between;
-  padding:10px 12px;border:0;background:transparent;color:inherit;font:inherit;font-weight:600;
+  width:100%;display:flex;align-items:center;gap:8px;justify-content:space-between;
+  padding:8px 10px;border:0;background:transparent;color:inherit;font:inherit;font-weight:600;
   cursor:pointer;text-align:left;
 }
 .ws-head-btn:hover{background:rgba(127,127,127,.08)}
-.ws-head-left{display:flex;align-items:center;gap:10px;min-width:0}
+.ws-head-left{display:flex;align-items:center;gap:8px;min-width:0}
 .ws-chevron{
   display:inline-flex;align-items:center;justify-content:center;
-  width:22px;height:22px;border-radius:4px;flex-shrink:0;
-  background:rgba(127,127,127,.12);font-size:11px;line-height:1;color:var(--text-muted);
+  width:20px;height:20px;border-radius:4px;flex-shrink:0;
+  background:rgba(127,127,127,.12);font-size:10px;line-height:1;color:var(--text-muted);
   transition:transform .15s ease;
 }
 .ws-head.open .ws-chevron{color:var(--text-strong)}
 .ws-count{
-  display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:999px;
+  display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;
   background:var(--chip-bg);border:1px solid var(--border);font-size:11px;font-weight:700;
   color:var(--text-strong);font-variant-numeric:tabular-nums;white-space:nowrap;
 }
 /* Report detail rows only exist in DOM when group is expanded (no CSS hide) */
 tr.ws-row td{background:var(--bg-surface)}
-.ws-toggle-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
+.ws-toggle-bar{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .btn-ws-toggle{
-  height:34px;padding:0 12px;font-size:12px;font-weight:600;
+  height:28px;padding:0 10px;font-size:11px;font-weight:600;
   border:1px solid var(--border);border-radius:6px;
   background:var(--bg-surface-2,var(--input-bg));color:var(--text);
   cursor:pointer;white-space:nowrap;
@@ -136,10 +186,10 @@ html[data-theme="dark"] a.link{color:#63b3ed}
     <div class="overview-toolbar">
       <span class="ov-title" id="ovTitle">{{ dd.title or 'Decommissioning Programme' }}</span>
       <span id="ovSyncStatus" class="muted" style="font-size:12px;color:var(--text-muted)"></span>
-      <button type="button" class="btn btn-secondary" id="ovSyncFeedBtn" style="height:34px"
+      <button type="button" class="btn btn-secondary" id="ovSyncFeedBtn"
               title="Publish latest archive inventory to SharePoint feed and refresh the Power BI dataset">Sync data</button>
-      <button type="button" class="btn btn-secondary" id="ovReloadBtn" style="height:34px" title="Reload embedded report">Reload</button>
-      <a class="btn btn-primary" id="ovOpenServiceBtn" style="height:34px;display:inline-flex;align-items:center;text-decoration:none"
+      <button type="button" class="btn btn-secondary" id="ovReloadBtn" title="Reload embedded report">Reload</button>
+      <a class="btn btn-primary" id="ovOpenServiceBtn" style="display:inline-flex;align-items:center;text-decoration:none"
          href="{{ dd.serviceUrl or '#' }}" target="_blank" rel="noopener"
          {% if not dd.serviceUrl or 'groups/' not in (dd.serviceUrl or '') %}hidden{% endif %}>Open in Power BI</a>
     </div>
@@ -152,25 +202,31 @@ html[data-theme="dark"] a.link{color:#63b3ed}
 
   <!-- Detail: existing SharePoint inventory (unchanged behaviour) -->
   <div class="decomm-tab-panel active" id="panelDetail" role="tabpanel" aria-labelledby="tabDetailBtn">
-    <div class="note" id="noteBar">Loading archive inventory from SharePoint…</div>
-    <div class="stats-grid" id="stats" style="display:none">
-      <div class="stat-card"><div class="stat-label">Reports</div><div class="stat-value" id="stTotal">0</div></div>
-      <div class="stat-card"><div class="stat-label">Workspaces</div><div class="stat-value" id="stWs">0</div></div>
-      <div class="stat-card"><div class="stat-label">Batch folders</div><div class="stat-value" id="stBatch">0</div></div>
-      <div class="stat-card"><div class="stat-label">Source</div><div class="stat-value" style="font-size:14px" id="stSrc">SharePoint</div></div>
-    </div>
-    <div class="controls">
-      <div class="ws-filter-wrap">
-        <select id="wsFilter" aria-label="Filter by workspace"><option value="">All workspaces</option></select>
-        <button type="button" class="btn-clear-ws" id="clearWsBtn" hidden title="Show all workspaces">Clear</button>
+    <div class="detail-chrome">
+      <div class="detail-chrome-row">
+        <div class="stats-grid" id="stats" style="display:none" aria-live="polite">
+          <div class="stat-card"><span class="stat-label">Reports</span><span class="stat-value" id="stTotal">0</span></div>
+          <div class="stat-card"><span class="stat-label">Workspaces</span><span class="stat-value" id="stWs">0</span></div>
+          <div class="stat-card"><span class="stat-label">Batches</span><span class="stat-value" id="stBatch">0</span></div>
+          <div class="stat-card"><span class="stat-label">Source</span><span class="stat-value" id="stSrc">SharePoint</span></div>
+        </div>
+        <div class="controls">
+          <div class="ws-filter-wrap">
+            <select id="wsFilter" aria-label="Filter by workspace"><option value="">All workspaces</option></select>
+            <button type="button" class="btn-clear-ws" id="clearWsBtn" hidden title="Show all workspaces">Clear</button>
+          </div>
+          <input type="search" id="qFilter" placeholder="Search report, folder, batch…" aria-label="Search reports" />
+        </div>
+        <div class="detail-actions">
+          <div class="ws-toggle-bar">
+            <button type="button" class="btn-ws-toggle" id="expandAllBtn" title="Expand all workspace groups">Expand all</button>
+            <button type="button" class="btn-ws-toggle" id="collapseAllBtn" title="Collapse all workspace groups">Collapse all</button>
+          </div>
+          <button type="button" class="btn btn-primary" id="exportBtn" title="Download Excel of decommissioned reports (current filters)">Export</button>
+          <button type="button" class="btn btn-secondary" id="refreshBtn">Refresh</button>
+        </div>
       </div>
-      <input type="search" id="qFilter" placeholder="Search report, folder, batch…" />
-      <div class="ws-toggle-bar">
-        <button type="button" class="btn-ws-toggle" id="expandAllBtn" title="Expand all workspace groups">Expand all</button>
-        <button type="button" class="btn-ws-toggle" id="collapseAllBtn" title="Collapse all workspace groups">Collapse all</button>
-      </div>
-      <button type="button" class="btn btn-primary" id="exportBtn" style="height:34px" title="Download Excel of decommissioned reports (current filters)">Export</button>
-      <button type="button" class="btn btn-secondary" id="refreshBtn" style="height:34px">Refresh</button>
+      <div class="note" id="noteBar">Loading archive inventory from SharePoint…</div>
     </div>
     <div class="table-wrap" id="tableHost">
       <div class="loading"><div class="spinner"></div>Scanning SharePoint decommission folders…</div>
@@ -294,7 +350,7 @@ function render(){
     });
   }
   const names=Object.keys(by).sort((a,b)=>a.localeCompare(b));
-  $('stats').style.display='grid';
+  $('stats').style.display='flex';
   $('stTotal').textContent=rows.length;
   // Workspace KPI: distinct groups on screen (includes empty folders when listed)
   $('stWs').textContent=names.length;
