@@ -591,40 +591,77 @@ async function syncDecommDatasetFeed(){
   const original=btn?btn.innerHTML:'Sync data';
   try{
     if(btn){btn.disabled=true;btn.innerHTML='Syncing…';}
-    if(st) st.textContent='Publishing inventory feed…';
-    const res=await fetch('/api/decommissioned-reports/publish-dataset-feed?refresh_dataset=1',{
-      method:'POST',
-      credentials:'include',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({refresh_dataset:true, force_inventory_refresh:true}),
-    });
+    if(st){
+      st.title='';
+      st.textContent='1/3 Scanning archive → building Excel feed…';
+    }
+    // Full path: rebuild inventory → upload _dataset_feed xlsx/csv → refresh PBI dataset (wait ~90s)
+    const res=await fetch(
+      '/api/decommissioned-reports/publish-dataset-feed?refresh_dataset=1&wait_refresh=1',
+      {
+        method:'POST',
+        credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          refresh_dataset:true,
+          force_inventory_refresh:true,
+          wait_refresh:true,
+          wait_sec:90,
+        }),
+      }
+    );
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.success){
       throw new Error(data.error || (data.publish && data.publish.error) || ('HTTP '+res.status));
     }
     const pub=data.publish||{};
     const n=pub.rowCount!=null?pub.rowCount:'?';
-    let msg=`Feed updated (${n} reports)`;
+    let msg=`Feed uploaded (${n} reports)`;
+    if(pub.xlsxPath){
+      const shortPath=pub.xlsxPath.split('/').slice(-2).join('/');
+      msg+=` → ${shortPath}`;
+      if(st) st.title=pub.xlsxPath+(pub.xlsxUrl?('\n'+pub.xlsxUrl):'');
+    }
     const ref=data.datasetRefresh;
+    const wait=data.refreshWait;
     if(ref && ref.success){
-      msg+=' · dataset refresh started';
+      if(wait && wait.success){
+        msg+=' · dataset refresh completed';
+      } else if(wait && wait.timedOut){
+        msg+=' · refresh still running (will catch up shortly)';
+      } else if(wait && wait.error){
+        msg+=' · refresh started (wait: '+(wait.error||'n/a')+')';
+      } else {
+        msg+=' · dataset refresh started';
+      }
     } else if(ref && ref.skipped){
-      msg+=' · refresh skipped (no dataset id) — schedule refresh in PBI on the feed file';
+      msg+=' · refresh skipped (no dataset id) — use PBI schedule on the feed file';
     } else if(ref && !ref.success){
-      // Feed OK is the important part; API refresh often needs Contributor
       const short=(data.warning||ref.error||'refresh not allowed').toString();
       msg+=' · feed OK; dataset API refresh failed';
       console.warn('decomm dataset refresh', ref);
-      if(st) st.title=short;
+      if(st) st.title=(st.title?st.title+'\n':'')+short;
     } else if(data.warning){
       msg+=' · '+data.warning;
     }
-    if(pub.xlsxPath) msg+=` · ${pub.xlsxPath.split('/').slice(-2).join('/')}`;
     if(st) st.textContent=msg;
-    // Soft reload embed after a short delay so refresh can start applying
-    if(ACTIVE_TAB==='overview' && ref && ref.success){
-      setTimeout(()=>{overviewLoaded=false;ensureOverviewLoaded(true);}, 4000);
-    }
+
+    // Refresh Detail inventory from SharePoint (same archive trees)
+    try{
+      if(st) st.textContent=msg+' · reloading Detail…';
+      await loadData(true);
+    }catch(e){ console.warn('detail reload after sync', e); }
+
+    // Reload Overview embed so visuals pick up refreshed dataset
+    try{
+      overviewLoaded=false;
+      if(ACTIVE_TAB==='overview'){
+        if(st) st.textContent=msg+' · reloading Overview…';
+        await ensureOverviewLoaded(true);
+      }
+    }catch(e){ console.warn('overview reload after sync', e); }
+
+    if(st) st.textContent=msg;
   }catch(e){
     if(st) st.textContent='Sync failed: '+(e.message||e);
     alert('Sync data failed: '+(e.message||e));

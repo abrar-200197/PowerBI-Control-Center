@@ -605,3 +605,112 @@ def trigger_decommission_dataset_refresh(
             "stage": "refresh",
             "datasetId": dataset_id,
         }
+
+
+def wait_decommission_dataset_refresh(
+    *,
+    access_token: str,
+    workspace_id: Optional[str] = None,
+    dataset_id: Optional[str] = None,
+    max_wait_sec: int = 90,
+    poll_sec: float = 3.0,
+) -> Dict[str, Any]:
+    """
+    Poll latest dataset refresh until Completed/Failed or timeout.
+    Used after Sync data so Overview embed reloads with fresher data when possible.
+    """
+    import os
+    import time
+    import requests
+
+    workspace_id = (workspace_id or os.getenv("DECOMM_DASHBOARD_WORKSPACE_ID") or "").strip()
+    dataset_id = (dataset_id or os.getenv("DECOMM_DASHBOARD_DATASET_ID") or "").strip()
+    if not access_token or not dataset_id:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "token or dataset_id missing",
+            "stage": "wait",
+        }
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    if workspace_id:
+        hist_url = (
+            f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}"
+            f"/datasets/{dataset_id}/refreshes?$top=1"
+        )
+    else:
+        hist_url = (
+            f"https://api.powerbi.com/v1.0/myorg/datasets/{dataset_id}/refreshes?$top=1"
+        )
+
+    deadline = time.time() + max(15, int(max_wait_sec))
+    last_status = ""
+    last_row: Dict[str, Any] = {}
+    try:
+        while time.time() < deadline:
+            resp = requests.get(hist_url, headers=headers, timeout=30)
+            if resp.status_code == 404 and workspace_id:
+                # Fallback to tenant-scoped history
+                hist_url = (
+                    f"https://api.powerbi.com/v1.0/myorg/datasets/"
+                    f"{dataset_id}/refreshes?$top=1"
+                )
+                resp = requests.get(hist_url, headers=headers, timeout=30)
+            if not resp.ok:
+                return {
+                    "success": False,
+                    "error": f"refresh history HTTP {resp.status_code}: {(resp.text or '')[:200]}",
+                    "stage": "wait",
+                    "datasetId": dataset_id,
+                    "workspaceId": workspace_id or None,
+                }
+            values = (resp.json() or {}).get("value") or []
+            last_row = values[0] if values else {}
+            last_status = str(last_row.get("status") or "").strip()
+            # Unknown / Completed / Failed / Disabled / Cancelled
+            low = last_status.lower()
+            if low in ("completed", "failed", "disabled", "cancelled"):
+                ok = low == "completed"
+                return {
+                    "success": ok,
+                    "status": last_status,
+                    "endTime": last_row.get("endTime"),
+                    "startTime": last_row.get("startTime"),
+                    "refreshType": last_row.get("refreshType"),
+                    "serviceExceptionJson": last_row.get("serviceExceptionJson"),
+                    "datasetId": dataset_id,
+                    "workspaceId": workspace_id or None,
+                    "stage": "wait",
+                    "message": (
+                        "Dataset refresh completed"
+                        if ok
+                        else f"Dataset refresh ended: {last_status or 'unknown'}"
+                    ),
+                }
+            time.sleep(max(1.0, float(poll_sec)))
+
+        return {
+            "success": False,
+            "timedOut": True,
+            "status": last_status or "Unknown",
+            "datasetId": dataset_id,
+            "workspaceId": workspace_id or None,
+            "stage": "wait",
+            "message": (
+                "Refresh still running after wait — Overview will reload; "
+                "data may catch up shortly in the service."
+            ),
+            "lastRow": {
+                "status": last_row.get("status"),
+                "startTime": last_row.get("startTime"),
+            },
+        }
+    except Exception as ex:
+        logger.exception("decomm refresh wait failed")
+        return {
+            "success": False,
+            "error": str(ex),
+            "stage": "wait",
+            "datasetId": dataset_id,
+        }

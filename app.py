@@ -2475,6 +2475,7 @@ def api_decommissioned_publish_dataset_feed():
         from features.decommission_inventory import (
             publish_decommission_dataset_feed,
             trigger_decommission_dataset_refresh,
+            wait_decommission_dataset_refresh,
         )
 
         body = request.get_json(silent=True) or {}
@@ -2483,12 +2484,35 @@ def api_decommissioned_publish_dataset_feed():
             .strip()
             .lower()
         )
-        do_refresh = refresh_flag in ('1', 'true', 'yes', 'on')
+        # Default ON for Sync data button (export → SharePoint → refresh)
+        if refresh_flag in ('', 'none'):
+            do_refresh = True
+        else:
+            do_refresh = refresh_flag in ('1', 'true', 'yes', 'on')
+
+        wait_flag = str(
+            request.args.get('wait_refresh')
+            or body.get('wait_refresh')
+            or os.getenv('DECOMM_SYNC_WAIT_REFRESH')
+            or '1'
+        ).strip().lower()
+        do_wait = wait_flag in ('1', 'true', 'yes', 'on')
+        try:
+            wait_sec = int(
+                request.args.get('wait_sec')
+                or body.get('wait_sec')
+                or os.getenv('DECOMM_SYNC_WAIT_SEC')
+                or 90
+            )
+        except Exception:
+            wait_sec = 90
+        wait_sec = max(15, min(wait_sec, 300))
 
         force = str(
             request.args.get('refresh') or body.get('force_inventory_refresh') or '1'
         ).lower() in ('1', 'true', 'yes', 'on')
 
+        print(f"   📦 decomm Sync data: publish feed force={force} refresh={do_refresh}")
         result = publish_decommission_dataset_feed(force_inventory_refresh=force)
         if not result.get('success'):
             return jsonify(result), 502
@@ -2497,18 +2521,17 @@ def api_decommissioned_publish_dataset_feed():
             'success': True,
             'publish': result,
             'datasetRefresh': None,
+            'refreshWait': None,
             # SharePoint feed path for Power BI Get Data (always useful even if refresh fails)
             'feedNote': (
-                'Inventory file updated. Point the dataset at SharePoint '
-                f"{result.get('xlsxPath') or result.get('folder') or '_dataset_feed'} "
-                'and schedule refresh if API refresh is not allowed.'
+                'Inventory file updated on SharePoint. '
+                f"Path: {result.get('xlsxPath') or result.get('folder') or '_dataset_feed'}. "
+                'Programme report should refresh from this file.'
             ),
         }
         if do_refresh:
             cfg = _decomm_dashboard_config()
             token = get_user_powerbi_token()
-            if token and not session.get('access_token'):
-                pass
             # Prefer fresh token
             if not token:
                 session.pop('access_token', None)
@@ -2593,8 +2616,25 @@ def api_decommissioned_publish_dataset_feed():
                 'reportId': report_id or None,
                 'datasetId': dataset_id or None,
             }
+
+            # Optional: wait until refresh completes so embed sees new numbers
+            if refresh.get('success') and do_wait and token and dataset_id:
+                print(f"   ⏳ decomm sync waiting refresh up to {wait_sec}s…")
+                waited = wait_decommission_dataset_refresh(
+                    access_token=token,
+                    workspace_id=workspace_id or None,
+                    dataset_id=dataset_id or None,
+                    max_wait_sec=wait_sec,
+                )
+                out['refreshWait'] = waited
+                if waited.get('success'):
+                    out['warning'] = None
+                elif waited.get('timedOut'):
+                    out['warning'] = waited.get('message') or 'Refresh still running'
+                elif waited.get('error'):
+                    out['warning'] = waited.get('error')
             # Publish OK even if refresh skipped/failed — feed is the critical path
-            if refresh.get('skipped'):
+            elif refresh.get('skipped'):
                 out['warning'] = refresh.get('error')
             elif not refresh.get('success'):
                 err = refresh.get('error') or 'Dataset refresh failed'
