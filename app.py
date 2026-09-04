@@ -11461,7 +11461,9 @@ def crash_test_report(report_id):
             'score_breakdown': score_breakdown,
             'lineage_analysis': lineage_analysis,
             'root_cause_analysis': root_cause_analysis,  # NEW!
-            'change_impact_summary': change_impact_summary  # NEW!
+            'change_impact_summary': change_impact_summary,  # NEW!
+            'visual_analysis_performed': results.get('visual_analysis_performed', False),
+            'visual_analysis': results.get('visual_analysis') or {},
         })
 
     except Exception as e:

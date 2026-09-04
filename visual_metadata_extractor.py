@@ -100,65 +100,59 @@ class VisualMetadataExtractor:
                 pass
             return None
 
-        # The response is a .pbix file (ZIP format)
+        # The response is a .pbix file (ZIP format) — classic Layout OR enhanced PBIR
         import zipfile
         import io
 
         try:
-            # Parse the .pbix file as ZIP
             pbix_data = io.BytesIO(response.content)
             with zipfile.ZipFile(pbix_data, 'r') as zip_ref:
-                # List all files for debugging
                 file_list = zip_ref.namelist()
                 print(f"   📦 PBIX contains {len(file_list)} files")
 
-                # Look for Layout file (can be "Layout", "Report/Layout", or "report/Layout")
+                # --- Classic report Layout (UTF-16 LE or UTF-8) ---
                 layout_file = None
                 for filename in file_list:
-                    if filename.lower().endswith('layout') or filename.lower() == 'report/layout':
+                    fl = filename.lower().replace('\\', '/')
+                    if fl.endswith('/layout') or fl == 'layout' or fl.endswith('report/layout'):
                         layout_file = filename
                         break
 
-                if not layout_file:
-                    print(f"   ⚠️ No Layout file found. Files: {file_list[:10]}")
-                    return None
+                if layout_file:
+                    print(f"   📄 Found Layout file: {layout_file}")
+                    layout_bytes = zip_ref.read(layout_file)
+                    layout_text = None
+                    for enc in ('utf-16-le', 'utf-8-sig', 'utf-8'):
+                        try:
+                            layout_text = layout_bytes.decode(enc)
+                            print(f"   ✅ Decoded Layout as {enc} ({len(layout_text)} chars)")
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    if layout_text is None:
+                        print(f"   ⚠️ Could not decode Layout file")
+                    else:
+                        layout_json = json.loads(layout_text)
+                        if 'sections' in layout_json:
+                            print(f"   ✅ Extracted report definition with {len(layout_json['sections'])} page(s)")
+                            return layout_json
+                        layout_keys = list(layout_json.keys())
+                        print(f"   ⚠️ Layout JSON missing 'sections'. Keys: {layout_keys}")
+                        if 'diagrams' in layout_keys:
+                            print(f"   ℹ️  Model Diagram (relationship view), not a visual report")
+                            return {"reportType": "ModelDiagram"}
 
-                print(f"   📄 Found Layout file: {layout_file}")
+                # --- Enhanced report PBIR (definition.pbir + page/visual JSON) ---
+                pbir_layout = self._extract_pbir_layout_from_zip(zip_ref, file_list)
+                if pbir_layout and pbir_layout.get('sections'):
+                    print(
+                        f"   ✅ Extracted PBIR definition with "
+                        f"{len(pbir_layout['sections'])} page(s)"
+                    )
+                    return pbir_layout
 
-                # Read Layout file - CRITICAL: It's encoded as UTF-16 LE!
-                layout_bytes = zip_ref.read(layout_file)
-
-                # Try UTF-16 LE first (most common for Power BI)
-                try:
-                    layout_text = layout_bytes.decode('utf-16-le')
-                    print(f"   ✅ Decoded Layout as UTF-16 LE ({len(layout_text)} chars)")
-                except UnicodeDecodeError:
-                    # Fallback to UTF-8
-                    try:
-                        layout_text = layout_bytes.decode('utf-8')
-                        print(f"   ✅ Decoded Layout as UTF-8 ({len(layout_text)} chars)")
-                    except UnicodeDecodeError:
-                        print(f"   ⚠️ Could not decode Layout file (tried UTF-16 LE and UTF-8)")
-                        return None
-
-                # Parse JSON
-                layout_json = json.loads(layout_text)
-
-                # Validate structure
-                if 'sections' in layout_json:
-                    section_count = len(layout_json['sections'])
-                    print(f"   ✅ Extracted report definition with {section_count} page(s)")
-                    return layout_json
-                else:
-                    layout_keys = list(layout_json.keys())
-                    print(f"   ⚠️ Layout JSON missing 'sections' key. Keys: {layout_keys}")
-
-                    # Check if this is a Model Diagram (relationship view)
-                    if 'diagrams' in layout_keys:
-                        print(f"   ℹ️  This appears to be a Model Diagram (relationship view), not a report with visuals")
-                        return {"reportType": "ModelDiagram"}  # Special marker
-
-                    return None
+                print(f"   ⚠️ No classic Layout or PBIR visuals found. Sample files: {file_list[:12]}")
+                return None
 
         except zipfile.BadZipFile:
             print(f"   ⚠️ Invalid .pbix file (not a valid ZIP)")
@@ -172,6 +166,189 @@ class VisualMetadataExtractor:
             traceback.print_exc()
             return None
 
+    def _extract_pbir_layout_from_zip(self, zip_ref, file_list) -> Optional[Dict]:
+        """
+        Build a classic-like {sections:[{displayName, visualContainers:[{name,config}]}]}
+        structure from enhanced PBIR package files inside an exported .pbix/.pbir zip.
+        """
+        def _read_json(path):
+            raw = zip_ref.read(path)
+            for enc in ('utf-8-sig', 'utf-8', 'utf-16-le'):
+                try:
+                    return json.loads(raw.decode(enc))
+                except Exception:
+                    continue
+            return None
+
+        # Collect page folders: .../pages/<pageId>/page.json
+        page_dirs = {}
+        for name in file_list:
+            n = name.replace('\\', '/')
+            m = re.search(r'(?i)(?:^|/)(pages/([^/]+))/page\.json$', n)
+            if m:
+                page_dirs[m.group(2)] = {
+                    'page_json': name,
+                    'prefix': n[: n.lower().rfind('page.json')],
+                }
+
+        if not page_dirs:
+            # Also try Report/definition/pages style
+            for name in file_list:
+                n = name.replace('\\', '/')
+                if n.lower().endswith('/page.json') and '/pages/' in n.lower():
+                    parts = n.split('/')
+                    try:
+                        idx = next(i for i, p in enumerate(parts) if p.lower() == 'pages')
+                        page_id = parts[idx + 1]
+                        page_dirs[page_id] = {
+                            'page_json': name,
+                            'prefix': '/'.join(parts[: idx + 2]) + '/',
+                        }
+                    except Exception:
+                        continue
+
+        if not page_dirs:
+            return None
+
+        print(f"   🧩 PBIR package detected: {len(page_dirs)} page folder(s)")
+        sections = []
+        for page_id, meta in page_dirs.items():
+            page_json = _read_json(meta['page_json']) or {}
+            display = (
+                page_json.get('displayName')
+                or page_json.get('name')
+                or page_id
+            )
+            prefix = meta['prefix'].replace('\\', '/')
+            # visuals live under pages/<id>/visuals/<vid>/visual.json
+            visual_containers = []
+            for name in file_list:
+                n = name.replace('\\', '/')
+                if not n.lower().startswith(prefix.lower()):
+                    continue
+                if not n.lower().endswith('/visual.json') and not n.lower().endswith('visual.json'):
+                    # some packages use visual.json only
+                    if '/visuals/' not in n.lower() or not n.lower().endswith('.json'):
+                        continue
+                    if not n.lower().endswith('visual.json'):
+                        continue
+                vjson = _read_json(name)
+                if not vjson:
+                    continue
+                # Derive visual id from path
+                vid = n.split('/')[-2] if '/visuals/' in n.lower() else n.split('/')[-1]
+                # Normalize to singleVisual shape expected by extract_fields_from_definition
+                single = (
+                    vjson.get('visual')
+                    or vjson.get('singleVisual')
+                    or vjson
+                )
+                if 'visualType' not in single and isinstance(vjson.get('visualType'), str):
+                    single = dict(single)
+                    single['visualType'] = vjson.get('visualType')
+                config = {
+                    'name': vid,
+                    'singleVisual': single if isinstance(single, dict) else {},
+                }
+                # Title may live under visualContainerObjects / vcObjects
+                title = None
+                for key in ('visualContainerObjects', 'vcObjects', 'objects'):
+                    blob = single.get(key) if isinstance(single, dict) else None
+                    if not isinstance(blob, dict):
+                        continue
+                    title_arr = blob.get('title')
+                    if isinstance(title_arr, list) and title_arr:
+                        props = title_arr[0].get('properties') or {}
+                        text = props.get('text') or {}
+                        if isinstance(text, dict):
+                            expr = text.get('expr') or text
+                            lit = expr.get('Literal') if isinstance(expr, dict) else None
+                            if isinstance(lit, dict) and lit.get('Value'):
+                                title = str(lit.get('Value')).strip("'\"")
+                if title and isinstance(config['singleVisual'], dict):
+                    vc = config['singleVisual'].setdefault('vcObjects', {})
+                    if 'title' not in vc:
+                        vc['title'] = [{'properties': {'text': {'expr': {'Literal': {'Value': f"'{title}'"}}}}}]
+
+                visual_containers.append({
+                    'name': vid,
+                    'config': json.dumps(config),
+                })
+
+            sections.append({
+                'name': page_id,
+                'displayName': display,
+                'visualContainers': visual_containers,
+            })
+            print(f"      • Page '{display}': {len(visual_containers)} visual(s)")
+
+        if not sections:
+            return None
+        return {'sections': sections, 'reportType': 'PBIR'}
+
+    def _walk_field_refs(self, node, depth: int = 0) -> List[Dict]:
+        """
+        Recursively find Column/Measure/queryRef field bindings in nested PBIR JSON.
+        """
+        found = []
+        if depth > 14 or node is None:
+            return found
+
+        if isinstance(node, dict):
+            # Standard tabular expression shapes
+            for kind in ('Column', 'Measure', 'HierarchyLevel'):
+                blob = node.get(kind)
+                if isinstance(blob, dict) and blob.get('Property'):
+                    expr = blob.get('Expression') or {}
+                    src = expr.get('SourceRef') if isinstance(expr, dict) else {}
+                    table = ''
+                    if isinstance(src, dict):
+                        table = src.get('Entity') or src.get('Source') or ''
+                    found.append({
+                        'name': blob.get('Property'),
+                        'displayName': blob.get('Property'),
+                        'table': table or '',
+                        'type': kind if kind != 'HierarchyLevel' else 'Column',
+                    })
+
+            # queryRef style: "Table.Field" or "Sum(Table.Field)"
+            qref = node.get('queryRef') or node.get('nativeQueryRef') or node.get('Name')
+            if isinstance(qref, str) and '.' in qref:
+                # Strip aggregation wrappers like Sum(Table.Col)
+                inner = qref
+                m = re.match(r'^[A-Za-z]+\((.+)\)$', qref.strip())
+                if m:
+                    inner = m.group(1)
+                if '.' in inner and not inner.strip().startswith('http'):
+                    parts = inner.split('.')
+                    if len(parts) >= 2:
+                        field_name = parts[-1].strip("[]'\" ")
+                        table_name = '.'.join(parts[:-1]).strip("[]'\" ")
+                        if field_name and len(field_name) < 120:
+                            found.append({
+                                'name': field_name,
+                                'displayName': field_name,
+                                'table': table_name,
+                                'type': 'Unknown',
+                            })
+
+            for v in node.values():
+                found.extend(self._walk_field_refs(v, depth + 1))
+        elif isinstance(node, list):
+            for item in node:
+                found.extend(self._walk_field_refs(item, depth + 1))
+
+        # de-dupe while preserving order
+        seen = set()
+        uniq = []
+        for f in found:
+            key = (str(f.get('table') or '').lower(), str(f.get('name') or '').lower())
+            if key in seen or not f.get('name'):
+                continue
+            seen.add(key)
+            uniq.append(f)
+        return uniq
+
     def extract_fields_from_definition(self, report_definition: Dict) -> Dict:
         """
         Extract field bindings from report definition JSON (Layout file from .pbix)
@@ -180,7 +357,8 @@ class VisualMetadataExtractor:
         1. query.queryState.{Role}.projections (PRIMARY - new format)
         2. projections (legacy format)
         3. prototypeQuery (backup method)
-        4. filters (field references in filters)
+        4. deep walk for nested PBIR shapes
+        5. filters (field references in filters)
 
         Returns: Dictionary mapping visual IDs to their metadata including field lists
         """
@@ -348,7 +526,6 @@ class VisualMetadataExtractor:
                     # ============================================================
                     # METHOD 3: Extract from prototypeQuery (backup)
                     # ============================================================
-                    # REMOVED CONDITION - Always check prototypeQuery for additional fields
                     prototype = single_visual.get('prototypeQuery', {})
                     if prototype:
                         for select_item in prototype.get('Select', []):
@@ -407,6 +584,17 @@ class VisualMetadataExtractor:
                                             })
                                             field_names_seen.add(column_name)
 
+                    # ============================================================
+                    # METHOD 4: Deep walk — catch PBIR / nested queryRef shapes
+                    # ============================================================
+                    if not fields:
+                        for walked in self._walk_field_refs(single_visual):
+                            fname = walked.get('name')
+                            if not fname or fname in field_names_seen:
+                                continue
+                            fields.append(walked)
+                            field_names_seen.add(fname)
+
                     # DEBUG: Print extraction details for table visuals
                     if visual_type in ['tableEx', 'pivotTable', 'table']:
                         print(f"\n   🔍 TABLE VISUAL DEBUG: '{visual_title or visual_id}' (type: {visual_type})")
@@ -439,6 +627,98 @@ class VisualMetadataExtractor:
             traceback.print_exc()
 
         return visual_fields
+
+    # Canvas / broken-visual text patterns shared by multi-frame scan + in-page JS
+    CANVAS_ERROR_PATTERNS = [
+        "Something's wrong with one or more fields",
+        "We are not able to identify the following fields",
+        "This visual has exceeded the available resources",
+        "Couldn't retrieve the data for this visual",
+        "Could not retrieve the data for this visual",
+        "Can't display the visual",
+        "Cannot display the visual",
+        "Couldn't display the visual",
+        "Couldn't display this visual",
+        "Can't display this visual",
+        "Visual has exceeded",
+        "fields aren't available",
+        "fields are not available",
+        "isn't available or may have been deleted",
+        "is not available or may have been deleted",
+        "Please try again later or contact support",
+        "Missing_References",
+        "Something went wrong",
+        "See details",
+        "Couldn't load the data for this visual",
+        "couldn't load data for this visual",
+    ]
+
+    async def _scan_frames_for_canvas_errors(self, page) -> Dict:
+        """
+        Scan the main page AND every iframe (including cross-origin Power BI frames)
+        for broken-visual canvas banners. Same-origin contentDocument walks miss these.
+        """
+        patterns = list(self.CANVAS_ERROR_PATTERNS)
+        js = """
+        (patterns) => {
+            const text = ((document.body && (document.body.innerText || document.body.textContent)) || '')
+                + ' ' + ((document.documentElement && document.documentElement.innerText) || '');
+            const hits = [];
+            for (const p of patterns) {
+                if (p && text.indexOf(p) !== -1) hits.push(p);
+            }
+            // Count "See details" style tiles near error icon containers when possible
+            let detailButtons = 0;
+            try {
+                const all = Array.from(document.querySelectorAll('button, a, span, div'));
+                for (const el of all) {
+                    const t = (el.innerText || el.textContent || '').trim();
+                    if (/^see details$/i.test(t)) detailButtons += 1;
+                }
+            } catch (e) {}
+            return { hits, detailButtons, textLen: text.length };
+        }
+        """
+        all_hits = []
+        detail_buttons = 0
+        frames_scanned = 0
+        frame_errors = []
+
+        frames = list(page.frames)
+        for fr in frames:
+            try:
+                data = await fr.evaluate(js, patterns)
+                frames_scanned += 1
+                hits = data.get('hits') or []
+                detail_buttons += int(data.get('detailButtons') or 0)
+                for h in hits:
+                    if h not in all_hits:
+                        all_hits.append(h)
+                if hits:
+                    frame_errors.append({
+                        'url': (fr.url or '')[:180],
+                        'hits': hits,
+                        'detailButtons': data.get('detailButtons') or 0,
+                    })
+            except Exception as e:
+                # Detached / about:blank / CSP — ignore
+                msg = str(e)
+                if 'Execution context was destroyed' in msg or 'Target closed' in msg:
+                    continue
+                continue
+
+        # Promote detail-button density into a signal when banners alone are weak
+        if detail_buttons > 0 and 'See details' not in all_hits:
+            all_hits.append('See details')
+
+        return {
+            'hasErrors': len(all_hits) > 0 or detail_buttons > 0,
+            'errorCount': max(len(all_hits), detail_buttons),
+            'errors': all_hits,
+            'detailButtons': detail_buttons,
+            'framesScanned': frames_scanned,
+            'frameErrors': frame_errors,
+        }
 
     def _merge_render_scan(self, export_result: Dict, playwright_result: Dict) -> Dict:
         """Keep export field bindings and overlay Playwright runtime errors."""
@@ -873,74 +1153,34 @@ class VisualMetadataExtractor:
                     # Set page timeout for evaluation
                     page.set_default_timeout(timeout * 1000)
 
-                    # Wait an additional 5 seconds for all visuals to fully render and show errors
+                    # Wait for visuals to render and error banners to paint
                     print("   ⏳ Waiting for visuals to fully render (detecting errors)...")
-                    await page.wait_for_timeout(5000)  # Give visuals time to load and show errors
+                    await page.wait_for_timeout(8000)
 
-                    # BETTER APPROACH: Check page content for error messages BEFORE extracting visual metadata
-                    print("   🔍 Checking for visual errors on page...")
-                    page_errors = await page.evaluate("""
-                        () => {
-                            const errorPatterns = [
-                                "Something's wrong with one or more fields",
-                                "We are not able to identify the following fields",
-                                "This visual has exceeded the available resources",
-                                "Couldn't retrieve the data for this visual",
-                                "Could not retrieve the data for this visual",
-                                "Can't display the visual",
-                                "Cannot display the visual",
-                                "Couldn't display the visual",
-                                "Visual has exceeded",
-                                "fields aren't available",
-                                "fields are not available",
-                                "isn't available or may have been deleted",
-                                "is not available or may have been deleted",
-                                "Missing_References",
-                                "Something went wrong",
-                                "See details"
-                            ];
-
-                            const collectText = (doc) => {
-                                let text = '';
-                                try { text += (doc.body && (doc.body.innerText || doc.body.textContent)) || ''; } catch (e) {}
-                                try {
-                                    const iframes = doc.querySelectorAll('iframe');
-                                    for (const iframe of iframes) {
-                                        try {
-                                            const child = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
-                                            if (child) text += '\\n' + collectText(child);
-                                        } catch (e) {}
-                                    }
-                                } catch (e) {}
-                                return text;
-                            };
-
-                            const pageText = collectText(document);
-                            const foundErrors = [];
-
-                            for (const pattern of errorPatterns) {
-                                if (pageText.includes(pattern)) {
-                                    foundErrors.push(pattern);
-                                }
-                            }
-
-                            return {
-                                hasErrors: foundErrors.length > 0,
-                                errorCount: foundErrors.length,
-                                errors: foundErrors
-                            };
-                        }
-                    """)
-
+                    # Multi-frame canvas scan (cross-origin Power BI iframes need frame.evaluate)
+                    print("   🔍 Checking for visual errors across all browser frames...")
+                    page_errors = await self._scan_frames_for_canvas_errors(page)
                     if page_errors.get('hasErrors'):
-                        error_list = ', '.join(page_errors.get('errors', []))
-                        print(f"   🔴 ERRORS DETECTED ON PAGE: {error_list}")
+                        error_list = ', '.join(page_errors.get('errors', [])[:12])
+                        print(f"   🔴 ERRORS DETECTED ON CANVAS: {error_list}")
+                        print(
+                            f"      frames_scanned={page_errors.get('framesScanned')} "
+                            f"hits={page_errors.get('errorCount')}"
+                        )
+                    else:
+                        print(
+                            f"   ℹ️  No canvas error banners yet "
+                            f"(frames_scanned={page_errors.get('framesScanned', 0)})"
+                        )
 
                     skip_field_extraction = bool(export_result)
+                    # Inject shared canvas patterns into page-walk JS
+                    canvas_patterns_js = json.dumps(self.CANVAS_ERROR_PATTERNS)
                     visuals_data = await page.evaluate(f"""
                         async () => {{
                             const log = (msg) => console.log('    🔍 ' + msg);
                             const skipFieldExtraction = {str(skip_field_extraction).lower()};
+                            const canvasPatterns = {canvas_patterns_js};
 
                             try {{
                                 log('Starting visual extraction...');
@@ -992,32 +1232,14 @@ class VisualMetadataExtractor:
                                         await page.setActive();
 
                                         // Wait for page to fully render (errors need time to appear)
-                                        await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3s for page and errors to fire
+                                        await new Promise(resolve => setTimeout(resolve, 10000));
 
                                         // Check if any NEW errors occurred after navigating to this page
                                         const errorsAfter = window.reportErrors.length;
                                         let hasPageErrors = errorsAfter > errorsBefore;
                                         let pageErrors = hasPageErrors ? window.reportErrors.slice(errorsBefore) : [];
 
-                                        // Canvas fallback: "See details" / missing-field banners may not fire report.on('error')
-                                        const canvasPatterns = [
-                                            "Something's wrong with one or more fields",
-                                            "We are not able to identify the following fields",
-                                            "This visual has exceeded the available resources",
-                                            "Couldn't retrieve the data for this visual",
-                                            "Could not retrieve the data for this visual",
-                                            "Can't display the visual",
-                                            "Cannot display the visual",
-                                            "Couldn't display the visual",
-                                            "Visual has exceeded",
-                                            "fields aren't available",
-                                            "fields are not available",
-                                            "isn't available or may have been deleted",
-                                            "is not available or may have been deleted",
-                                            "Missing_References",
-                                            "Something went wrong",
-                                            "See details"
-                                        ];
+                                        // Same-origin canvas text fallback (cross-origin frames handled by Python multi-frame scan)
                                         const collectText = (doc) => {{
                                             let text = '';
                                             try {{ text += (doc.body && (doc.body.innerText || doc.body.textContent)) || ''; }} catch (e) {{}}
@@ -1034,14 +1256,30 @@ class VisualMetadataExtractor:
                                         }};
                                         const pageText = collectText(document);
                                         const canvasHits = canvasPatterns.filter(p => pageText.includes(p));
-                                        if (canvasHits.length) {{
-                                            log(`  🔴 CANVAS ERROR on page "${{page.displayName}}": ${{canvasHits.join(', ')}}`);
-                                            if (!hasPageErrors) {{
-                                                hasPageErrors = true;
+                                        let detailButtons = 0;
+                                        try {{
+                                            const nodes = Array.from(document.querySelectorAll('button, a, span, div'));
+                                            for (const el of nodes) {{
+                                                const t = (el.innerText || el.textContent || '').trim();
+                                                if (/^see details$/i.test(t)) detailButtons += 1;
+                                            }}
+                                        }} catch (e) {{}}
+                                        if (canvasHits.length || detailButtons > 0) {{
+                                            log(`  🔴 CANVAS ERROR on page "${{page.displayName}}": ${{canvasHits.join(', ') || 'See details'}} (tiles=${{detailButtons}})`);
+                                            hasPageErrors = true;
+                                            const baseHits = canvasHits.length ? canvasHits : ['See details'];
+                                            pageErrors.push({{
+                                                visualTitle: 'Canvas error',
+                                                message: baseHits[0],
+                                                detailedMessage: baseHits.join(' | '),
+                                                timestamp: new Date().toISOString()
+                                            }});
+                                            // One synthetic issue per remaining See-details tile
+                                            for (let di = 1; di < detailButtons; di++) {{
                                                 pageErrors.push({{
-                                                    visualTitle: 'Unknown Visual',
-                                                    message: canvasHits[0],
-                                                    detailedMessage: canvasHits.join(' | '),
+                                                    visualTitle: `Broken visual tile ${{di + 1}}`,
+                                                    message: 'See details',
+                                                    detailedMessage: `Canvas 'See details' tile #${{di + 1}} on page ${{page.displayName}}`,
                                                     timestamp: new Date().toISOString()
                                                 }});
                                             }}
@@ -1254,9 +1492,60 @@ class VisualMetadataExtractor:
 
                     # Calculate totals
                     pages = visuals_data["pages"]
-                    total_visuals = sum(p["visualCount"] for p in pages)
+                    total_visuals = sum(p.get("visualCount") or len(p.get("visuals") or []) for p in pages)
 
                     print(f"   ✅ Successfully extracted {len(pages)} page(s) with {total_visuals} visual(s)")
+
+                    # Re-scan frames after page walk (errors often paint late / on last page only)
+                    try:
+                        final_canvas = await self._scan_frames_for_canvas_errors(page)
+                        result["canvas_scan"] = final_canvas
+                        if final_canvas.get('hasErrors'):
+                            print(
+                                f"   🔴 Final multi-frame canvas scan: "
+                                f"{final_canvas.get('errorCount')} signal(s), "
+                                f"{final_canvas.get('detailButtons', 0)} 'See details' control(s)"
+                            )
+                            # Ensure at least the active/last processed page carries errors
+                            if pages:
+                                target = pages[-1]
+                                # Prefer currently active page if flagged
+                                for p in pages:
+                                    if p.get('isActive'):
+                                        target = p
+                                        break
+                                if not target.get('hasErrors'):
+                                    target['hasErrors'] = True
+                                errs = list(target.get('errors') or [])
+                                for hit in (final_canvas.get('errors') or []):
+                                    errs.append({
+                                        'visualTitle': 'Canvas error',
+                                        'message': hit,
+                                        'detailedMessage': hit,
+                                        'timestamp': datetime.utcnow().isoformat() + 'Z',
+                                        'source': 'multi_frame_canvas_scan',
+                                    })
+                                # If many See-details buttons, emit one synthetic issue per button
+                                # so Crash Test counts broken tiles closer to what the user sees.
+                                detail_n = int(final_canvas.get('detailButtons') or 0)
+                                if detail_n > 1:
+                                    # Already added one 'See details' pattern — add remaining N-1
+                                    for i in range(1, detail_n):
+                                        errs.append({
+                                            'visualTitle': f'Broken visual tile {i + 1}',
+                                            'message': 'See details',
+                                            'detailedMessage': (
+                                                f"Canvas shows 'See details' error tile #{i + 1} "
+                                                f"(multi-frame scan counted {detail_n} tiles)"
+                                            ),
+                                            'timestamp': datetime.utcnow().isoformat() + 'Z',
+                                            'source': 'multi_frame_canvas_scan',
+                                        })
+                                target['errors'] = errs
+                                target['hasErrors'] = True
+                                target['canvasDetailButtons'] = detail_n
+                    except Exception as canvas_err:
+                        print(f"   ⚠️  Final canvas scan failed: {canvas_err}")
 
                     # Update result
                     result["success"] = True

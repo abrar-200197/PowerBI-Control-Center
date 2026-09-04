@@ -3461,6 +3461,8 @@
         const refreshInfo = result.refresh_info || null;
         const rootCauseAnalysis = result.root_cause_analysis || [];
         const scoreBreakdown = result.score_breakdown || null;
+        const visualAnalysis = result.visual_analysis || {};
+        const visualAnalysisPerformed = !!(result.visual_analysis_performed || visualAnalysis.performed);
         const reportLink = `https://app.powerbi.com/groups/${workspaceId}/reports/${reportId}`;
 
         const esc = (s) => {
@@ -3529,6 +3531,43 @@
                   <span class="ct-chip">Medium ×${esc(scoreBreakdown.medium_issues || 0)} (−${esc(scoreBreakdown.medium_deduction || 0)})</span>
                   <span class="ct-chip">Warnings ×${esc(scoreBreakdown.warnings || 0)} (−${esc(scoreBreakdown.warning_deduction || 0)})</span>
                 </div>
+              </div>`;
+        }
+
+        // Visual detection diagnostics — clarifies why 0 broken visuals may appear
+        {
+            const va = visualAnalysis || {};
+            const canvas = va.canvas_scan || {};
+            const method = va.method || (visualAnalysisPerformed ? 'ran' : 'not run');
+            const tv = va.total_visuals != null ? va.total_visuals : '—';
+            const tp = va.total_pages != null ? va.total_pages : '—';
+            const schemaChecked = va.schema_bindings_checked != null ? va.schema_bindings_checked : '—';
+            const schemaBroken = va.schema_broken_found != null ? va.schema_broken_found : '—';
+            const frames = canvas.framesScanned != null ? canvas.framesScanned : '—';
+            const detailBtns = canvas.detailButtons != null ? canvas.detailButtons : '—';
+            const canvasHits = (canvas.errors || []).slice(0, 6).join(' · ') || 'none';
+            const notes = (va.notes || []).map(n => `<li>${esc(n)}</li>`).join('');
+            const renderErr = va.render_scan_error
+                ? `<div class="rec" style="color:#E53E3E">Render scan error: ${esc(va.render_scan_error)}</div>`
+                : '';
+            bodyHtml += `
+              <div class="ct-section">
+                <h3>Visual detection</h3>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+                  <span class="ct-chip">${visualAnalysisPerformed ? 'Scan ran' : 'Scan incomplete'}</span>
+                  <span class="ct-chip">Method: <strong>${esc(method)}</strong></span>
+                  <span class="ct-chip">Pages: <strong>${esc(tp)}</strong></span>
+                  <span class="ct-chip">Visuals extracted: <strong>${esc(tv)}</strong></span>
+                  <span class="ct-chip">Schema checked: <strong>${esc(schemaChecked)}</strong></span>
+                  <span class="ct-chip">Schema broken: <strong>${esc(schemaBroken)}</strong></span>
+                  <span class="ct-chip">Canvas frames: <strong>${esc(frames)}</strong></span>
+                  <span class="ct-chip">See details tiles: <strong>${esc(detailBtns)}</strong></span>
+                </div>
+                <div style="font-size:12px;color:var(--text-muted);line-height:1.45">
+                  Canvas signals: ${esc(canvasHits)}
+                </div>
+                ${renderErr}
+                ${notes ? `<ul style="margin:8px 0 0;padding-left:18px;font-size:12px;color:var(--text-muted)">${notes}</ul>` : ''}
               </div>`;
         }
 

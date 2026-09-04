@@ -62,6 +62,18 @@ class CrashTestAnalyzer:
         self.report_metadata = {}
         self.visual_metadata = []  # NEW: Store visual metadata
         self._frontend_visual_bindings = None
+        self.visual_analysis_meta = {
+            'performed': False,
+            'method': None,
+            'total_pages': 0,
+            'total_visuals': 0,
+            'render_scan_performed': False,
+            'render_scan_error': None,
+            'canvas_scan': None,
+            'schema_bindings_checked': 0,
+            'schema_broken_found': 0,
+            'notes': [],
+        }
 
         print(f"\n{'='*80}")
         print(f"🔬 CRASH TEST ANALYZER INITIALIZED")
@@ -280,6 +292,7 @@ class CrashTestAnalyzer:
                 'total_breaking_changes': len(breaking_changes)
             }
 
+        self.visual_analysis_meta['performed'] = bool(visual_analysis_performed)
         return {
             'health_score': health_score,
             'status': self._get_health_status(health_score),
@@ -290,7 +303,8 @@ class CrashTestAnalyzer:
             'lineage_analysis': lineage_analysis,
             'root_cause_analysis': root_cause_analysis,  # NEW!
             'change_impact_summary': change_impact_summary,  # NEW!
-            'visual_analysis_performed': visual_analysis_performed
+            'visual_analysis_performed': visual_analysis_performed,
+            'visual_analysis': self.visual_analysis_meta,
         }
 
     def _check_dataset_health(self):
@@ -505,7 +519,17 @@ class CrashTestAnalyzer:
 
             # Store visual metadata
             self.visual_metadata = result.get('pages', [])
+            self.visual_analysis_meta['method'] = result.get('method')
+            self.visual_analysis_meta['total_pages'] = result.get('totalPages') or len(self.visual_metadata)
+            self.visual_analysis_meta['total_visuals'] = result.get('totalVisuals') or sum(
+                len(p.get('visuals') or []) for p in self.visual_metadata
+            )
+            self.visual_analysis_meta['render_scan_performed'] = bool(
+                result.get('render_scan_performed') or 'playwright' in str(result.get('method') or '').lower()
+            )
+            self.visual_analysis_meta['canvas_scan'] = result.get('canvas_scan')
             if result.get('render_scan_error'):
+                self.visual_analysis_meta['render_scan_error'] = str(result.get('render_scan_error'))
                 self.warnings.append({
                     'category': 'Visual Integrity',
                     'severity': 'Warning',
@@ -518,6 +542,23 @@ class CrashTestAnalyzer:
             total_visuals = sum(len(page.get('visuals', [])) for page in self.visual_metadata)
             print(f"   ✓ Analyzing {total_visuals} visuals across {len(self.visual_metadata)} pages")
             print(f"   ℹ️  Extraction method: {result.get('method', 'unknown')}")
+            if total_visuals == 0:
+                self.visual_analysis_meta['notes'].append(
+                    'Zero visuals extracted from report definition/export — schema field checks will be empty.'
+                )
+                self.warnings.append({
+                    'category': 'Visual Integrity',
+                    'severity': 'Warning',
+                    'message': 'No visuals extracted from report package',
+                    'description': (
+                        'Report definition export returned 0 visuals (classic Layout missing or PBIR parse empty). '
+                        'Schema field validation cannot run until definition export works. '
+                        'Runtime canvas scan may still catch broken tiles if Playwright succeeded.'
+                    ),
+                    'recommendation': (
+                        'Confirm the signed-in account can export this report, and that Playwright/Chromium is available.'
+                    ),
+                })
 
             broken_visuals = 0
             blank_visuals = 0
@@ -919,6 +960,12 @@ class CrashTestAnalyzer:
             f"   ✓ Schema field validation: checked {checked} data visual(s), "
             f"found {new_broken} with missing bindings"
         )
+        self.visual_analysis_meta['schema_bindings_checked'] = checked
+        self.visual_analysis_meta['schema_broken_found'] = new_broken
+        if checked == 0 and self.visual_metadata:
+            self.visual_analysis_meta['notes'].append(
+                'Visual metadata present but no data-visual field bindings to validate.'
+            )
         return new_broken
 
     def _check_visual_integrity(self):
