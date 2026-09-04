@@ -417,15 +417,19 @@ class VisualMetadataExtractor:
                         if len(fields) < 3:
                             print(f"      ⚠️  WARNING: Only {len(fields)} fields extracted, this might be incomplete!")
 
-                    # Store visual metadata if it has fields
+                    # Keep all real visuals (even without fields) so crash test can
+                    # count/page-walk them. Field-less decorations still useful.
                     if fields:
                         visuals_with_fields += 1
-                        visual_fields[visual_id] = {
-                            'type': visual_type,
-                            'page': section_name,
-                            'title': visual_title,
-                            'fields': fields
-                        }
+                    # Skip pure chrome containers with no type
+                    if (not visual_type or visual_type == 'unknown') and not fields and not visual_title:
+                        continue
+                    visual_fields[visual_id] = {
+                        'type': visual_type,
+                        'page': section_name,
+                        'title': visual_title,
+                        'fields': fields
+                    }
 
             print(f"   ✅ Extracted fields from {visuals_with_fields}/{total_visuals} visuals")
 
@@ -882,6 +886,16 @@ class VisualMetadataExtractor:
                                 "We are not able to identify the following fields",
                                 "This visual has exceeded the available resources",
                                 "Couldn't retrieve the data for this visual",
+                                "Could not retrieve the data for this visual",
+                                "Can't display the visual",
+                                "Cannot display the visual",
+                                "Couldn't display the visual",
+                                "Visual has exceeded",
+                                "fields aren't available",
+                                "fields are not available",
+                                "isn't available or may have been deleted",
+                                "is not available or may have been deleted",
+                                "Missing_References",
                                 "Something went wrong",
                                 "See details"
                             ];
@@ -991,6 +1005,16 @@ class VisualMetadataExtractor:
                                             "We are not able to identify the following fields",
                                             "This visual has exceeded the available resources",
                                             "Couldn't retrieve the data for this visual",
+                                            "Could not retrieve the data for this visual",
+                                            "Can't display the visual",
+                                            "Cannot display the visual",
+                                            "Couldn't display the visual",
+                                            "Visual has exceeded",
+                                            "fields aren't available",
+                                            "fields are not available",
+                                            "isn't available or may have been deleted",
+                                            "is not available or may have been deleted",
+                                            "Missing_References",
                                             "Something went wrong",
                                             "See details"
                                         ];

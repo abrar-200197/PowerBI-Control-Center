@@ -61,12 +61,65 @@ class CrashTestAnalyzer:
         self.dataset_schema = {}
         self.report_metadata = {}
         self.visual_metadata = []  # NEW: Store visual metadata
-        
+        self._frontend_visual_bindings = None
+
         print(f"\n{'='*80}")
         print(f"🔬 CRASH TEST ANALYZER INITIALIZED")
         print(f"   Report ID: {report_id}")
         print(f"   Dataset ID: {dataset_id}")
         print(f"{'='*80}\n")
+
+    def set_visual_field_bindings(self, visual_field_bindings):
+        """
+        Optional frontend-supplied visual field map (legacy hybrid path).
+
+        Accepts either:
+          - list of pages: [{displayName, visuals:[{title,type,fields}]}]
+          - dict of visual_id -> {page, title, type, fields}
+        """
+        self._frontend_visual_bindings = visual_field_bindings
+        if not visual_field_bindings:
+            return
+
+        try:
+            if isinstance(visual_field_bindings, list):
+                # Already page-shaped
+                if visual_field_bindings and isinstance(visual_field_bindings[0], dict) and (
+                    'visuals' in visual_field_bindings[0] or 'displayName' in visual_field_bindings[0]
+                ):
+                    self.visual_metadata = visual_field_bindings
+                    print(f"   ✓ Applied {len(visual_field_bindings)} page(s) of frontend visual bindings")
+                    return
+
+            if isinstance(visual_field_bindings, dict):
+                pages_map = {}
+                for vid, info in visual_field_bindings.items():
+                    if not isinstance(info, dict):
+                        continue
+                    page_name = info.get('page') or info.get('displayName') or 'Unknown'
+                    if page_name not in pages_map:
+                        pages_map[page_name] = {
+                            'name': page_name,
+                            'displayName': page_name,
+                            'visuals': [],
+                            'hasErrors': False,
+                            'errors': [],
+                        }
+                    pages_map[page_name]['visuals'].append({
+                        'name': vid,
+                        'title': info.get('title') or vid,
+                        'type': info.get('type') or '',
+                        'fields': info.get('fields') or [],
+                    })
+                if pages_map:
+                    self.visual_metadata = list(pages_map.values())
+                    print(
+                        f"   ✓ Converted frontend bindings → "
+                        f"{len(self.visual_metadata)} page(s), "
+                        f"{sum(len(p['visuals']) for p in self.visual_metadata)} visual(s)"
+                    )
+        except Exception as e:
+            print(f"   ⚠️  Could not apply frontend visual bindings: {e}")
 
     def run_crash_test(self, include_visual_analysis=True, include_lineage_analysis=True, include_version_history=True, use_xmla_schema=False):
         """
@@ -119,8 +172,7 @@ class CrashTestAnalyzer:
                     # We're already in an async context - cannot use asyncio.run()
                     print("   ⚠️  Already in async context - this should not happen in sync run_crash_test()")
                     print("   🔄 Falling back to standard visual check...")
-                    self._check_visual_integrity()
-                    visual_analysis_performed = False
+                    visual_analysis_performed = bool(self._check_visual_integrity())
                 except RuntimeError:
                     # No event loop running - safe to create one with asyncio.run()
                     print("   ℹ️  Creating new event loop for visual analysis...")
@@ -132,8 +184,7 @@ class CrashTestAnalyzer:
                         import traceback
                         traceback.print_exc()
                         print(f"   🔄 Falling back to standard visual check...")
-                        self._check_visual_integrity()
-                        visual_analysis_performed = False
+                        visual_analysis_performed = bool(self._check_visual_integrity())
             except Exception as e:
                 print(f"   ⚠️  Enhanced visual analysis failed: {e}")
                 import traceback
@@ -153,13 +204,11 @@ class CrashTestAnalyzer:
                     })
 
                 print(f"   🔄 Falling back to standard visual check...")
-                self._check_visual_integrity()
-                visual_analysis_performed = False
+                visual_analysis_performed = bool(self._check_visual_integrity())
         else:
             if include_visual_analysis and not can_run_enhanced:
                 print("   ℹ️  Enhanced visual analysis requires client credentials or a signed-in user token")
-            self._check_visual_integrity()
-            visual_analysis_performed = False
+            visual_analysis_performed = bool(self._check_visual_integrity())
 
         # Phase 4: Expression Validation
         print("\n4️⃣  Phase 4: Expression Validation")
@@ -702,6 +751,12 @@ class CrashTestAnalyzer:
                         if visual_type not in ['slicer', 'shape', 'image', 'textbox']:
                             missing_titles += 1
 
+            # Always cross-check exported field bindings vs dataset schema.
+            # Runtime Playwright scan can miss canvas "See details" banners; static
+            # schema validation still catches deleted/renamed columns and measures.
+            schema_broken = self._validate_visual_bindings_against_schema()
+            broken_visuals += schema_broken
+
             # Summary
             total_issues = broken_visuals + blank_visuals
             if total_issues > 0:
@@ -726,26 +781,216 @@ class CrashTestAnalyzer:
             print(f"   ❌ Enhanced visual check failed: {e}")
             return False
 
+    def _validate_visual_bindings_against_schema(self):
+        """
+        Static validation: every visual field binding from report definition /
+        embed metadata must resolve in the dataset schema.
+
+        This is the most reliable detector for "15 broken visuals" style
+        failures (deleted/renamed fields) when canvas error events are missed.
+
+        Returns:
+            int: number of newly reported broken visuals
+        """
+        if not self.visual_metadata:
+            print("   ℹ️  No visual metadata available for schema field validation")
+            return 0
+        if not self.dataset_schema or not (
+            self.dataset_schema.get('columns') or self.dataset_schema.get('measures')
+        ):
+            print("   ℹ️  Dataset schema unavailable — skipping field-binding validation")
+            return 0
+
+        # Decorative / non-data containers — not field-validated
+        skip_types = {
+            'shape', 'image', 'textbox', 'actionbutton', 'basicshape',
+            'pagenavigator', 'bookmarknavigator', 'container',
+        }
+
+        already = set()
+        for issue in self.issues:
+            if issue.get('category') != 'Broken Visual':
+                continue
+            key = (
+                str(issue.get('page') or '').strip().lower(),
+                str(issue.get('visual') or issue.get('visual_name') or '').strip().lower(),
+            )
+            already.add(key)
+
+        report_meta = getattr(self, 'report_metadata', {}) or {}
+        modified_by = report_meta.get('modified_by', 'N/A')
+        modified_date = report_meta.get('modified_date', None)
+
+        new_broken = 0
+        checked = 0
+
+        print("   🔎 Validating visual field bindings against dataset schema...")
+        for page in self.visual_metadata:
+            page_name = page.get('displayName') or page.get('name') or 'Unknown'
+            for visual in page.get('visuals') or []:
+                visual_type = str(visual.get('type') or '').strip()
+                visual_type_l = visual_type.lower()
+                if visual_type_l in skip_types:
+                    continue
+
+                visual_title = (
+                    visual.get('title')
+                    or visual.get('name')
+                    or 'Untitled Visual'
+                )
+                key = (str(page_name).strip().lower(), str(visual_title).strip().lower())
+                if key in already:
+                    continue
+
+                fields = visual.get('fields') or []
+                if not fields:
+                    continue
+
+                checked += 1
+                missing_fields = []
+                for field in fields:
+                    table_name = field.get('table') or field.get('tableName') or ''
+                    field_name = (
+                        field.get('name')
+                        or field.get('field')
+                        or field.get('column')
+                        or field.get('displayName')
+                        or ''
+                    )
+                    field_type = field.get('type') or 'Column'
+                    if not field_name or field_name in ('Unknown', '[No Title]'):
+                        missing_fields.append({
+                            'table': table_name or 'Unknown',
+                            'field': field_name or 'Unknown',
+                            'type': field_type,
+                            'full_reference': f"{table_name or 'Unknown'}.{field_name or 'Unknown'}",
+                            'verified': True,
+                        })
+                        continue
+
+                    verified = self._verify_field_missing(table_name, field_name)
+                    if verified is True:
+                        missing_fields.append({
+                            'table': table_name or 'Unknown',
+                            'field': field_name,
+                            'type': field_type,
+                            'full_reference': (
+                                f"{table_name}.{field_name}" if table_name else field_name
+                            ),
+                            'verified': True,
+                        })
+
+                if not missing_fields:
+                    continue
+
+                new_broken += 1
+                already.add(key)
+                root_cause = self._analyze_root_cause(missing_fields)
+                missing_labels = ', '.join(
+                    f.get('full_reference') or f.get('field') or '?' for f in missing_fields[:8]
+                )
+                self.issues.append({
+                    'category': 'Broken Visual',
+                    'severity': 'Critical',
+                    'page': page_name,
+                    'visual': visual_title,
+                    'visual_name': visual_title,
+                    'visual_type': visual_type or 'Unknown',
+                    'message': f'Visual "{visual_title}" references missing field(s)',
+                    'error_type': 'Missing_Field_Binding',
+                    'error_reason': f'Missing field binding(s): {missing_labels}',
+                    'missing_fields': missing_fields,
+                    'root_cause': root_cause,
+                    'description': (
+                        f'This visual binds to field(s) that are not present in the dataset schema: '
+                        f'{missing_labels}'
+                    ),
+                    'recommendation': self._generate_field_specific_recommendation(missing_fields),
+                    'modified_by': modified_by,
+                    'modified_date': modified_date,
+                    'detection_method': 'schema_field_validation',
+                })
+                print(
+                    f"      ❌ SCHEMA BROKEN: {page_name} / {visual_title} — "
+                    f"{len(missing_fields)} missing field(s): {missing_labels}"
+                )
+
+        print(
+            f"   ✓ Schema field validation: checked {checked} data visual(s), "
+            f"found {new_broken} with missing bindings"
+        )
+        return new_broken
+
     def _check_visual_integrity(self):
         """
-        Check if visuals reference valid fields from dataset schema
-        NOTE: Scanner API does NOT provide visual-level metadata.
-        This is a placeholder that recommends using Enhanced Mode.
+        Fallback visual integrity: export-only field bindings + schema check.
+        Does not require Playwright when report definition export is available.
         """
         try:
-            # Scanner API limitation: Cannot access visual-level data
-            print(f"   ℹ️  Standard mode: Visual-level analysis not available")
-            print(f"   💡 Use Enhanced Mode for visual detection (requires JavaScript SDK)")
+            print(f"   ℹ️  Standard/fallback mode: report-definition field validation")
+            fetched = bool(self.visual_metadata)
+            if fetched:
+                print(
+                    f"   ✓ Reusing {len(self.visual_metadata)} page(s) of existing visual metadata"
+                )
 
-            # Add informational warning
+            if (not fetched) and CombinedMetadataFetcher and (
+                all([self.client_id, self.client_secret, self.tenant_id]) or self.user_token
+            ):
+                try:
+                    fetcher = CombinedMetadataFetcher(
+                        self.client_id,
+                        self.client_secret,
+                        self.tenant_id,
+                        user_token=self.user_token,
+                    )
+                    # Fast path: definition only (no Playwright render walk)
+                    result = asyncio.run(
+                        fetcher.visual_extractor.extract_visuals(
+                            self.workspace_id,
+                            self.report_id,
+                            timeout=60,
+                            detect_render_errors=False,
+                        )
+                    ) if not self._event_loop_running() else None
+
+                    if result is None:
+                        # Already in async loop — cannot asyncio.run; skip embed
+                        print("   ⚠️  Async context active — cannot run sync export fetch here")
+                    elif result.get('success'):
+                        self.visual_metadata = result.get('pages') or []
+                        fetched = True
+                        print(
+                            f"   ✓ Loaded {result.get('totalVisuals', 0)} visuals from "
+                            f"report definition for schema validation"
+                        )
+                    else:
+                        print(f"   ⚠️  Report definition export failed: {result.get('error')}")
+                except Exception as export_err:
+                    print(f"   ⚠️  Export-only visual fetch failed: {export_err}")
+
+            if fetched and self.visual_metadata:
+                broken = self._validate_visual_bindings_against_schema()
+                if broken:
+                    print(f"   🔴 Schema validation found {broken} broken visual(s)")
+                else:
+                    print(f"   ✅ Schema validation found no missing field bindings")
+                return True
+
             self.warnings.append({
                 'category': 'Visual Integrity',
-                'severity': 'Info',
-                'message': 'Visual-level analysis not performed in Standard Mode',
-                'description': 'Scanner API does not provide visual-level metadata. Broken visuals cannot be detected in Standard Mode.',
-                'recommendation': 'Use Enhanced Mode with JavaScript Embed API to detect broken visuals and rendering errors'
+                'severity': 'Warning',
+                'message': 'Could not validate visual field bindings',
+                'description': (
+                    'Report visual metadata was unavailable, so broken visuals from deleted/'
+                    'renamed fields could not be verified. Enhanced Crash Test with a signed-in '
+                    'session is recommended for runtime canvas errors.'
+                ),
+                'recommendation': (
+                    'Re-run Crash Test while signed in, and ensure Scanner API can read the dataset schema.'
+                ),
             })
-            return True
+            return False
 
         except Exception as e:
             print(f"   ❌ Error in visual integrity check: {e}")
@@ -753,8 +998,16 @@ class CrashTestAnalyzer:
                 'category': 'Visual Integrity',
                 'severity': 'Warning',
                 'message': f'Visual integrity check failed: {str(e)}',
-                'recommendation': 'Use Enhanced Mode for visual-level analysis'
+                'recommendation': 'Use Enhanced Crash Test for visual-level analysis'
             })
+            return False
+
+    @staticmethod
+    def _event_loop_running():
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
             return False
 
     def _validate_expressions(self):
@@ -1273,33 +1526,78 @@ class CrashTestAnalyzer:
         Verify if a field is actually missing from the dataset schema
 
         Returns:
-            True if field is confirmed missing, False if it exists
+            True if field is confirmed missing, False if it exists, None if unverifiable
         """
-        if not self.dataset_schema:
-            return None  # Cannot verify without schema
+        if not self.dataset_schema or not field_name:
+            return None  # Cannot verify without schema / name
 
-        # Check in tables/columns
-        tables = self.dataset_schema.get('tables', [])
-        for table in tables:
-            # table can be either a string or a dict - handle both cases
-            table_name_str = table.get('name') if isinstance(table, dict) else table
-            if not table_name_str:
-                continue
+        field_l = str(field_name).strip().lower()
+        table_l = str(table_name or '').strip().lower()
+        columns_by_table = self.dataset_schema.get('columns', {}) or {}
 
-            if table_name_str.lower() == table_name.lower():
-                # Check columns
-                columns = self.dataset_schema.get('columns', {}).get(table_name_str, [])
-                # columns is a list of dicts, not strings
-                column_names = [c.get('name') if isinstance(c, dict) else c for c in columns]
-                if field_name in column_names or field_name.lower() in [c.lower() for c in column_names if c]:
-                    return False  # Field exists
+        def _col_names(cols):
+            names = []
+            for c in cols or []:
+                if isinstance(c, dict):
+                    n = c.get('name')
+                else:
+                    n = c
+                if n:
+                    names.append(str(n))
+            return names
 
-        # Check in measures
-        measures = self.dataset_schema.get('measures', {})
-        if field_name in measures or field_name.lower() in [m.lower() for m in measures.keys()]:
-            return False  # Measure exists
+        def _field_in(names):
+            return any(str(n).strip().lower() == field_l for n in names)
 
-        return True  # Field not found in schema
+        # 1) Prefer exact table match when provided
+        if table_l:
+            for tname, cols in columns_by_table.items():
+                if str(tname).strip().lower() == table_l and _field_in(_col_names(cols)):
+                    return False
+            # Also walk tables list for alias forms
+            for table in self.dataset_schema.get('tables', []) or []:
+                table_name_str = table.get('name') if isinstance(table, dict) else table
+                if not table_name_str:
+                    continue
+                if str(table_name_str).strip().lower() != table_l:
+                    continue
+                cols = columns_by_table.get(table_name_str, columns_by_table.get(str(table_name_str), []))
+                if _field_in(_col_names(cols)):
+                    return False
+
+        # 2) Measures — dict keyed by name, or list of measure dicts
+        measures = self.dataset_schema.get('measures', {}) or {}
+        if isinstance(measures, dict):
+            if any(str(m).strip().lower() == field_l for m in measures.keys()):
+                return False
+            for m in measures.values():
+                if isinstance(m, dict):
+                    mn = m.get('name') or m.get('Name') or ''
+                    if str(mn).strip().lower() == field_l:
+                        # Optional table check on measure
+                        mt = str(m.get('table') or m.get('Table') or '').strip().lower()
+                        if not table_l or not mt or mt == table_l:
+                            return False
+        elif isinstance(measures, list):
+            for m in measures:
+                if not isinstance(m, dict):
+                    continue
+                mn = m.get('name') or m.get('Name') or ''
+                if str(mn).strip().lower() != field_l:
+                    continue
+                mt = str(m.get('table') or m.get('Table') or '').strip().lower()
+                if not table_l or not mt or mt == table_l:
+                    return False
+
+        # 3) No/unknown table — search all columns (avoid false Critical when binding omitted Entity)
+        if not table_l:
+            for _tname, cols in columns_by_table.items():
+                if _field_in(_col_names(cols)):
+                    return False
+            return True
+
+        # Table was specified but neither column nor measure matched
+        return True
 
     def _find_field_in_schema(self, field_name):
         """
