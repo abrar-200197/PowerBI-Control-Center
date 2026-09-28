@@ -84,6 +84,18 @@ SHAREPOINT_PUBLISH_FILES = [
     "ui_report_directory.json",
 ]
 
+# Report Catalog → Archive PBIX/RDL to SharePoint (decommission activity)
+# Same site/drive as catalog metadata; different folder tree under Backup - Reports & Archives.
+# Path pattern:
+#   {SHAREPOINT_DECOMM_BASE}/<latest dated child>/
+#     <WorkspaceName>/[<PBI Folder>/]<ReportName>.pbix|.rdl
+_DEFAULT_DECOMM_BASE = (
+    "BA - Retail Offshore GCC Team/Backup - Reports & Archives/Report Decommission Activity"
+)
+SHAREPOINT_DECOMM_FOLDER_PATH = (
+    os.getenv("SHAREPOINT_DECOMM_FOLDER_PATH") or _DEFAULT_DECOMM_BASE
+).strip().strip("/")
+
 # Ops snapshot tuning (batch job)
 USAGE_LOOKBACK_DAYS = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))
 OPS_REFRESH_WORKERS = int(os.getenv("OPS_REFRESH_WORKERS", "8"))
@@ -138,9 +150,43 @@ CATALOG_LOCAL_DIR = Path(
 # Durable server-side mirror of SharePoint latest/ (NOT source of truth).
 # After a verified download, subsequent app starts load from here when meta
 # (size + lastModified) still matches Graph — browser never downloads these files.
-CATALOG_CACHE_DIR = Path(
-    os.getenv("CATALOG_CACHE_DIR", PROJECT_ROOT / "data" / "catalog_cache" / "latest")
-)
+#
+# Azure App Service Linux: /app is often ephemeral/not reliably writable.
+# Prefer /home/data (App Service home mount) when available, else project data, else /tmp.
+def _default_catalog_cache_dir() -> Path:
+    env = (os.getenv("CATALOG_CACHE_DIR") or "").strip()
+    if env:
+        p = Path(env)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return p
+
+    candidates = []
+    if os.getenv("WEBSITE_SITE_NAME") or os.path.isdir("/home"):
+        candidates.append(Path("/home/data/catalog_cache/latest"))
+    candidates.append(PROJECT_ROOT / "data" / "catalog_cache" / "latest")
+    candidates.append(
+        Path(os.getenv("TMPDIR") or os.getenv("TEMP") or "/tmp")
+        / "pbi_catalog_cache"
+        / "latest"
+    )
+
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            probe = cand / ".write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return cand
+        except Exception:
+            continue
+    # Last resort — even if not writable yet; writer will re-mkdir
+    return candidates[-1]
+
+
+CATALOG_CACHE_DIR = _default_catalog_cache_dir()
 CATALOG_CACHE_TTL_SEC = int(os.getenv("CATALOG_CACHE_TTL_SEC", "3600"))
 # How often to re-check SharePoint item meta (size/mtime) against the disk mirror.
 CATALOG_DISK_REVALIDATE_SEC = int(os.getenv("CATALOG_DISK_REVALIDATE_SEC", "300"))
@@ -150,12 +196,27 @@ ALLOW_LOCAL_CATALOG_FALLBACK = False
 CATALOG_FAST_PATH_ENABLED = os.getenv("CATALOG_FAST_PATH_ENABLED", "true").lower() in (
     "1", "true", "yes", "y",
 )
+# Keep huge JSON parsed in process memory (default OFF — prevents App Service OOM).
+# When false: workspace_catalog / impact_index stay on disk only; parsed only for
+# the duration of a request (or rebuild), then dropped. Thin ui_*.json still memory-cached.
+CATALOG_KEEP_HEAVY_IN_MEMORY = os.getenv(
+    "CATALOG_KEEP_HEAVY_IN_MEMORY", "false"
+).lower() in ("1", "true", "yes", "y")
 
 REQUIRED_CATALOG_FILES = (
     "workspace_catalog.json",
     "impact_index.json",
     "summary.json",
 )
+# Multi‑hundred‑MB artifacts — never hold long-lived in worker RAM by default.
+HEAVY_CATALOG_FILES = frozenset({
+    "workspace_catalog.json",
+    "impact_index.json",
+    "inventory.json",
+    "refresh_snapshot.json",
+    "usage_snapshot.json",
+    "ui_impact_reports.json",  # ~50MB with details; prefer detail APIs + disk
+})
 # Never ship these large blobs to the browser — server-side only.
 BROWSER_BLOCKED_CATALOG_FILES = frozenset({
     "workspace_catalog.json",

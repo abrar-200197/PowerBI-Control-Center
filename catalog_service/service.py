@@ -45,6 +45,7 @@ _THIN_UI_PACKS = frozenset({
     "ui_impact_tables.json",
     "ui_impact_reports.json",
     "ui_report_directory.json",
+    "ui_field_index.json",
     "summary.json",
     "ops_summary.json",
 })
@@ -1284,6 +1285,69 @@ class CatalogService:
         if report_id not in details:
             return []
         return details.get(report_id) or []
+
+    def field_usage_rows(
+        self,
+        force_refresh: bool = False,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Thin field/metric usage list for Impact Explorer «Field usage» tab.
+        Built weekly (--fresh only) by catalog_service.field_usage_index;
+        may be absent on a fresh deploy until the first weekly run completes.
+        """
+        pack = self.get_json("ui_field_index.json", force_refresh=force_refresh) or {}
+        rows = list(pack.get("rows") or [])
+        if allowed_workspace_ids is not None:
+            details = pack.get("detailsByField") or {}
+            filtered_rows = []
+            for r in rows:
+                reports = details.get(r.get("fieldKey")) or []
+                visible = [rp for rp in reports if rp.get("workspaceId") in allowed_workspace_ids]
+                if visible:
+                    r2 = dict(r)
+                    r2["reportCount"] = len(visible)
+                    r2["workspaceCount"] = len({rp.get("workspaceId") for rp in visible if rp.get("workspaceId")})
+                    filtered_rows.append(r2)
+            rows = filtered_rows
+        return {
+            "rows": rows,
+            "generatedAt": pack.get("generatedAt"),
+            "reportsProcessed": pack.get("reportsProcessed") or 0,
+            "reportsSkippedUnchanged": pack.get("reportsSkippedUnchanged") or 0,
+            "reportsFailed": pack.get("reportsFailed") or 0,
+        }
+
+    def field_usage_detail(
+        self,
+        field_key: str,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Full per-report usage list for one field/metric (drawer)."""
+        key = (field_key or "").strip().lower()
+        if not key:
+            return None
+        pack = self.get_json("ui_field_index.json") or {}
+        details = pack.get("detailsByField") or {}
+        reports = details.get(key)
+        if reports is None:
+            return None
+        row = None
+        for r in pack.get("rows") or []:
+            if r.get("fieldKey") == key:
+                row = r
+                break
+        if allowed_workspace_ids is not None:
+            reports = [r for r in reports if r.get("workspaceId") in allowed_workspace_ids]
+        return {
+            "fieldKey": key,
+            "field": (row or {}).get("field") or "",
+            "table": (row or {}).get("table") or "",
+            "type": (row or {}).get("type") or "column",
+            "reportCount": len(reports),
+            "reports": reports,
+            "generatedAt": pack.get("generatedAt"),
+        }
 
     def impact_table_detail(self, table_key: str) -> Optional[Dict[str, Any]]:
         """Full impact entry for one table (drawer). Loads index server-side only."""

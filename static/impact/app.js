@@ -36,6 +36,16 @@ const state = {
   selectedReportId: null,
   reportDrawerSources: [],
   reportsLoaded: false,
+  // Field usage tab (weekly --fresh index: which reports use column/measure X)
+  fieldRows: [],
+  fieldFiltered: [],
+  fieldSortKey: "reportCount",
+  fieldSortDir: "desc",
+  fieldPage: 1,
+  selectedFieldKey: null,
+  fieldDrawerReports: [],
+  fieldsLoaded: false,
+  fieldIndexMeta: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -963,11 +973,246 @@ function renderReportDrawerSources() {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/* Field usage tab — which reports use column/measure X (weekly index) */
+/* ------------------------------------------------------------------ */
+
+const FIELDS_CACHE_KEY = "pbi_cc_impact_fields_v1";
+
+function readFieldsSessionCache() {
+  try {
+    const raw = sessionStorage.getItem(FIELDS_CACHE_KEY);
+    if (!raw) return null;
+    const pack = JSON.parse(raw);
+    if (!pack || !pack.ts || !Array.isArray(pack.rows)) return null;
+    if (Date.now() - pack.ts > IMPACT_CACHE_TTL_MS) return null;
+    return pack;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeFieldsSessionCache(payload) {
+  try {
+    sessionStorage.setItem(
+      FIELDS_CACHE_KEY,
+      JSON.stringify({
+        ts: Date.now(),
+        generatedAt: payload.generatedAt || null,
+        rows: payload.rows || [],
+        reportsProcessed: payload.reportsProcessed || 0,
+        reportsSkippedUnchanged: payload.reportsSkippedUnchanged || 0,
+        reportsFailed: payload.reportsFailed || 0,
+      })
+    );
+  } catch (_) { /* quota */ }
+}
+
+async function ensureFieldRows(forceRefresh = false) {
+  if (state.fieldsLoaded && !forceRefresh && state.fieldRows.length) {
+    return state.fieldRows;
+  }
+  if (forceRefresh) {
+    try { sessionStorage.removeItem(FIELDS_CACHE_KEY); } catch (_) { /* ignore */ }
+  }
+  if (!forceRefresh) {
+    const cached = readFieldsSessionCache();
+    if (cached) {
+      state.fieldRows = cached.rows || [];
+      state.fieldIndexMeta = cached;
+      state.fieldsLoaded = true;
+      return state.fieldRows;
+    }
+  }
+  const res = await fetchJsonNoCache("/api/catalog/impact/fields", {
+    refresh: forceRefresh,
+    timeoutMs: 180000,
+    allowHttpCache: !forceRefresh,
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `impact/fields HTTP ${res.status}`);
+  }
+  const pack = await res.json();
+  if (!pack.success) throw new Error(pack.error || "impact/fields failed");
+  writeFieldsSessionCache(pack);
+  state.fieldRows = pack.rows || [];
+  state.fieldIndexMeta = pack;
+  state.fieldsLoaded = true;
+  return state.fieldRows;
+}
+
+function applyFieldFilters() {
+  const q = ($("#fieldSearchInput")?.value || "").trim().toLowerCase();
+  const type = $("#fieldTypeFilter")?.value || "";
+  state.fieldFiltered = state.fieldRows.filter((r) => {
+    if (q && !(r.searchText || "").includes(q)) return false;
+    if (type && (r.type || "") !== type) return false;
+    return true;
+  });
+  sortFieldFiltered();
+  state.fieldPage = 1;
+  renderFieldTable();
+  renderFieldIndexMeta();
+}
+
+function renderFieldIndexMeta() {
+  const el = $("#fieldIndexMeta");
+  if (!el) return;
+  const meta = state.fieldIndexMeta;
+  if (!meta || !meta.generatedAt) {
+    el.textContent = state.fieldsLoaded
+      ? "No field usage index yet — built during the next weekly catalog refresh."
+      : "";
+    return;
+  }
+  const when = new Date(meta.generatedAt).toLocaleString();
+  el.textContent = `Index built ${when} (weekly) · ${fmt(meta.reportsProcessed)} reports scanned`;
+}
+
+function sortFieldFiltered() {
+  const k = state.fieldSortKey;
+  const dir = state.fieldSortDir === "asc" ? 1 : -1;
+  state.fieldFiltered.sort((a, b) => {
+    const av = a[k], bv = b[k];
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+    return String(av || "").localeCompare(String(bv || ""), undefined, { sensitivity: "base" }) * dir;
+  });
+}
+
+function renderFieldTable() {
+  const tb = $("#fieldUsageTable tbody");
+  if (!tb) return;
+  const total = state.fieldFiltered.length;
+  const pages = Math.max(1, Math.ceil(total / state.pageSize));
+  if (state.fieldPage > pages) state.fieldPage = pages;
+  const start = (state.fieldPage - 1) * state.pageSize;
+  const slice = state.fieldFiltered.slice(start, start + state.pageSize);
+  if ($("#fieldResultCount")) {
+    $("#fieldResultCount").textContent = `${fmt(total)} fields · page ${state.fieldPage}/${pages}`;
+  }
+  if ($("#fieldPageInfo")) {
+    $("#fieldPageInfo").textContent =
+      total === 0
+        ? "0"
+        : `${fmt(start + 1)}–${fmt(Math.min(start + state.pageSize, total))} of ${fmt(total)}`;
+  }
+  if ($("#fieldPrevPage")) $("#fieldPrevPage").disabled = state.fieldPage <= 1;
+  if ($("#fieldNextPage")) $("#fieldNextPage").disabled = state.fieldPage >= pages;
+
+  tb.innerHTML = slice.map((r) => `
+    <tr>
+      <td>
+        <button class="linkish" data-open-field="${escapeAttr(r.fieldKey)}">${escapeHtml(r.field || "—")}</button>
+      </td>
+      <td class="muted small">${escapeHtml(r.table || "—")}</td>
+      <td><span class="pill ${r.type === "measure" ? "model" : ""}">${escapeHtml(r.type === "measure" ? "Measure" : "Column")}</span></td>
+      <td class="num"><strong>${fmt(r.reportCount)}</strong></td>
+      <td class="num">${fmt(r.workspaceCount)}</td>
+      <td><button class="btn ghost sm" data-open-field="${escapeAttr(r.fieldKey)}">Reports</button></td>
+    </tr>`
+  ).join("") || `<tr><td colspan="6" class="muted">No fields match filters${state.fieldsLoaded ? "" : " (index not built yet)"}.</td></tr>`;
+
+  tb.querySelectorAll("[data-open-field]").forEach((btn) => {
+    btn.addEventListener("click", () => openFieldDrawer(btn.getAttribute("data-open-field")));
+  });
+}
+
+async function openFieldDrawer(fieldKey) {
+  if (!fieldKey) return;
+  state.selectedFieldKey = fieldKey;
+  const meta = state.fieldRows.find((r) => String(r.fieldKey) === String(fieldKey));
+  $("#fieldDrawerTitle").textContent = meta?.field || fieldKey;
+  $("#fieldDrawerSub").textContent = meta
+    ? `${meta.table || "—"} · loading reports…`
+    : "Loading reports…";
+  if ($("#fieldDrawerKpis")) {
+    $("#fieldDrawerKpis").innerHTML = `<div class="muted small">Loading…</div>`;
+  }
+  $("#fieldDrawerBody").innerHTML = `<div class="muted small" style="padding:12px">Loading reports…</div>`;
+  $("#fieldDrawer")?.classList.remove("hidden");
+  $("#fieldDrawer")?.setAttribute("aria-hidden", "false");
+  $("#drawerBackdrop")?.classList.remove("hidden");
+  document.body.classList.add("drawer-open");
+
+  try {
+    const res = await fetchJsonNoCache(
+      `/api/catalog/impact/field-detail?field_key=${encodeURIComponent(fieldKey)}`,
+      { timeoutMs: 120000 }
+    );
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.success) {
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    const field = body.field || {};
+    state.fieldDrawerReports = field.reports || [];
+    $("#fieldDrawerTitle").textContent = field.field || meta?.field || fieldKey;
+    $("#fieldDrawerSub").textContent = [
+      field.table || meta?.table || "",
+      field.type === "measure" ? "Measure" : "Column",
+    ].filter(Boolean).join(" · ");
+    if ($("#fieldDrawerKpis")) {
+      $("#fieldDrawerKpis").innerHTML = `
+        <div class="dk"><div class="dk-v">${fmt(field.reportCount)}</div><div class="dk-l">Reports</div></div>
+      `;
+    }
+    renderFieldDrawerReports();
+  } catch (e) {
+    $("#fieldDrawerBody").innerHTML =
+      `<div class="error-state" style="margin:8px"><strong>Failed to load reports</strong>
+       <div class="small" style="margin-top:6px">${escapeHtml(e.message || String(e))}</div></div>`;
+  }
+}
+
+function renderFieldDrawerReports() {
+  const q = ($("#fieldDrawerReportFilter")?.value || "").trim().toLowerCase();
+  let list = state.fieldDrawerReports || [];
+  if (q) {
+    list = list.filter((r) => `${r.reportName || ""} ${r.workspaceName || ""}`.toLowerCase().includes(q));
+  }
+  const body = $("#fieldDrawerBody");
+  if (!body) return;
+  if (!list.length) {
+    body.innerHTML = `<div class="muted small" style="padding:12px">No reports${q ? " match filter" : ""}.</div>`;
+    return;
+  }
+  body.innerHTML = list.map((r) => `
+    <div class="drawer-item">
+      <div class="drawer-item-main">
+        <button type="button" class="linkish" data-jump-report="${escapeAttr(r.reportId)}" title="Open report sources">
+          ${escapeHtml(r.reportName || r.reportId || "—")}
+        </button>
+      </div>
+      <div class="muted small">${escapeHtml(r.workspaceName || "—")}</div>
+      <div class="muted small">Used in ${fmt(r.visualCount)} visual(s)</div>
+    </div>`
+  ).join("");
+
+  body.querySelectorAll("[data-jump-report]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const rid = btn.getAttribute("data-jump-report");
+      if (!rid) return;
+      closeFieldDrawer();
+      setView("reports");
+      ensureReportRows(false).then(() => openReportSourcesDrawer(rid)).catch(() => {});
+    });
+  });
+}
+
+function closeFieldDrawer() {
+  $("#fieldDrawer")?.classList.add("hidden");
+  $("#fieldDrawer")?.setAttribute("aria-hidden", "true");
+  if ($("#drawer").classList.contains("hidden") && $("#reportDrawer").classList.contains("hidden")) {
+    $("#drawerBackdrop")?.classList.add("hidden");
+    document.body.classList.remove("drawer-open");
+  }
+}
+
 function closeReportDrawer() {
   $("#reportDrawer")?.classList.add("hidden");
   $("#reportDrawer")?.setAttribute("aria-hidden", "true");
-  // Only hide backdrop if table drawer is also closed
-  if ($("#drawer")?.classList.contains("hidden")) {
+  // Only hide backdrop if other drawers are also closed
+  if ($("#drawer")?.classList.contains("hidden") && $("#fieldDrawer")?.classList.contains("hidden")) {
     $("#drawerBackdrop")?.classList.add("hidden");
     document.body.classList.remove("drawer-open");
   }
@@ -1307,7 +1552,12 @@ function renderDrawerReports() {
 function closeDrawer() {
   $("#drawer").classList.add("hidden");
   $("#drawer").setAttribute("aria-hidden", "true");
-  if ($("#reportDrawer").classList.contains("hidden") && (!$("#modelModal") || $("#modelModal").classList.contains("hidden"))) {
+  const fieldDrawerClosed = !$("#fieldDrawer") || $("#fieldDrawer").classList.contains("hidden");
+  if (
+    $("#reportDrawer").classList.contains("hidden") &&
+    fieldDrawerClosed &&
+    (!$("#modelModal") || $("#modelModal").classList.contains("hidden"))
+  ) {
     $("#drawerBackdrop").classList.add("hidden");
   }
 }
@@ -2055,6 +2305,7 @@ function closeAllDrawers() {
   closeModelModal();
   closeDrawer();
   closeReportDrawer();
+  closeFieldDrawer();
   $("#drawerBackdrop")?.classList.add("hidden");
   document.body.classList.remove("drawer-open");
 }
@@ -2654,7 +2905,7 @@ async function runLineageMap() {
 
 function setView(name) {
   // Table impact | Report sources | Impact lookup | Lineage map
-  const allowed = new Set(["tables", "reports", "lookup", "lineage"]);
+  const allowed = new Set(["tables", "reports", "fields", "lookup", "lineage"]);
   if (!allowed.has(name)) name = "tables";
 
   document.querySelectorAll(".nav-item, .section-tab").forEach((b) => {
@@ -2668,6 +2919,7 @@ function setView(name) {
   const titles = {
     tables: ["Table impact", "Search every source table → reports / datasets / workspaces"],
     reports: ["Report sources", "Pick a report → every SQL / Excel / file / model table it uses"],
+    fields: ["Field usage", "Search a column / measure → which reports already use it (avoid duplicates)"],
     lookup: ["Impact lookup", "If we change table X, which reports are affected?"],
     lineage: ["Lineage map", "Service-style path: source → semantic model → report → workspace"],
   };
@@ -2691,6 +2943,17 @@ function setView(name) {
         if (tb) {
           tb.innerHTML = `<tr><td colspan="6" class="muted">Failed to load reports: ${escapeHtml(e.message || String(e))}</td></tr>`;
         }
+      });
+  }
+  if (name === "fields") {
+    ensureFieldRows(false)
+      .then(() => applyFieldFilters())
+      .catch((e) => {
+        const tb = $("#fieldUsageTable tbody");
+        if (tb) {
+          tb.innerHTML = `<tr><td colspan="6" class="muted">Failed to load field usage: ${escapeHtml(e.message || String(e))}</td></tr>`;
+        }
+        renderFieldIndexMeta();
       });
   }
   if (name === "lineage") {
@@ -2814,6 +3077,40 @@ function wire() {
     renderReportTable();
   });
   $("#reportDrawerSourceFilter")?.addEventListener("input", renderReportDrawerSources);
+  ["fieldSearchInput", "fieldTypeFilter"].forEach((id) => {
+    const el = $(`#${id}`);
+    if (!el) return;
+    el.addEventListener("input", applyFieldFilters);
+    el.addEventListener("change", applyFieldFilters);
+  });
+  $("#clearFieldFilters")?.addEventListener("click", () => {
+    if ($("#fieldSearchInput")) $("#fieldSearchInput").value = "";
+    if ($("#fieldTypeFilter")) $("#fieldTypeFilter").value = "";
+    applyFieldFilters();
+  });
+  $("#fieldPrevPage")?.addEventListener("click", () => { state.fieldPage--; renderFieldTable(); });
+  $("#fieldNextPage")?.addEventListener("click", () => { state.fieldPage++; renderFieldTable(); });
+  $("#fieldUsageTable thead")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th[data-fsort]");
+    if (!th) return;
+    const key = th.dataset.fsort;
+    if (state.fieldSortKey === key) {
+      state.fieldSortDir = state.fieldSortDir === "asc" ? "desc" : "asc";
+    } else {
+      state.fieldSortKey = key;
+      state.fieldSortDir = key.endsWith("Count") ? "desc" : "asc";
+    }
+    sortFieldFiltered();
+    renderFieldTable();
+  });
+  $("#fieldDrawerReportFilter")?.addEventListener("input", renderFieldDrawerReports);
+  $("#copyFieldReportsBtn")?.addEventListener("click", async () => {
+    const names = (state.fieldDrawerReports || []).map((r) => r.reportName).filter(Boolean).join("\n");
+    await navigator.clipboard.writeText(names);
+    $("#copyFieldReportsBtn").textContent = "Copied";
+    setTimeout(() => { if ($("#copyFieldReportsBtn")) $("#copyFieldReportsBtn").textContent = "Copy names"; }, 1200);
+  });
+  $("#closeFieldDrawer")?.addEventListener("click", closeFieldDrawer);
   $("#copySourcesBtn")?.addEventListener("click", async () => {
     const names = (state.reportDrawerSources || [])
       .map((s) => [s.schema, s.table].filter(Boolean).join(".") || s.table || s.tableKey || "")

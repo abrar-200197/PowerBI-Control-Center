@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 # Match Report Catalog / ops usage window (Activity Events ViewReport)
 USAGE_LOOKBACK_DAYS = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))
 
+# Microsoft Power BI platform usage reports — not business content.
+# Exact names only (case-insensitive), per product decision.
 _EXCLUDED_REPORT_NAMES = frozenset({
     "usage metrics report",
     "report usage metrics report",
@@ -26,7 +28,14 @@ _EXCLUDED_REPORT_NAMES = frozenset({
 
 
 def is_excluded_report_name(name: Optional[str]) -> bool:
-    """Platform usage metrics + [App] shells — never include in UI packs."""
+    """
+    True for platform reports we never show in Catalog / Home / Decommission / Impact.
+    Currently:
+      - Usage Metrics Report
+      - Report Usage Metrics Report
+      - Dashboard Usage Metrics Report
+    Also skips published app shells ([App] …).
+    """
     n = (name or "").strip()
     if not n:
         return False
@@ -451,6 +460,43 @@ def build_ui_impact_reports(impact_index: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def build_ui_field_index(field_usage_index: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Thin grid + drawer pack for the Impact Explorer "Field usage" tab.
+
+    Flat searchable rows (field/table/type/reportCount) plus a server-side
+    detailsByField map with the full report list per field for the drawer.
+    """
+    rows: List[Dict[str, Any]] = []
+    details: Dict[str, List[Dict[str, Any]]] = {}
+    for key, entry in (field_usage_index.get("fields") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        table = entry.get("table") or ""
+        field = entry.get("field") or ""
+        rows.append({
+            "fieldKey": key,
+            "field": field,
+            "table": table,
+            "type": entry.get("type") or "column",
+            "reportCount": entry.get("reportCount") or 0,
+            "workspaceCount": entry.get("workspaceCount") or 0,
+            "searchText": f"{field} {table} {key}".lower(),
+        })
+        details[key] = entry.get("reports") or []
+    rows.sort(key=lambda r: (-(r.get("reportCount") or 0), (r.get("field") or "").lower()))
+    return {
+        "generatedAt": field_usage_index.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
+        "schemaVersion": "1.0",
+        "fieldCount": len(rows),
+        "reportsProcessed": field_usage_index.get("reportsProcessed") or 0,
+        "reportsSkippedUnchanged": field_usage_index.get("reportsSkippedUnchanged") or 0,
+        "reportsFailed": field_usage_index.get("reportsFailed") or 0,
+        "rows": rows,
+        "detailsByField": details,
+    }
+
+
 def build_ui_report_directory(catalog: Dict[str, Any]) -> Dict[str, Any]:
     """
     Flat report directory for reverse search: report name → workspace(s).
@@ -531,4 +577,18 @@ def write_thin_packs(latest_dir: Path) -> Dict[str, Path]:
             p.stat().st_size / (1024 * 1024),
             reports_pack.get("reportCount") or 0,
         )
+    fld_path = latest_dir / "field_usage_index.json"
+    if fld_path.is_file():
+        try:
+            fld = json.loads(fld_path.read_text(encoding="utf-8"))
+            field_pack = build_ui_field_index(fld)
+            p = latest_dir / "ui_field_index.json"
+            p.write_text(json.dumps(field_pack, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            out["ui_field_index"] = p
+            logger.info(
+                "Wrote %s (%.1f KB, %s fields)",
+                p.name, p.stat().st_size / 1024, field_pack.get("fieldCount") or 0,
+            )
+        except Exception as exc:
+            logger.warning("field usage thin pack build skipped: %s", exc)
     return out

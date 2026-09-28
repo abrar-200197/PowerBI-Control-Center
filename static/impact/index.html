@@ -29,6 +29,9 @@
         <button class="section-tab nav-item" data-view="lookup" type="button" role="tab" aria-selected="false">
           Impact lookup
         </button>
+        <button class="section-tab nav-item" data-view="fields" type="button" role="tab" aria-selected="false">
+          Field usage
+        </button>
         <button class="section-tab nav-item" data-view="lineage" type="button" role="tab" aria-selected="false">
           Lineage map
         </button>
@@ -183,6 +186,53 @@
           </div>
         </section>
 
+        <!-- FIELD USAGE (which reports use column/measure X — avoid duplicate metrics) -->
+        <section id="view-fields" class="view hidden">
+          <div class="filters card filters-one-line">
+            <div class="filter-row one-line">
+              <label class="field grow">
+                <span class="sr-only">Search field / metric</span>
+                <input id="fieldSearchInput" type="search" placeholder="Search column / measure / table…" />
+              </label>
+              <label class="field field-sm">
+                <span class="sr-only">Field type</span>
+                <select id="fieldTypeFilter" title="Type">
+                  <option value="" selected>Type: All</option>
+                  <option value="measure">Measures</option>
+                  <option value="column">Columns</option>
+                </select>
+              </label>
+              <button id="clearFieldFilters" class="btn ghost sm" type="button">Clear</button>
+            </div>
+            <div class="filter-meta compact">
+              <span id="fieldResultCount" class="muted small"></span>
+              <span id="fieldIndexMeta" class="muted small"></span>
+            </div>
+          </div>
+          <div class="card table-card">
+            <div class="table-wrap">
+              <table id="fieldUsageTable">
+                <thead>
+                  <tr>
+                    <th data-fsort="field">Field / metric</th>
+                    <th data-fsort="table">Table</th>
+                    <th data-fsort="type">Type</th>
+                    <th data-fsort="reportCount" class="num">Reports</th>
+                    <th data-fsort="workspaceCount" class="num">Workspaces</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <button id="fieldPrevPage" class="btn ghost sm" type="button">Previous</button>
+              <span id="fieldPageInfo" class="muted small"></span>
+              <button id="fieldNextPage" class="btn ghost sm" type="button">Next</button>
+            </div>
+          </div>
+        </section>
+
         <!-- LOOKUP -->
         <section id="view-lookup" class="view hidden">
           <div class="card">
@@ -306,6 +356,27 @@
         <p class="muted small" style="margin:0 0 8px">SQL, Excel, SharePoint, files, and model tables from lineage — everything bound through the report’s dataset(s).</p>
         <input id="reportDrawerSourceFilter" type="search" placeholder="Filter sources…" class="drawer-search" />
         <div id="reportDrawerBody" class="drawer-list"></div>
+      </div>
+    </aside>
+    <!-- FIELD USAGE DRAWER (which reports use this column / measure) -->
+    <aside id="fieldDrawer" class="drawer report-drawer-wide hidden" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <div class="eyebrow">Field usage</div>
+          <h2 id="fieldDrawerTitle">—</h2>
+          <div id="fieldDrawerSub" class="muted small"></div>
+        </div>
+        <button id="closeFieldDrawer" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="fieldDrawerKpis" class="drawer-kpis"></div>
+      <div class="drawer-section">
+        <div class="section-title-row">
+          <h3>Reports already using this field / metric</h3>
+          <button id="copyFieldReportsBtn" class="btn ghost sm" type="button">Copy names</button>
+        </div>
+        <p class="muted small" style="margin:0 0 8px">Reuse an existing report/measure instead of rebuilding it — check here before adding a new one.</p>
+        <input id="fieldDrawerReportFilter" type="search" placeholder="Filter reports…" class="drawer-search" />
+        <div id="fieldDrawerBody" class="drawer-list"></div>
       </div>
     </aside>
     <div id="drawerBackdrop" class="backdrop hidden"></div>

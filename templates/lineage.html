@@ -4090,6 +4090,7 @@
         if (!data.pages || data.pages.length === 0) {
             // Check if this is a Model Diagram
             const isModelDiagram = data.error && data.error.includes('Model Diagram');
+            const hasSpecificError = data.error && !isModelDiagram;
 
             html += `
                 <div class="no-data" style="padding: 30px; text-align: center;">
@@ -4098,6 +4099,13 @@
                         The Power BI Scanner API did not return visual metadata for this report.<br>
                         This can happen with certain report types or legacy reports.
                     </p>
+
+                    ${hasSpecificError ? `
+                    <div style="background: #FEF2F2; border-left: 4px solid #EF4444; padding: 16px; border-radius: 4px; text-align: left; max-width: 600px; margin: 0 auto 20px auto;">
+                        <p style="margin: 0 0 8px 0; color: #991B1B; font-weight: 600;">⚠️ Extraction Error</p>
+                        <p style="margin: 0; color: #7F1D1D; font-size: 13px; word-break: break-word;">${escapeHtml(data.error)}</p>
+                    </div>
+                    ` : ''}
 
                     ${isModelDiagram ? `
                     <div style="background: #FFF5E6; border-left: 4px solid #F59E0B; padding: 16px; border-radius: 4px; text-align: left; max-width: 600px; margin: 0 auto 20px auto;">
@@ -5431,32 +5439,107 @@ ${escapeHtml(daxExpression)}</code>
 <style>
     /* Visual Lineage Simple Table Styles */
     .visual-lineage-table {
-        background: white;
+        background: var(--bg-surface);
     }
 
     .visual-lineage-table thead tr {
-        background: #F7FAFC;
-        border-bottom: 2px solid #E2E8F0;
+        background: var(--bg-surface-2);
+        border-bottom: 2px solid var(--border);
     }
 
     .visual-lineage-table th {
         padding: 12px;
         text-align: left;
         font-weight: 600;
-        color: #2D3748;
+        color: var(--text-strong);
     }
 
     .visual-lineage-table tbody tr {
-        border-bottom: 1px solid #E2E8F0;
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
     }
 
     .visual-lineage-table tbody tr:hover {
-        background: #F7FAFC;
-        }
-        to {
-            transform: translateY(0);
-            opacity: 1;
-        }
+        background: var(--table-hover);
+    }
+
+    /* Dark-mode overrides for dynamically-generated visual lineage markup
+       (inline styles from renderVisualLineage() use hardcoded light colors;
+       target them by their exact hex value so we don't have to rewrite JS strings) */
+    html[data-theme="dark"] #visualLineageContent {
+        color: var(--text);
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#F7FAFC"] {
+        background: var(--bg-surface-2) !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#FAFAFA"] {
+        background: var(--bg-surface-2) !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="background: white"],
+    html[data-theme="dark"] #visualLineageContent [style*="background:white"] {
+        background: var(--bg-surface) !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#2D3748"] {
+        color: var(--text-strong) !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#718096"] {
+        color: var(--text-muted) !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#A0AEC0"] {
+        color: var(--text-muted) !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#4A5568"] {
+        color: var(--text-muted) !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#64748B"] {
+        color: var(--text-muted) !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="border: 1px solid #E2E8F0"],
+    html[data-theme="dark"] #visualLineageContent [style*="border-bottom: 1px solid #E2E8F0"],
+    html[data-theme="dark"] #visualLineageContent [style*="border-right: 1px solid #E2E8F0"],
+    html[data-theme="dark"] #visualLineageContent [style*="border-bottom: 2px solid #E2E8F0"] {
+        border-color: var(--border) !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#EDF2F7"] {
+        background: var(--chip-bg) !important;
+        color: var(--text) !important;
+    }
+    /* Error / warning / info callout boxes */
+    html[data-theme="dark"] #visualLineageContent [style*="#FEF2F2"] {
+        background: #3f1515 !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#991B1B"] {
+        color: #fca5a5 !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#7F1D1D"] {
+        color: #fecaca !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#FFF5E6"] {
+        background: #3d2e12 !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#92400E"] {
+        color: #fbbf24 !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#78350F"] {
+        color: #fde68a !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="background: #F7FAFC; border-left: 4px solid #4299E1"] {
+        background: #172554 !important;
+    }
+    /* DAX expression box */
+    html[data-theme="dark"] #visualLineageContent [style*="#FFF9DB"] {
+        background: #3d2e12 !important;
+    }
+    /* SQL source / model table code chips */
+    html[data-theme="dark"] #visualLineageContent [style*="#DBEAFE"] {
+        background: #172554 !important;
+        color: #93c5fd !important;
+    }
+    html[data-theme="dark"] #visualLineageContent [style*="#1E40AF"] {
+        color: #93c5fd !important;
+    }
+    html[data-theme="dark"] #visualLineageContent code {
+        color: var(--text);
     }
 </style>
 

@@ -7,6 +7,7 @@ from flask import Flask, render_template, request, jsonify, send_file, redirect,
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 import os
+import sys
 import time
 import threading
 from dotenv import load_dotenv
@@ -14,6 +15,15 @@ import msal
 import uuid
 import requests
 import json
+
+# Force UTF-8 stdout/stderr so emoji/log prints (e.g. in visual_metadata_extractor.py)
+# never crash with UnicodeEncodeError when process output is redirected/logged to a
+# file (e.g. under a process manager) on Windows (default cp1252 console encoding).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass
 
 # Import your existing modules
 from powerbi_connector import PowerBIConnector
@@ -1526,6 +1536,63 @@ def api_catalog_impact_report_detail():
         if not detail:
             return jsonify({'success': False, 'error': f'No sources for report {report_id}'}), 404
         return jsonify({'success': True, 'report': detail})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/catalog/impact/fields')
+@login_required
+def api_catalog_impact_fields():
+    """
+    Thin field/metric usage list for Impact Explorer «Field usage» tab.
+    Built weekly (--fresh) — see catalog_service/field_usage_index.py.
+    """
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
+    try:
+        force = request.args.get('refresh') in ('1', 'true', 'yes')
+        allowed = _user_allowed_workspace_ids()
+        data = catalog_service.field_usage_rows(
+            force_refresh=force,
+            allowed_workspace_ids=allowed if allowed is not None else None,
+        )
+        payload = {
+            'success': True,
+            'v': 1,
+            'count': len(data.get('rows') or []),
+            'rows': data.get('rows') or [],
+            'generatedAt': data.get('generatedAt'),
+            'reportsProcessed': data.get('reportsProcessed'),
+            'reportsSkippedUnchanged': data.get('reportsSkippedUnchanged'),
+            'reportsFailed': data.get('reportsFailed'),
+            'source': 'server-thin',
+        }
+        resp = jsonify(payload)
+        resp.headers['Cache-Control'] = 'no-store' if force else 'private, max-age=120'
+        resp.headers['X-Data-Source'] = 'server-thin'
+        return resp
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/catalog/impact/field-detail')
+@login_required
+def api_catalog_impact_field_detail():
+    """All reports using one field/metric (drawer) for Field usage tab."""
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
+    field_key = (request.args.get('field_key') or request.args.get('key') or '').strip()
+    if not field_key:
+        return jsonify({'success': False, 'error': 'field_key required'}), 400
+    try:
+        allowed = _user_allowed_workspace_ids()
+        detail = catalog_service.field_usage_detail(
+            field_key,
+            allowed_workspace_ids=allowed if allowed is not None else None,
+        )
+        if not detail:
+            return jsonify({'success': False, 'error': f'No usage found for field {field_key}'}), 404
+        return jsonify({'success': True, 'field': detail})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -13248,6 +13315,8 @@ def get_visual_lineage(report_id):
         # Process visual data
         pages_data = []
         pages = report_data.get('pages', [])
+        extraction_method = 'scanner'
+        visual_fallback_error = None
 
         print(f"   ✅ Found {len(pages)} pages in report from Scanner API")
 
@@ -13255,6 +13324,7 @@ def get_visual_lineage(report_id):
         if not pages or len(pages) == 0:
             print(f"   ⚠️  Scanner API did not return visual metadata for this report")
             print(f"   🔄 FALLBACK: Attempting to extract visuals using Playwright...")
+            extraction_method = 'playwright'
 
             try:
                 from visual_metadata_extractor import VisualMetadataExtractor
@@ -13316,9 +13386,11 @@ def get_visual_lineage(report_id):
                     pages = visual_result.get('pages', [])
                     print(f"      ✅ Playwright extracted {len(pages)} page(s)")
                 else:
-                    print(f"      ❌ Playwright extraction failed: {visual_result.get('error') if visual_result else 'Unknown error'}")
+                    visual_fallback_error = (visual_result.get('error') if visual_result else None) or 'Playwright extraction returned no result'
+                    print(f"      ❌ Playwright extraction failed: {visual_fallback_error}")
 
             except Exception as e:
+                visual_fallback_error = str(e)
                 print(f"      ❌ Error during Playwright extraction: {str(e)}")
                 import traceback
                 traceback.print_exc()
@@ -13506,15 +13578,23 @@ def get_visual_lineage(report_id):
         print(f"   ✅ Processed {len(pages_data)} pages with visual lineage data")
         print(f"📊 ===============================================\n")
 
-        return jsonify({
+        response_payload = {
             'success': True,
             'report_id': report_id,
             'report_name': report_data.get('name', 'Unknown Report'),
             'dataset_id': dataset_id,
             'dataset_name': dataset_info.get('name', 'Unknown Dataset'),
             'pages_count': len(pages_data),
-            'pages': pages_data
-        })
+            'pages': pages_data,
+            'extraction_method': extraction_method
+        }
+
+        # Surface the real reason when no pages could be extracted so the
+        # frontend can show an actionable message instead of a generic one.
+        if not pages_data and visual_fallback_error:
+            response_payload['error'] = visual_fallback_error
+
+        return jsonify(response_payload)
 
     except Exception as e:
         print(f"❌ Error getting visual lineage: {str(e)}")

@@ -36,6 +36,17 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+# Force UTF-8 stdout/stderr so emoji/log prints (e.g. in visual_metadata_extractor.py)
+# never crash with UnicodeEncodeError when output is redirected/piped/logged to a
+# file on Windows (default cp1252 console encoding). Without this, a crash mid-print
+# during report extraction gets caught by the per-report exception handler and
+# incorrectly reported as an extraction failure for every report.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass
+
 from catalog_service import catalog_config as cfg
 
 logger = logging.getLogger("catalog_extract")
@@ -85,7 +96,8 @@ def publish_names(include_inventory: bool = False) -> List[str]:
     if include_inventory and "inventory.json" not in names:
         names.append("inventory.json")
     for extra in ("refresh_snapshot.json", "usage_snapshot.json", "ops_summary.json",
-                  "workspace_catalog.json", "impact_index.json", "summary.json", "sources.json"):
+                  "workspace_catalog.json", "impact_index.json", "summary.json", "sources.json",
+                  "field_usage_index.json"):
         if extra not in names:
             names.append(extra)
     # de-dupe preserve order
@@ -191,6 +203,103 @@ def load_catalog_from_sharepoint() -> dict:
     return cat
 
 
+def load_prior_field_usage_index() -> Optional[dict]:
+    """
+    Best-effort download of the previous week's field_usage_index.json from
+    SharePoint latest/, used as the incremental cache baseline before we wipe
+    latest/ on --fresh. Returns None if missing/unreadable (first run, or the
+    pack hasn't been built yet) — the field usage build then just does a full
+    (uncached) pass instead of failing the whole extract.
+    """
+    try:
+        from catalog_service.metadata_lib.sharepoint_client import SharePointClient
+
+        remote = f"{sharepoint_latest_remote()}/field_usage_index.json"
+        sp = SharePointClient()
+        sp.resolve_site_and_drive()
+        raw = sp.download_file(remote, max_attempts=2, timeout=300)
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        print(f"  (no prior field_usage_index.json to seed incrementally: {exc})")
+        return None
+
+
+def _make_field_usage_checkpoint_uploader(latest: Path):
+    """
+    Returns an on_checkpoint(idx) callback that writes the partial index to
+    latest/field_usage_index.json (temp workspace) and uploads it straight to
+    SharePoint latest/, so an interrupted --fresh run still leaves real,
+    resumable progress behind (picked up next time via
+    load_prior_field_usage_index()). Never raises — a failed checkpoint must
+    not kill the extraction loop.
+    """
+    def _on_checkpoint(idx: dict) -> None:
+        try:
+            p = latest / "field_usage_index.json"
+            p.write_text(json.dumps(idx, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+            cfg.validate_sharepoint_config()
+            from catalog_service.metadata_lib.sharepoint_client import SharePointClient
+
+            remote = f"{sharepoint_latest_remote()}/field_usage_index.json"
+            sp = SharePointClient()
+            sp.resolve_site_and_drive()
+            sp.upload_file(p, remote)
+            print(
+                f"  field usage checkpoint -> {remote} "
+                f"(processed={idx.get('reportsProcessed', 0)}, "
+                f"skippedUnchanged={idx.get('reportsSkippedUnchanged', 0)}, "
+                f"failed={idx.get('reportsFailed', 0)}, fields={idx.get('fieldCount', 0)})"
+            )
+        except Exception as exc:
+            print(f"  ! field usage checkpoint upload failed (non-fatal): {exc}")
+
+    return _on_checkpoint
+
+
+def build_field_usage_index_step(latest: Path, prior_index: Optional[dict]) -> None:
+    """
+    Weekly-only step: cross-report field/metric usage index (Impact Explorer
+    'Field usage' tab). Never runs on --ops-only. Wrapped so a failure here
+    can never break the rest of the --fresh rebuild.
+
+    Runs concurrently (thread pool) and checkpoints partial progress to
+    SharePoint periodically, so a killed/interrupted run resumes from real
+    progress next time instead of starting over.
+    """
+    cat_path = latest / "workspace_catalog.json"
+    if not cat_path.is_file():
+        print("WARNING: field usage index skipped — workspace_catalog.json missing")
+        return
+    try:
+        from catalog_service.field_usage_index import (
+            DEFAULT_CHECKPOINT_EVERY,
+            DEFAULT_MAX_WORKERS,
+            build_field_usage_index,
+        )
+
+        catalog = json.loads(cat_path.read_text(encoding="utf-8"))
+        idx = build_field_usage_index(
+            catalog,
+            prior_index=prior_index,
+            max_workers=DEFAULT_MAX_WORKERS,
+            checkpoint_every=DEFAULT_CHECKPOINT_EVERY,
+            on_checkpoint=_make_field_usage_checkpoint_uploader(latest),
+        )
+        p = latest / "field_usage_index.json"
+        p.write_text(json.dumps(idx, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        print(
+            f"Field usage index: {idx.get('fieldCount', 0)} fields "
+            f"(processed={idx.get('reportsProcessed', 0)}, "
+            f"skippedUnchanged={idx.get('reportsSkippedUnchanged', 0)}, "
+            f"failed={idx.get('reportsFailed', 0)}) -> {p}"
+        )
+    except Exception as exc:
+        print(f"WARNING: field usage index build failed (non-fatal): {exc}")
+
+
 def publish_temp_latest(
     latest_dir: Path,
     *,
@@ -214,6 +323,7 @@ def publish_temp_latest(
         "ui_impact_tables.json",
         "ui_impact_reports.json",
         "ui_report_directory.json",
+        "ui_field_index.json",
     ):
         if thin not in names:
             names.append(thin)
@@ -455,9 +565,12 @@ def main(argv=None) -> int:
     try:
         if args.fresh:
             print("=== FRESH RUN ===")
+            print("Seeding field usage index cache from prior SharePoint latest/ (if any)")
+            prior_field_index = load_prior_field_usage_index()
             print("Clearing SharePoint latest before rebuild")
             clean_sharepoint_latest()
             latest = run_full_extract(temp_root, args)
+            build_field_usage_index_step(latest, prior_field_index)
         elif args.ops_only:
             print("=== OPS-ONLY (6h) ===")
             latest = run_ops_only(temp_root, args)
