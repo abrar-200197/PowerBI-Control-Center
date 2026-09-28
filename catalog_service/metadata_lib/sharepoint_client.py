@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -227,35 +228,116 @@ class SharePointClient:
         folder_path: str = "",
         *,
         max_depth: int = 8,
+        max_workers: int = 10,
         _depth: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         Recursively list files under folder_path.
         Each item includes relativePath (path from folder_path root, posix).
+
+        Walks the tree level-by-level (BFS) and lists all folders at a given
+        level concurrently via a thread pool, since each list_children() call
+        is blocking network I/O. This turns an O(folder-count) sequence of
+        sequential Graph round-trips into O(depth) sequential *batches* of
+        concurrent round-trips — a large win for wide trees (many workspace /
+        report subfolders), e.g. the decommission archive inventory scan.
         """
-        if _depth > max_depth:
-            return []
         folder_path = (folder_path or "").replace("\\", "/").strip("/")
         out: List[Dict[str, Any]] = []
-        try:
-            children = self.list_children(folder_path)
-        except Exception as exc:
-            logger.warning("list_files_recursive failed at %s: %s", folder_path, exc)
-            return out
-        for it in children:
-            name = it.get("name") or ""
-            if not name:
-                continue
-            rel = f"{folder_path}/{name}" if folder_path else name
-            if it.get("folder") is not None:
-                out.extend(
-                    self.list_files_recursive(rel, max_depth=max_depth, _depth=_depth + 1)
-                )
-            elif it.get("file") is not None:
-                row = dict(it)
-                row["relativePath"] = rel
-                out.append(row)
+        # Frontier of folder paths still needing a list_children() call.
+        frontier: List[str] = [folder_path]
+        depth = _depth
+        while frontier and depth <= max_depth:
+            next_frontier: List[str] = []
+            with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+                future_to_folder = {
+                    pool.submit(self.list_children, f): f for f in frontier
+                }
+                for future in as_completed(future_to_folder):
+                    f = future_to_folder[future]
+                    try:
+                        children = future.result()
+                    except Exception as exc:
+                        logger.warning("list_files_recursive failed at %s: %s", f, exc)
+                        continue
+                    for it in children:
+                        name = it.get("name") or ""
+                        if not name:
+                            continue
+                        rel = f"{f}/{name}" if f else name
+                        if it.get("folder") is not None:
+                            next_frontier.append(rel)
+                        elif it.get("file") is not None:
+                            row = dict(it)
+                            row["relativePath"] = rel
+                            out.append(row)
+            frontier = next_frontier
+            depth += 1
         return out
+
+    def list_files_delta(
+        self,
+        folder_path: str = "",
+        *,
+        delta_link: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch changed items under folder_path since delta_link (Graph delta query).
+
+        - If delta_link is None, performs an initial full-snapshot delta walk
+          (functionally similar to list_files_recursive but returns the
+          driveItem stream Graph considers canonical for future deltas, plus
+          a deltaLink to resume from next time).
+        - If delta_link is provided, only items that changed (added, modified,
+          moved, or deleted) since that link are returned — a small, cheap
+          call compared to a full tree walk, provided the tree is mostly
+          unchanged between runs (append-mostly archive).
+
+        Deleted items are represented by Graph with a "deleted" facet; callers
+        must remove them from any persisted item map by id.
+
+        Returns:
+            {
+                "items": [driveItem, ...],   # includes folders + files + deleted markers
+                "deltaLink": str or None,    # None if resyncRequired (caller must full-resync)
+                "resyncRequired": bool,
+            }
+
+        Raises RuntimeError on non-recoverable Graph errors other than 410 Gone
+        (resyncRequired), which is instead reported via resyncRequired=True.
+        """
+        if self._drive_id is None:
+            self.resolve_site_and_drive()
+        folder_path = (folder_path or "").replace("\\", "/").strip("/")
+
+        if delta_link:
+            url = delta_link
+            params = None
+        else:
+            if folder_path:
+                url = f"{GRAPH}/drives/{self._drive_id}/root:/{quote(folder_path)}:/delta"
+            else:
+                url = f"{GRAPH}/drives/{self._drive_id}/root/delta"
+            params = {"$top": "200"}
+
+        items: List[Dict[str, Any]] = []
+        next_delta_link: Optional[str] = None
+        while url:
+            resp = self._request("GET", url, params=params)
+            params = None  # only applies to the first request
+            if resp.status_code == 410:
+                # Delta token expired / resync required — caller must do a full walk.
+                return {"items": [], "deltaLink": None, "resyncRequired": True}
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"list_files_delta failed {resp.status_code} path={folder_path!r}: {resp.text[:400]}"
+                )
+            body = resp.json() or {}
+            items.extend(body.get("value") or [])
+            url = body.get("@odata.nextLink")
+            if not url:
+                next_delta_link = body.get("@odata.deltaLink")
+        return {"items": items, "deltaLink": next_delta_link, "resyncRequired": False}
 
     def latest_child_folder(self, folder_path: str) -> Optional[Dict[str, Any]]:
         """

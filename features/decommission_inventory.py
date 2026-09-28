@@ -17,17 +17,92 @@ so tracking placeholders appear in workspace count / filters.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
 # Process cache (Graph walks are chatty)
 _CACHE: Dict[str, Any] = {"ts": 0.0, "payload": None}
 _CACHE_TTL_SEC = 300  # 5 minutes
+
+# Persistent delta-query state (Option 2): after the first full walk, subsequent
+# cold loads (cache expired / new process) fetch only what changed on
+# SharePoint since the last run instead of re-walking the entire archive tree.
+# Falls back to a full list_files_recursive() walk if no state exists yet or
+# Graph reports the delta token is stale (410 resyncRequired).
+_DELTA_STATE_FILE = "decomm_delta_state.json"
+
+
+def _delta_state_path() -> Path:
+    from catalog_service import catalog_config as cfg
+
+    return Path(cfg.CATALOG_CACHE_DIR) / _DELTA_STATE_FILE
+
+
+def _load_delta_state() -> Dict[str, Any]:
+    path = _delta_state_path()
+    try:
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("decommission: could not read delta state %s: %s", path, exc)
+    return {}
+
+
+def _save_delta_state(state: Dict[str, Any]) -> None:
+    path = _delta_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as exc:
+        logger.warning("decommission: could not write delta state %s: %s", path, exc)
+
+
+def _relative_path_from_item(item: Dict[str, Any], base: str) -> Optional[str]:
+    """
+    Derive drive-root-relative path (posix) for a delta-query driveItem, mirroring
+    the relativePath that list_files_recursive() attaches manually.
+
+    parentReference.path looks like "/drives/{id}/root:" or
+    "/drives/{id}/root:/decomm/batch1/WorkspaceA".
+    """
+    name = item.get("name") or ""
+    if not name:
+        return None
+    parent = ((item.get("parentReference") or {}).get("path") or "").strip()
+    marker = "root:"
+    idx = parent.find(marker)
+    parent_rel = parent[idx + len(marker):] if idx != -1 else ""
+    parent_rel = unquote(parent_rel).strip("/")
+    rel = f"{parent_rel}/{name}" if parent_rel else name
+    return rel
+
+
+def _build_from_item_map(item_map: Dict[str, Dict[str, Any]], base: str) -> List[Dict[str, Any]]:
+    """Reconstruct the file list (with relativePath set) from a persisted delta item map."""
+    files: List[Dict[str, Any]] = []
+    base_n = base.strip("/")
+    for it in item_map.values():
+        if it.get("folder") is not None or it.get("file") is None:
+            continue
+        rel = it.get("relativePath") or _relative_path_from_item(it, base)
+        if not rel:
+            continue
+        if base_n and not (rel == base_n or rel.startswith(base_n + "/")):
+            continue
+        row = dict(it)
+        row["relativePath"] = rel
+        files.append(row)
+    return files
 
 
 def _parse_dt(s: Optional[str]) -> Optional[datetime]:
@@ -132,6 +207,90 @@ def _size_label(n: int) -> str:
     return f"{n / (1024 * 1024):.1f} MB"
 
 
+def _list_files_via_delta(sp: Any, base: str) -> List[Dict[str, Any]]:
+    """
+    Return current file list under `base`, using a persisted Graph delta token
+    when available so repeat (cold) loads only fetch what changed since last
+    time instead of re-walking the whole archive tree.
+
+    Falls back to a full list_files_recursive() walk (and re-bootstraps the
+    delta state) if there is no prior state, the state is for a different
+    base path, or Graph reports the delta token is stale (resyncRequired).
+    """
+    state = _load_delta_state()
+    item_map: Dict[str, Dict[str, Any]] = dict(state.get("items") or {})
+    delta_link = state.get("deltaLink")
+    stale_base = state.get("basePath") != base
+
+    if not item_map or not delta_link or stale_base:
+        # Bootstrap: no usable prior state — full walk, then seed delta state
+        # via an initial (tokenless) delta call so future runs can go incremental.
+        logger.info("decommission: no usable delta state — running full walk to bootstrap")
+        files = sp.list_files_recursive(base, max_depth=10)
+        item_map = {}
+        for f in files:
+            item_id = f.get("id")
+            if item_id:
+                item_map[item_id] = f
+        try:
+            result = sp.list_files_delta(base)
+            if result.get("deltaLink"):
+                _save_delta_state(
+                    {"basePath": base, "deltaLink": result["deltaLink"], "items": item_map}
+                )
+        except Exception as exc:
+            logger.warning("decommission: could not seed delta link: %s", exc)
+        return files
+
+    try:
+        result = sp.list_files_delta(base, delta_link=delta_link)
+    except Exception as exc:
+        logger.warning("decommission: delta query failed (%s); falling back to full walk", exc)
+        files = sp.list_files_recursive(base, max_depth=10)
+        return files
+
+    if result.get("resyncRequired"):
+        logger.info("decommission: delta token stale (resyncRequired) — full walk + re-bootstrap")
+        files = sp.list_files_recursive(base, max_depth=10)
+        item_map = {}
+        for f in files:
+            item_id = f.get("id")
+            if item_id:
+                item_map[item_id] = f
+        try:
+            reseed = sp.list_files_delta(base)
+            if reseed.get("deltaLink"):
+                _save_delta_state(
+                    {"basePath": base, "deltaLink": reseed["deltaLink"], "items": item_map}
+                )
+        except Exception as exc:
+            logger.warning("decommission: could not re-seed delta link: %s", exc)
+        return files
+
+    # Merge changed items into persisted map (adds/updates/deletes).
+    changed = result.get("items") or []
+    for it in changed:
+        item_id = it.get("id")
+        if not item_id:
+            continue
+        if it.get("deleted") is not None:
+            item_map.pop(item_id, None)
+            continue
+        rel = _relative_path_from_item(it, base)
+        row = dict(it)
+        if rel:
+            row["relativePath"] = rel
+        item_map[item_id] = row
+
+    if result.get("deltaLink"):
+        _save_delta_state({"basePath": base, "deltaLink": result["deltaLink"], "items": item_map})
+
+    logger.info(
+        "decommission: delta query applied %d changed item(s) since last run", len(changed)
+    )
+    return _build_from_item_map(item_map, base)
+
+
 def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, Any]:
     """
     Walk SharePoint Report Decommission Activity tree → flat report rows + workspace groups.
@@ -173,7 +332,7 @@ def build_decommission_inventory(*, force_refresh: bool = False) -> Dict[str, An
                 "workspaces": [],
             }
 
-        files = sp.list_files_recursive(base, max_depth=10)
+        files = _list_files_via_delta(sp, base)
         rows: List[Dict[str, Any]] = []
         try:
             from catalog_service.thin_packs import is_excluded_report_name
