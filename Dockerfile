@@ -1,7 +1,7 @@
 ﻿# Power BI Control Center — Azure App Service container
 # Base aligned with the known-good Azure "dockerfile", plus current app needs
 # (Gunicorn, Playwright Chromium for visual fallback, ODBC, longer timeouts).
-FROM python:3.12.10-bullseye
+FROM python:3.12.10-bookworm
 
 # Bust layer cache when Azure Pipelines rebuilds
 ARG BUILD_DATE
@@ -45,8 +45,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Microsoft ODBC Driver 17 (SQL tools optional path for scripts)
-RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add - \
-    && curl -fsSL https://packages.microsoft.com/config/debian/11/prod.list \
+# Bookworm's repo list requires the key at the exact "signed-by" keyring path
+# (apt-key is deprecated/insufficient here), so dearmor it into place directly.
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+        | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && curl -fsSL https://packages.microsoft.com/config/debian/12/prod.list \
         > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 mssql-tools \
