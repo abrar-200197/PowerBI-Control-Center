@@ -19,21 +19,25 @@
         --slate-100: #F1F5F9;
         --slate-50: #F8FAFC;
 
-        /* Muted status colors - professional palette */
-        --success-50: #F0FDF4;
-        --success-100: #DCFCE7;
-        --success-600: #16A34A;
-        --success-700: #15803D;
+        /* Muted status colors - derived from the shared base.html tokens
+           (--success/--warning/--info) instead of separately hardcoded hex
+           values, so this page stays in sync with the global palette
+           (including dark mode) automatically. Variable names are unchanged
+           so every rule below that references them keeps working as-is. */
+        --success-50: color-mix(in srgb, var(--success) 8%, var(--bg-surface));
+        --success-100: color-mix(in srgb, var(--success) 16%, var(--bg-surface));
+        --success-600: var(--success);
+        --success-700: color-mix(in srgb, var(--success) 80%, black);
 
-        --warning-50: #FFFBEB;
-        --warning-100: #FEF3C7;
-        --warning-600: #D97706;
-        --warning-700: #B45309;
+        --warning-50: color-mix(in srgb, var(--warning) 8%, var(--bg-surface));
+        --warning-100: color-mix(in srgb, var(--warning) 16%, var(--bg-surface));
+        --warning-600: var(--warning);
+        --warning-700: color-mix(in srgb, var(--warning) 80%, black);
 
-        --info-50: #EFF6FF;
-        --info-100: #DBEAFE;
-        --info-600: #2563EB;
-        --info-700: #1D4ED8;
+        --info-50: color-mix(in srgb, var(--info) 8%, var(--bg-surface));
+        --info-100: color-mix(in srgb, var(--info) 16%, var(--bg-surface));
+        --info-600: var(--info);
+        --info-700: color-mix(in srgb, var(--info) 80%, black);
     }
 
     /* ===== Shared dense Control Center chrome ===== */

@@ -395,6 +395,45 @@
             border-left-color: var(--info);
         }
 
+        /* Shared "KPI tile row" component used across section templates
+           (e.g. Unowned Reports). Pages can opt in by using these class
+           names instead of redefining the same CSS locally. Pages with a
+           different visual variant (e.g. Decommissioned Reports' compact
+           inline chips) intentionally keep their own overrides, which still
+           take precedence since they're loaded after this shared block. */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+            margin: 0;
+        }
+        @media (max-width: 900px) {
+            .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        .stat-card {
+            background: var(--bg-surface);
+            padding: 12px 14px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm);
+            text-align: left;
+            color: var(--text);
+        }
+        .stat-value {
+            font-size: 22px;
+            font-weight: 700;
+            margin: 4px 0 0;
+            font-variant-numeric: tabular-nums;
+            color: var(--text-strong);
+        }
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
         /* Shared surface helpers used across section templates */
         html[data-theme="dark"] .stat-card,
         html[data-theme="dark"] .controls,

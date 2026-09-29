@@ -8,41 +8,9 @@
 <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
 <style>
     .page-shell { display:flex; flex-direction:column; gap:12px; }
-    .stats-grid {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 10px;
-        margin: 0;
-    }
-    @media (max-width: 900px) {
-        .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-
-    .stat-card {
-        background: var(--bg-surface);
-        padding: 12px 14px;
-        border-radius: 8px;
-        border: 1px solid var(--border);
-        box-shadow: var(--shadow-sm);
-        text-align: left;
-        color: var(--text);
-    }
-
-    .stat-value {
-        font-size: 22px;
-        font-weight: 700;
-        margin: 4px 0 0;
-        font-variant-numeric: tabular-nums;
-        color: var(--text-strong);
-    }
-
-    .stat-label {
-        color: var(--text-muted);
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-    }
+    /* .stats-grid / .stat-card / .stat-value / .stat-label now come from the
+       shared "KPI tile row" component in base.html — kept here only if this
+       page ever needs to override the shared look. */
 
     .controls {
         display: flex;
