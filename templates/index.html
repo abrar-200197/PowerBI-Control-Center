@@ -566,6 +566,31 @@
         border: 1px dashed var(--border); border-radius: 8px; background: var(--bg-surface-2);
     }
     .ct-empty .big { font-size: 28px; font-weight: 800; color: var(--text-strong); margin: 8px 0 4px; }
+    .ct-action-banner {
+        border: 1px solid var(--border); border-left: 3px solid #4C51BF; border-radius: 8px;
+        padding: 10px 12px; background: var(--bg-surface-2); margin-bottom: 14px;
+    }
+    .ct-action-banner ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.6; color: var(--text); }
+    .ct-tech-details summary {
+        cursor: pointer; font-size: 13px; font-weight: 700; color: var(--text-strong);
+        padding: 2px 0; list-style: none;
+    }
+    .ct-tech-details summary::-webkit-details-marker { display: none; }
+    .ct-tech-details summary::before { content: '▶ '; font-size: 10px; }
+    .ct-tech-details[open] summary::before { content: '▼ '; }
+    .ct-tech-details .ct-tech-body { margin-top: 8px; }
+    .ct-group {
+        border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: var(--bg-surface-2);
+        overflow: hidden;
+    }
+    .ct-group summary {
+        cursor: pointer; padding: 8px 10px; font-size: 12px; font-weight: 700; color: var(--text-strong);
+        list-style: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .ct-group summary::-webkit-details-marker { display: none; }
+    .ct-group summary::before { content: '▶ '; font-size: 9px; flex-shrink: 0; }
+    .ct-group[open] summary::before { content: '▼ '; }
+    .ct-group .ct-table-wrap { border: none; border-top: 1px solid var(--border); border-radius: 0; max-height: 220px; }
 
     .table-wrapper {
         overflow: auto;
@@ -3453,6 +3478,33 @@
         }
     }
 
+    // Point 4: copy crash test results as plain text to clipboard
+    async function copyCrashTestResults(btn) {
+        const text = (btn.getAttribute('data-copy-text') || '')
+            .replace(/&quot;/g, '"').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&');
+        const original = btn.innerHTML;
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+            }
+            btn.innerHTML = 'Copied!';
+        } catch (e) {
+            console.error('Copy failed:', e);
+            btn.innerHTML = 'Copy failed';
+        } finally {
+            setTimeout(() => { btn.innerHTML = original; }, 1500);
+        }
+    }
+
     function showCrashTestModal(reportName, result, reportId, workspaceId) {
         const healthScore = Number(result.health_score ?? 0);
         const status = String(result.status || 'unknown');
@@ -3493,6 +3545,83 @@
         });
         const blankVisuals = issues.filter(i => (i.category || '') === 'Blank Visual');
 
+        // Point 5: roll up missing fields across all broken visuals
+        const fieldLabel = (f) => {
+            if (typeof f === 'string') return f;
+            const t = f && f.table && f.table !== 'Unknown' ? f.table + '.' : '';
+            return t + ((f && (f.field || f.name)) || '');
+        };
+        const fieldTally = new Map();
+        brokenVisuals.forEach(issue => {
+            const page = issue.page || '—';
+            const visualName = issue.visual || issue.visual_name || 'Unknown visual';
+            const label3 = `${page} / ${visualName}`;
+            (issue.missing_fields || []).forEach(f => {
+                const label = fieldLabel(f);
+                if (!label) return;
+                if (!fieldTally.has(label)) fieldTally.set(label, new Map());
+                // key by page+visual so same-named visuals on different pages aren't merged into one
+                fieldTally.get(label).set(`${page}::${visualName}`, label3);
+            });
+        });
+        const fieldRollup = Array.from(fieldTally.entries())
+            .map(([field, visualsMap]) => ({ field, count: visualsMap.size, visuals: Array.from(visualsMap.values()) }))
+            .sort((a, b) => b.count - a.count);
+
+        // Point 1: group/dedupe broken visuals by root cause (error type + missing fields signature)
+        const groupsMap = new Map();
+        brokenVisuals.forEach(issue => {
+            const visualName = issue.visual || issue.visual_name || 'Unknown visual';
+            const errType = issue.error_type || issue.error_reason || issue.message || 'Error';
+            const missingLabels = (issue.missing_fields || []).map(fieldLabel).filter(Boolean).sort();
+            const key = `${errType}::${missingLabels.join('|')}`;
+            if (!groupsMap.has(key)) {
+                groupsMap.set(key, { errType, missingLabels, visuals: [], culprits: new Set() });
+            }
+            const g = groupsMap.get(key);
+            const rca = rootCauseAnalysis.find(r => r.visual === visualName) || {};
+            const who = rca.likely_culprit || issue.modified_by;
+            if (who && who !== 'N/A' && who !== '—') g.culprits.add(who);
+            g.visuals.push({ page: issue.page || '—', visual: visualName, who: who || '—' });
+        });
+        const brokenGroups = Array.from(groupsMap.values()).sort((a, b) => b.visuals.length - a.visuals.length);
+
+        // Point 2: top-line actionable summary
+        const actionLines = [];
+        if (brokenGroups.length) {
+            actionLines.push(`${brokenVisuals.length} visual(s) broken, grouped into ${brokenGroups.length} root cause(s).`);
+            const top = brokenGroups[0];
+            const culpritStr = top.culprits.size ? ` — likely caused by ${Array.from(top.culprits).join(', ')}` : '';
+            actionLines.push(`Top cause: "${top.errType}" affecting ${top.visuals.length} visual(s)${culpritStr}.`);
+        }
+        if (fieldRollup.length) {
+            const top = fieldRollup[0];
+            actionLines.push(`Most impactful missing field: "${top.field}" (used by ${top.count} visual(s)).`);
+        }
+        // Group/dedupe warnings by category + message template (numbers/quoted visual names normalized out),
+        // so e.g. 112 "Visual X has no layout information" warnings collapse into one group.
+        const normalizeMsg = (m) => String(m || '').replace(/"[^"]*"/g, '"…"').replace(/\d+/g, '#');
+        const warnGroupsMap = new Map();
+        warnings.forEach((w) => {
+            const cat = w.category || 'Warning';
+            const msg = w.message || w.description || 'Warning';
+            const key = `${cat}::${normalizeMsg(msg)}`;
+            if (!warnGroupsMap.has(key)) {
+                warnGroupsMap.set(key, { cat, sampleMsg: msg, recommendation: w.recommendation || '', items: [] });
+            }
+            warnGroupsMap.get(key).items.push(msg);
+        });
+        const warnGroups = Array.from(warnGroupsMap.values()).sort((a, b) => b.items.length - a.items.length);
+
+        if (otherIssues.length) actionLines.push(`${otherIssues.length} other issue(s) found — see Issues section.`);
+        if (blankVisuals.length) actionLines.push(`${blankVisuals.length} blank/empty visual(s) detected.`);
+        if (warnGroups.length && warnings.length) {
+            actionLines.push(`${warnings.length} warning(s) grouped into ${warnGroups.length} type(s) — see Warnings section.`);
+        }
+        if (!actionLines.length) {
+            actionLines.push(healthScore >= 90 ? 'No significant problems detected — report looks healthy.' : 'Review the sections below for details.');
+        }
+
         let refreshChip = '';
         if (refreshInfo) {
             const st = refreshInfo.status || 'Unknown';
@@ -3518,6 +3647,10 @@
                 ${meaning}
               </div>
             </div>
+          </div>
+          <div class="ct-action-banner">
+            <div style="font-size:12px;font-weight:700;color:var(--text-strong)">Action needed</div>
+            <ul>${actionLines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>
           </div>`;
 
         if (scoreBreakdown) {
@@ -3552,54 +3685,72 @@
                 : '';
             bodyHtml += `
               <div class="ct-section">
-                <h3>Visual detection</h3>
-                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-                  <span class="ct-chip">${visualAnalysisPerformed ? 'Scan ran' : 'Scan incomplete'}</span>
-                  <span class="ct-chip">Method: <strong>${esc(method)}</strong></span>
-                  <span class="ct-chip">Pages: <strong>${esc(tp)}</strong></span>
-                  <span class="ct-chip">Visuals extracted: <strong>${esc(tv)}</strong></span>
-                  <span class="ct-chip">Schema checked: <strong>${esc(schemaChecked)}</strong></span>
-                  <span class="ct-chip">Schema broken: <strong>${esc(schemaBroken)}</strong></span>
-                  <span class="ct-chip">Canvas frames: <strong>${esc(frames)}</strong></span>
-                  <span class="ct-chip">See details tiles: <strong>${esc(detailBtns)}</strong></span>
-                </div>
-                <div style="font-size:12px;color:var(--text-muted);line-height:1.45">
-                  Canvas signals: ${esc(canvasHits)}
-                </div>
-                ${renderErr}
-                ${notes ? `<ul style="margin:8px 0 0;padding-left:18px;font-size:12px;color:var(--text-muted)">${notes}</ul>` : ''}
+                <details class="ct-tech-details">
+                  <summary>Technical details (visual detection diagnostics)</summary>
+                  <div class="ct-tech-body">
+                    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+                      <span class="ct-chip">${visualAnalysisPerformed ? 'Scan ran' : 'Scan incomplete'}</span>
+                      <span class="ct-chip">Method: <strong>${esc(method)}</strong></span>
+                      <span class="ct-chip">Pages: <strong>${esc(tp)}</strong></span>
+                      <span class="ct-chip">Visuals extracted: <strong>${esc(tv)}</strong></span>
+                      <span class="ct-chip">Schema checked: <strong>${esc(schemaChecked)}</strong></span>
+                      <span class="ct-chip">Schema broken: <strong>${esc(schemaBroken)}</strong></span>
+                      <span class="ct-chip">Canvas frames: <strong>${esc(frames)}</strong></span>
+                      <span class="ct-chip">See details tiles: <strong>${esc(detailBtns)}</strong></span>
+                    </div>
+                    <div style="font-size:12px;color:var(--text-muted);line-height:1.45">
+                      Canvas signals: ${esc(canvasHits)}
+                    </div>
+                    ${renderErr}
+                    ${notes ? `<ul style="margin:8px 0 0;padding-left:18px;font-size:12px;color:var(--text-muted)">${notes}</ul>` : ''}
+                  </div>
+                </details>
               </div>`;
         }
 
-        if (brokenVisuals.length) {
-            const rows = brokenVisuals.map((issue) => {
-                const visualName = issue.visual || issue.visual_name || 'Unknown visual';
-                const pageName = issue.page || '—';
-                const err = issue.error_type || issue.error_reason || issue.message || 'Error';
-                const missing = (issue.missing_fields || []).map(f => {
-                    if (typeof f === 'string') return f;
-                    const t = f.table && f.table !== 'Unknown' ? f.table + '.' : '';
-                    return t + (f.field || f.name || '');
-                }).filter(Boolean).join(', ') || '—';
-                const rca = rootCauseAnalysis.find(r => r.visual === visualName) || {};
-                const who = rca.likely_culprit || issue.modified_by || '—';
-                return `<tr>
-                  <td>${esc(pageName)}</td>
-                  <td><strong>${esc(visualName)}</strong></td>
-                  <td style="color:#E53E3E;font-family:ui-monospace,monospace;font-size:11px">${esc(err)}</td>
-                  <td style="font-family:ui-monospace,monospace;font-size:11px">${esc(missing)}</td>
-                  <td>${esc(who)}</td>
-                </tr>`;
+        if (fieldRollup.length) {
+            const rollupRows = fieldRollup.map(r => `<tr>
+                  <td style="font-family:ui-monospace,monospace;font-size:11px">${esc(r.field)}</td>
+                  <td>${r.count}</td>
+                  <td style="font-size:11px;color:var(--text-muted)">${esc(r.visuals.slice(0, 5).join(', '))}${r.visuals.length > 5 ? ` +${r.visuals.length - 5} more` : ''}</td>
+                </tr>`).join('');
+            bodyHtml += `
+              <div class="ct-section">
+                <h3>Missing fields rollup <span class="ct-badge" style="background:#DD6B20">${fieldRollup.length}</span></h3>
+                <div class="ct-table-wrap"><table>
+                  <thead><tr><th>Field</th><th>Visuals affected</th><th>Visuals</th></tr></thead>
+                  <tbody>${rollupRows}</tbody>
+                </table></div>
+              </div>`;
+        }
+
+        if (brokenGroups.length) {
+            const groupHtml = brokenGroups.map((g) => {
+                const missingStr = g.missingLabels.join(', ') || '—';
+                const culpritStr = g.culprits.size ? Array.from(g.culprits).join(', ') : '—';
+                const rows = g.visuals.map(v => `<tr>
+                  <td>${esc(v.page)}</td>
+                  <td><strong>${esc(v.visual)}</strong></td>
+                  <td>${esc(v.who)}</td>
+                </tr>`).join('');
+                return `
+                  <details class="ct-group" ${brokenGroups.length === 1 ? 'open' : ''}>
+                    <summary>
+                      <span class="ct-badge" style="background:#E53E3E">${g.visuals.length}</span>
+                      <span style="color:#E53E3E;font-family:ui-monospace,monospace;font-size:11px">${esc(g.errType)}</span>
+                      <span style="font-size:11px;color:var(--text-muted)">Missing: ${esc(missingStr)}</span>
+                      <span style="font-size:11px;color:var(--text-muted)">· Likely: ${esc(culpritStr)}</span>
+                    </summary>
+                    <div class="ct-table-wrap"><table>
+                      <thead><tr><th>Page</th><th>Visual</th><th>Modified by</th></tr></thead>
+                      <tbody>${rows}</tbody>
+                    </table></div>
+                  </details>`;
             }).join('');
             bodyHtml += `
               <div class="ct-section">
                 <h3>Broken visuals <span class="ct-badge" style="background:#E53E3E">${brokenVisuals.length}</span></h3>
-                <div class="ct-table-wrap"><table>
-                  <thead><tr>
-                    <th>Page</th><th>Visual</th><th>Error</th><th>Missing fields</th><th>Modified by</th>
-                  </tr></thead>
-                  <tbody>${rows}</tbody>
-                </table></div>
+                ${groupHtml}
               </div>`;
         }
 
@@ -3637,13 +3788,29 @@
 
         if (warnings.length) {
             bodyHtml += `<div class="ct-section"><h3>Warnings <span class="ct-badge" style="background:#D69E2E">${warnings.length}</span></h3>`;
-            warnings.forEach((w) => {
-                bodyHtml += `
-                  <div class="ct-issue" style="border-left-color:#D69E2E">
-                    <div class="cat" style="color:#B7791F">${esc(w.category || 'Warning')}</div>
-                    <div class="desc">${esc(w.message || w.description || 'Warning')}</div>
-                    ${w.recommendation ? `<div class="rec">${esc(w.recommendation)}</div>` : ''}
-                  </div>`;
+            warnGroups.forEach((g) => {
+                if (g.items.length === 1) {
+                    bodyHtml += `
+                      <div class="ct-issue" style="border-left-color:#D69E2E">
+                        <div class="cat" style="color:#B7791F">${esc(g.cat)}</div>
+                        <div class="desc">${esc(g.sampleMsg)}</div>
+                        ${g.recommendation ? `<div class="rec">${esc(g.recommendation)}</div>` : ''}
+                      </div>`;
+                } else {
+                    const listItems = g.items.map(m => `<li>${esc(m)}</li>`).join('');
+                    bodyHtml += `
+                      <details class="ct-group" style="border-left:3px solid #D69E2E">
+                        <summary>
+                          <span class="ct-badge" style="background:#D69E2E">${g.items.length}</span>
+                          <span style="color:#B7791F">${esc(g.cat)}</span>
+                          <span style="font-size:11px;color:var(--text-muted)">${esc(g.sampleMsg)}</span>
+                        </summary>
+                        <div style="padding:8px 12px;font-size:12px;line-height:1.6">
+                          <ul style="margin:0;padding-left:18px;max-height:200px;overflow:auto">${listItems}</ul>
+                          ${g.recommendation ? `<div class="rec">${esc(g.recommendation)}</div>` : ''}
+                        </div>
+                      </details>`;
+                }
             });
             bodyHtml += `</div>`;
         }
@@ -3661,6 +3828,34 @@
 
         document.querySelectorAll('.ct-backdrop').forEach(el => el.remove());
 
+        // Point 4: plain-text export/copy summary
+        const exportLines = [
+            `Crash test results — ${reportName}`,
+            `Health score: ${healthScore}/100 (${statusLabel})`,
+            `Issues: ${issues.length} · Warnings: ${warnings.length}`,
+            '',
+            'Action needed:',
+            ...actionLines.map(l => `  - ${l}`),
+        ];
+        if (fieldRollup.length) {
+            exportLines.push('', 'Missing fields rollup:');
+            fieldRollup.forEach(r => exportLines.push(`  - ${r.field}: ${r.count} visual(s) (${r.visuals.join(', ')})`));
+        }
+        if (brokenGroups.length) {
+            exportLines.push('', 'Broken visuals by root cause:');
+            brokenGroups.forEach(g => {
+                exportLines.push(`  - ${g.errType} (${g.visuals.length} visual(s)) — Missing: ${g.missingLabels.join(', ') || '—'} — Likely: ${Array.from(g.culprits).join(', ') || '—'}`);
+                g.visuals.forEach(v => exportLines.push(`      · ${v.page} / ${v.visual} (modified by ${v.who})`));
+            });
+        }
+        if (warnGroups.length) {
+            exportLines.push('', 'Warnings by type:');
+            warnGroups.forEach(g => {
+                exportLines.push(`  - [${g.cat}] ${g.sampleMsg} (x${g.items.length})`);
+            });
+        }
+        const exportText = exportLines.join('\n');
+
         const modalHtml = `
           <div class="ct-backdrop" role="dialog" aria-modal="true" aria-label="Crash test results" onclick="if(event.target===this)this.remove()">
             <div class="ct-modal">
@@ -3671,6 +3866,7 @@
                 </div>
                 <div class="ct-head-actions">
                   <a href="${esc(reportLink)}" target="_blank" rel="noopener">Open report</a>
+                  <button type="button" data-copy-text="${esc(exportText)}" onclick="copyCrashTestResults(this)">Copy results</button>
                   <button type="button" onclick="this.closest('.ct-backdrop').remove()">Close</button>
                 </div>
               </div>
