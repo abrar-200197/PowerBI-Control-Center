@@ -3582,7 +3582,7 @@
             const rca = rootCauseAnalysis.find(r => r.visual === visualName) || {};
             const who = rca.likely_culprit || issue.modified_by;
             if (who && who !== 'N/A' && who !== '—') g.culprits.add(who);
-            g.visuals.push({ page: issue.page || '—', visual: visualName, who: who || '—' });
+            g.visuals.push({ page: issue.page || '—', visual: visualName, who: who || '—', hidden: !!issue.page_is_hidden });
         });
         const brokenGroups = Array.from(groupsMap.values()).sort((a, b) => b.visuals.length - a.visuals.length);
 
@@ -3591,7 +3591,7 @@
         if (brokenGroups.length) {
             actionLines.push(`${brokenVisuals.length} visual(s) broken, grouped into ${brokenGroups.length} root cause(s).`);
             const top = brokenGroups[0];
-            const culpritStr = top.culprits.size ? ` — likely caused by ${Array.from(top.culprits).join(', ')}` : '';
+            const culpritStr = top.culprits.size ? ` — last modified by ${Array.from(top.culprits).join(', ')}` : '';
             actionLines.push(`Top cause: "${top.errType}" affecting ${top.visuals.length} visual(s)${culpritStr}.`);
         }
         if (fieldRollup.length) {
@@ -3729,7 +3729,7 @@
                 const missingStr = g.missingLabels.join(', ') || '—';
                 const culpritStr = g.culprits.size ? Array.from(g.culprits).join(', ') : '—';
                 const rows = g.visuals.map(v => `<tr>
-                  <td>${esc(v.page)}</td>
+                  <td>${esc(v.page)}${v.hidden ? ' <span class="ct-badge" style="background:#4A5568;font-size:10px;vertical-align:middle" title="Hidden from nav pane — reached via drillthrough, bookmark, or tooltip">hidden page</span>' : ''}</td>
                   <td><strong>${esc(v.visual)}</strong></td>
                   <td>${esc(v.who)}</td>
                 </tr>`).join('');
@@ -3739,7 +3739,7 @@
                       <span class="ct-badge" style="background:#E53E3E">${g.visuals.length}</span>
                       <span style="color:#E53E3E;font-family:ui-monospace,monospace;font-size:11px">${esc(g.errType)}</span>
                       <span style="font-size:11px;color:var(--text-muted)">Missing: ${esc(missingStr)}</span>
-                      <span style="font-size:11px;color:var(--text-muted)">· Likely: ${esc(culpritStr)}</span>
+                      <span style="font-size:11px;color:var(--text-muted)">· Last modified by: ${esc(culpritStr)}</span>
                     </summary>
                     <div class="ct-table-wrap"><table>
                       <thead><tr><th>Page</th><th>Visual</th><th>Modified by</th></tr></thead>
@@ -3779,7 +3779,7 @@
             blankVisuals.forEach((issue) => {
                 bodyHtml += `
                   <div class="ct-issue" style="border-left-color:#A0AEC0">
-                    <div class="cat" style="color:var(--text-muted)">${esc(issue.visual || issue.visual_name || 'Visual')} · ${esc(issue.page || '—')}</div>
+                    <div class="cat" style="color:var(--text-muted)">${esc(issue.visual || issue.visual_name || 'Visual')} · ${esc(issue.page || '—')}${issue.page_is_hidden ? ' <span class="ct-badge" style="background:#4A5568;font-size:10px;vertical-align:middle">hidden page</span>' : ''}</div>
                     <div class="desc">${esc(issue.root_cause || issue.error_reason || issue.description || 'Empty visual')}</div>
                   </div>`;
             });
@@ -3844,8 +3844,8 @@
         if (brokenGroups.length) {
             exportLines.push('', 'Broken visuals by root cause:');
             brokenGroups.forEach(g => {
-                exportLines.push(`  - ${g.errType} (${g.visuals.length} visual(s)) — Missing: ${g.missingLabels.join(', ') || '—'} — Likely: ${Array.from(g.culprits).join(', ') || '—'}`);
-                g.visuals.forEach(v => exportLines.push(`      · ${v.page} / ${v.visual} (modified by ${v.who})`));
+                exportLines.push(`  - ${g.errType} (${g.visuals.length} visual(s)) — Missing: ${g.missingLabels.join(', ') || '—'} — Last modified by: ${Array.from(g.culprits).join(', ') || '—'}`);
+                g.visuals.forEach(v => exportLines.push(`      · ${v.page}${v.hidden ? ' [hidden page]' : ''} / ${v.visual} (modified by ${v.who})`));
             });
         }
         if (warnGroups.length) {

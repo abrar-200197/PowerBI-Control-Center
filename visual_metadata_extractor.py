@@ -794,6 +794,7 @@ class VisualMetadataExtractor:
             page['errors'] = pw.get('errors') or []
             page['order'] = pw.get('order', page.get('order'))
             page['isActive'] = pw.get('isActive', page.get('isActive'))
+            page['isHidden'] = bool(pw.get('isHidden', page.get('isHidden')))
 
             pw_visuals = { _norm(v.get('title') or v.get('name')): v for v in (pw.get('visuals') or []) }
             overlayed = []
@@ -1379,6 +1380,7 @@ class VisualMetadataExtractor:
                                             displayName: page.displayName,
                                             order: page.order,
                                             isActive: page.isActive,
+                                            isHidden: page.visibility === 1,  // SectionVisibility.HiddenInViewMode
                                             hasErrors: hasPageErrors,  // Flag if page has error messages
                                             errors: pageErrors.map(err => ({{  // NEW: Individual error details
                                                 visualTitle: err.visualTitle,
@@ -1537,6 +1539,7 @@ class VisualMetadataExtractor:
                                             displayName: page.displayName,
                                             order: page.order,
                                             isActive: page.isActive,
+                                            isHidden: page.visibility === 1,
                                             visuals: [],
                                             visualCount: 0,
                                             error: pageError.message

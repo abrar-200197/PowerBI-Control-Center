@@ -566,6 +566,7 @@ class CrashTestAnalyzer:
 
             for page in self.visual_metadata:
                 page_name = page.get('displayName', 'Unknown')
+                page_is_hidden = bool(page.get('isHidden', False))  # Hidden page (drillthrough/tooltip/bookmark target)
                 page_has_errors = page.get('hasErrors', False)  # Check if page has error messages
                 page_errors = page.get('errors', [])  # NEW: Get individual error details
 
@@ -730,6 +731,7 @@ class CrashTestAnalyzer:
                             'category': 'Broken Visual',
                             'severity': 'Critical',
                             'page': page_name,
+                            'page_is_hidden': page_is_hidden,  # NEW: Page hidden from nav pane
                             'visual': visual_title,
                             'visual_name': visual_title,
                             'visual_type': visual_type,  # NEW: Visual type (e.g., 'clusteredColumnChart')
@@ -763,6 +765,7 @@ class CrashTestAnalyzer:
                             'category': 'Blank Visual',  # NEW: Separate category
                             'severity': 'Critical',
                             'page': page_name,
+                            'page_is_hidden': page_is_hidden,  # NEW: Page hidden from nav pane
                             'visual': visual_title,
                             'visual_name': visual_name,
                             'visual_type': 'blank/empty',  # NEW: Indicate it's blank
@@ -782,6 +785,7 @@ class CrashTestAnalyzer:
                             'category': 'Visual Layout',
                             'severity': 'Warning',
                             'page': page_name,
+                            'page_is_hidden': page_is_hidden,  # NEW: Page hidden from nav pane
                             'visual': visual_title,
                             'message': f'Visual "{visual_title}" has no layout information',
                             'recommendation': 'Visual may have rendering issues'
