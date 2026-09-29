@@ -1564,7 +1564,30 @@
         });
 
         // Load workspaces after Select2 initialization
-        loadWorkspaces();
+        loadWorkspaces().then(function() {
+            // Deep-link support: /lineage?workspace_id=...&dataset_id=... (e.g. from Semantic Models "Used by N reports")
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const deepWorkspaceId = params.get('workspace_id');
+                const deepDatasetId = params.get('dataset_id');
+                if (deepWorkspaceId) {
+                    $('#analysisTypeSelect').val('dataset').trigger('change');
+                    $('#workspaceSelect').val(deepWorkspaceId).trigger('change');
+                    if (deepDatasetId) {
+                        const waitForDataset = setInterval(function() {
+                            const opt = document.querySelector('#datasetSelect option[value="' + deepDatasetId + '"]');
+                            if (opt) {
+                                clearInterval(waitForDataset);
+                                $('#datasetSelect').val(deepDatasetId).trigger('change');
+                            }
+                        }, 200);
+                        setTimeout(function() { clearInterval(waitForDataset); }, 8000);
+                    }
+                }
+            } catch (e) {
+                console.error('Deep-link init failed:', e);
+            }
+        });
     });
 
     async function loadWorkspaces() {

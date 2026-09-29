@@ -82,6 +82,9 @@
         overflow:auto; max-height:240px; border:1px solid var(--border);
         border-radius:8px; background:var(--bg-surface);
     }
+    .sm-modal-card.sm-modal-wide { width:min(1400px,96vw); }
+    .sm-lineage-frame-wrap { padding:0; height:80vh; }
+    .sm-lineage-frame-wrap iframe { width:100%; height:100%; border:0; display:block; background:var(--bg-page); }
     html[data-theme="dark"] .status-ok { background:#0f2e22; color:#6ee7b7; border-color:#14532d; }
     html[data-theme="dark"] .status-warn { background:#3d2e12; color:#fbbf24; border-color:#78350f; }
     html[data-theme="dark"] .status-err { background:#3f1515; color:#fca5a5; border-color:#7f1d1d; }
@@ -157,6 +160,21 @@
         </div>
     </div>
 </div>
+
+<div class="sm-modal" id="lineageModal" role="dialog" aria-modal="true">
+    <div class="sm-modal-card sm-modal-wide">
+        <div class="sm-modal-head">
+            <h3>Report lineage: <span id="lineageModalModelName"></span></h3>
+            <div style="display:flex; align-items:center; gap:14px;">
+                <a href="#" id="lineageOpenFullPage" class="sm-linkish" target="_self">Open full page →</a>
+                <button type="button" class="icon-btn" onclick="closeLineageModal()" aria-label="Close">×</button>
+            </div>
+        </div>
+        <div class="sm-modal-body sm-lineage-frame-wrap">
+            <iframe id="lineageFrame" src="about:blank" title="Report lineage"></iframe>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -172,6 +190,8 @@ function closeSmModal(id) {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     document.querySelectorAll('.sm-modal.open').forEach(m => m.classList.remove('open'));
+    const frame = document.getElementById('lineageFrame');
+    if (frame) frame.src = 'about:blank';
   }
 });
 </script>
@@ -261,6 +281,24 @@ document.addEventListener('keydown', (e) => {
         }
     }
 
+    // Opens Report Lineage in an in-page modal (iframe, same tab/window/session)
+    // instead of a new tab or popup window, so there's never a second sign-in
+    // context to get out of sync. A "Open full page" link inside the modal
+    // navigates the current tab if the user wants the full-screen experience.
+    function openLineageModal(url, modelName) {
+        const embedUrl = url + (url.includes('?') ? '&' : '?') + 'embed=1';
+        document.getElementById('lineageModalModelName').textContent = modelName || '';
+        document.getElementById('lineageFrame').src = embedUrl;
+        document.getElementById('lineageOpenFullPage').href = url; // full nav, own tab
+        openSmModal('lineageModal');
+        return false;
+    }
+    function closeLineageModal() {
+        closeSmModal('lineageModal');
+        // Stop any in-flight loads / free resources once closed
+        document.getElementById('lineageFrame').src = 'about:blank';
+    }
+
     function statusPill(status, refreshType) {
         const s = String(status || '').toLowerCase();
         const t = String(refreshType || '').toLowerCase();
@@ -314,8 +352,21 @@ document.addEventListener('keydown', (e) => {
                 return String(n);
             };
 
+            const reportCount = model.reportCount != null ? model.reportCount : null;
+            let usedByLink = '';
+            if (reportCount != null && currentWorkspaceId) {
+                const label = `Used by ${reportCount} report${reportCount === 1 ? '' : 's'}`;
+                if (reportCount > 0) {
+                    const lineageUrl = `/lineage?workspace_id=${encodeURIComponent(currentWorkspaceId)}&dataset_id=${encodeURIComponent(model.id || '')}`;
+                    const safeName = escapeHtml(model.name || '').replace(/'/g, "\\'");
+                    usedByLink = `<div><a href="${lineageUrl}" onclick="return openLineageModal(this.href, '${safeName}');" class="sm-linkish">${label} →</a></div>`;
+                } else {
+                    usedByLink = `<div class="sm-item-meta">${label}</div>`;
+                }
+            }
+
             row.innerHTML = `
-                <td><strong>${escapeHtml(model.name || '')}</strong></td>
+                <td><strong>${escapeHtml(model.name || '')}</strong>${usedByLink}</td>
                 <td>${fmtCount(tableCount, 'Table count unavailable')}</td>
                 <td>${fmtCount(relationshipCount, 'Relationships not included in catalog extract')}</td>
                 <td>${fmtCount(measureCount, 'Measures not included in catalog extract')}</td>

@@ -339,6 +339,18 @@
             background: #2D3748;
         }
 
+        /* Embed mode: hide sidebar chrome when rendered inside another page's
+           iframe (e.g. Semantic Models "Used by N reports" modal), so users
+           can't navigate away to another section and lose their place. */
+        body.embed-mode .sidebar { display: none; }
+        body.embed-mode .main-wrapper { margin-left: 0; }
+        body.embed-mode .content { max-width: 100%; }
+        body.embed-mode .header-content { max-width: 100%; margin: 0; }
+        /* Theme toggle + signed-in user identity belong to the main app shell only;
+           hide them in embedded views so theme changes/identity are controlled at the top level. */
+        body.embed-mode .theme-toggle,
+        body.embed-mode .user-info .user-name { display: none; }
+
         .content {
             flex: 1;
             padding: 16px 28px 20px;
@@ -678,7 +690,7 @@
     </style>
     {% block extra_css %}{% endblock %}
 </head>
-<body>
+<body{% if request.args.get('embed') == '1' %} class="embed-mode"{% endif %}>
     <!-- Sidebar -->
     <div class="sidebar">
         <div class="sidebar-header">
