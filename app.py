@@ -10,11 +10,24 @@ import os
 import sys
 import time
 import threading
+import logging
 from dotenv import load_dotenv
 import msal
 import uuid
 import requests
 import json
+
+# Scoped logger for Similarity Analysis routes — dual-writes alongside the
+# existing print() calls there (no prints removed, no behavior change).
+# Isolated logger (propagate=False) so it never affects root logging config
+# or any other module/route.
+similarity_logger = logging.getLogger('similarity_analysis')
+similarity_logger.setLevel(logging.INFO)
+if not similarity_logger.handlers:
+    _sim_log_handler = logging.StreamHandler()
+    _sim_log_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s [similarity] %(message)s'))
+    similarity_logger.addHandler(_sim_log_handler)
+    similarity_logger.propagate = False
 
 # Force UTF-8 stdout/stderr so emoji/log prints (e.g. in visual_metadata_extractor.py)
 # never crash with UnicodeEncodeError when process output is redirected/logged to a
@@ -3391,7 +3404,11 @@ def analyze_report_similarity(workspace_id):
                     'expressions': dataset.get('expressions', []),
                     'measures': [],
                     'pages': [],
-                    'visuals': []  # Will be populated with visual metadata
+                    'visuals': [],  # Will be populated with visual metadata
+                    # Additive metadata (safe: Scanner API already returns these fields
+                    # for reports; unused by any existing consumer until now)
+                    'modifiedBy': report.get('modifiedBy') or report.get('modifiedByUserPrincipalName') or '',
+                    'modifiedDateTime': report.get('modifiedDateTime') or report.get('modifiedDate') or ''
                 }
 
                 # Extract DAX measures from tables
@@ -3486,13 +3503,17 @@ def analyze_report_similarity(workspace_id):
                             'id': report_a['id'],
                             'name': report_a['name'],
                             'workspace_id': report_a.get('workspace_id'),
-                            'workspace_name': report_a.get('workspace_name')
+                            'workspace_name': report_a.get('workspace_name'),
+                            'modifiedBy': report_a.get('modifiedBy', ''),
+                            'modifiedDateTime': report_a.get('modifiedDateTime', '')
                         },
                         'report_b': {
                             'id': report_b['id'],
                             'name': report_b['name'],
                             'workspace_id': report_b.get('workspace_id'),
-                            'workspace_name': report_b.get('workspace_name')
+                            'workspace_name': report_b.get('workspace_name'),
+                            'modifiedBy': report_b.get('modifiedBy', ''),
+                            'modifiedDateTime': report_b.get('modifiedDateTime', '')
                         },
                         'is_cross_workspace': report_a.get('workspace_id') != report_b.get('workspace_id'),
                         'similarity_score': similarity['overall_score'],
@@ -3545,6 +3566,12 @@ def export_similarity_analysis():
         from datetime import datetime
         import json
 
+        # Additive note (not present before): set only when the GET re-analyze
+        # path caps the number of workspaces scanned for a cross-workspace
+        # ('ALL'/'GLOBAL') export. None otherwise — existing behavior/response
+        # shape is unchanged unless this note is populated.
+        workspace_scan_note = None
+
         # Support both GET (old way) and POST (new way with results data)
         if request.method == 'POST':
             workspace_id = request.form.get('workspace_id')
@@ -3557,6 +3584,7 @@ def export_similarity_analysis():
             print(f"\n📊 Exporting pre-analyzed similarity results")
             print(f"   Workspace: {workspace_id}")
             print(f"   Format: {export_format}")
+            similarity_logger.info(f"Export (POST/pre-analyzed): workspace={workspace_id} format={export_format}")
 
             # Parse the results from frontend
             comparisons = json.loads(results_json)
@@ -3573,6 +3601,7 @@ def export_similarity_analysis():
             print(f"\n📊 Exporting similarity analysis for workspace: {workspace_id}")
             print(f"   Format: {export_format}")
             print(f"   ⚠️ WARNING: Re-analyzing (slow for large datasets)")
+            similarity_logger.info(f"Export (GET/re-analyze): workspace={workspace_id} format={export_format}")
 
             # Get user token
             user_token = session.get('access_token')
@@ -3598,6 +3627,15 @@ def export_similarity_analysis():
                     all_workspaces = ws_response.json().get('value', [])
                     workspaces_to_scan = [ws['id'] for ws in all_workspaces[:10]]  # Limit to 10 for performance
                     print(f"   ✅ Will export from {len(workspaces_to_scan)} workspaces")
+                    if len(all_workspaces) > len(workspaces_to_scan):
+                        workspace_scan_note = (
+                            f"Only {len(workspaces_to_scan)} of {len(all_workspaces)} accessible "
+                            f"workspaces were scanned (performance cap)."
+                        )
+                        print(f"   ⚠️ {workspace_scan_note}")
+                    similarity_logger.info(
+                        f"Cross-workspace export: scanning {len(workspaces_to_scan)} of {len(all_workspaces)} workspaces"
+                    )
                 else:
                     return jsonify({'success': False, 'error': 'Failed to fetch workspaces'}), 500
             else:
@@ -3662,7 +3700,9 @@ def export_similarity_analysis():
                         'datasetId': dataset_id,
                         'tables': dataset.get('tables', []),
                         'measures': [],
-                        'pages': []
+                        'pages': [],
+                        'modifiedBy': report.get('modifiedBy') or report.get('modifiedByUserPrincipalName') or '',
+                        'modifiedDateTime': report.get('modifiedDateTime') or report.get('modifiedDate') or ''
                     }
 
                     for table in dataset.get('tables', []):
@@ -3717,10 +3757,18 @@ def export_similarity_analysis():
                     is_cross_ws = report_a.get('workspace_id') != report_b.get('workspace_id')
 
                     comparisons.append({
+                        'report_a_id': report_a.get('id', ''),
                         'report_a_name': report_a['name'],
                         'report_a_workspace': report_a.get('workspace_name', ''),
+                        'report_a_workspace_id': report_a.get('workspace_id', ''),
+                        'report_a_modified_by': report_a.get('modifiedBy', ''),
+                        'report_a_modified_date': report_a.get('modifiedDateTime', ''),
+                        'report_b_id': report_b.get('id', ''),
                         'report_b_name': report_b['name'],
                         'report_b_workspace': report_b.get('workspace_name', ''),
+                        'report_b_workspace_id': report_b.get('workspace_id', ''),
+                        'report_b_modified_by': report_b.get('modifiedBy', ''),
+                        'report_b_modified_date': report_b.get('modifiedDateTime', ''),
                         'is_cross_workspace': 'Yes' if is_cross_ws else 'No',
                         'similarity_score': similarity['overall_score'],
                         'dax_similarity': similarity['scores']['dax_similarity'],
@@ -3776,21 +3824,37 @@ def export_similarity_analysis():
             # Handle both frontend format (nested) and backend format (flat)
             if 'report_a' in comp and isinstance(comp['report_a'], dict):
                 # Frontend format
+                normalized['report_a_id'] = comp['report_a'].get('id', '')
                 normalized['report_a_name'] = comp['report_a'].get('name', '')
                 normalized['report_a_workspace'] = comp['report_a'].get('workspace_name', '')
+                normalized['report_a_workspace_id'] = comp['report_a'].get('workspace_id', '')
+                normalized['report_a_modified_by'] = comp['report_a'].get('modifiedBy', '')
+                normalized['report_a_modified_date'] = comp['report_a'].get('modifiedDateTime', '')
             else:
                 # Backend format
+                normalized['report_a_id'] = comp.get('report_a_id', '')
                 normalized['report_a_name'] = comp.get('report_a_name', '')
                 normalized['report_a_workspace'] = comp.get('report_a_workspace', '')
+                normalized['report_a_workspace_id'] = comp.get('report_a_workspace_id', '')
+                normalized['report_a_modified_by'] = comp.get('report_a_modified_by', '')
+                normalized['report_a_modified_date'] = comp.get('report_a_modified_date', '')
 
             if 'report_b' in comp and isinstance(comp['report_b'], dict):
                 # Frontend format
+                normalized['report_b_id'] = comp['report_b'].get('id', '')
                 normalized['report_b_name'] = comp['report_b'].get('name', '')
                 normalized['report_b_workspace'] = comp['report_b'].get('workspace_name', '')
+                normalized['report_b_workspace_id'] = comp['report_b'].get('workspace_id', '')
+                normalized['report_b_modified_by'] = comp['report_b'].get('modifiedBy', '')
+                normalized['report_b_modified_date'] = comp['report_b'].get('modifiedDateTime', '')
             else:
                 # Backend format
+                normalized['report_b_id'] = comp.get('report_b_id', '')
                 normalized['report_b_name'] = comp.get('report_b_name', '')
                 normalized['report_b_workspace'] = comp.get('report_b_workspace', '')
+                normalized['report_b_workspace_id'] = comp.get('report_b_workspace_id', '')
+                normalized['report_b_modified_by'] = comp.get('report_b_modified_by', '')
+                normalized['report_b_modified_date'] = comp.get('report_b_modified_date', '')
 
             # Copy all other fields
             normalized['similarity_score'] = comp.get('similarity_score', 0)
@@ -3839,6 +3903,24 @@ def export_similarity_analysis():
         # Prepare export metadata
         total_reports = len(comparisons) if request.method == 'POST' else len(reports_data)
 
+        # Additive helpers for the Excel export column improvements (report link,
+        # recommended-action flag). Pure functions — no effect on existing fields.
+        def _powerbi_report_url(ws_id, rpt_id):
+            if not ws_id or not rpt_id:
+                return ''
+            return f"https://app.powerbi.com/groups/{ws_id}/reports/{rpt_id}"
+
+        def _recommended_action(score):
+            try:
+                score_val = float(score)
+            except (TypeError, ValueError):
+                return ''
+            if score_val >= 95:
+                return 'Consolidate (near-duplicate)'
+            if score_val >= 85:
+                return 'Review (high overlap)'
+            return 'Monitor (moderate overlap)'
+
         if export_format == 'excel':
             # Export to Excel with professional formatting
             try:
@@ -3851,50 +3933,67 @@ def export_similarity_analysis():
 
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     # ===== SHEET 1: Summary =====
-                    summary_data = {
-                        'Metric': [
-                            'Report Title',
-                            'Analysis Date',
-                            'Analysis Time',
-                            'Workspace ID',
-                            'Total Reports Analyzed',
-                            'Similar Pairs Found (≥70%)',
-                            'Highest Similarity',
-                            'Lowest Similarity'
-                        ],
-                        'Value': [
-                            'Power BI Similarity Analysis',
-                            datetime.now().strftime('%Y-%m-%d'),
-                            datetime.now().strftime('%H:%M:%S'),
-                            workspace_id,
-                            total_reports,
-                            len(comparisons),
-                            max([c['similarity_score'] for c in comparisons]) if comparisons else 0,
-                            min([c['similarity_score'] for c in comparisons]) if comparisons else 0
-                        ]
-                    }
+                    summary_metrics = [
+                        'Report Title',
+                        'Analysis Date',
+                        'Analysis Time',
+                        'Workspace ID',
+                        'Total Reports Analyzed',
+                        'Similar Pairs Found (≥70%)',
+                        'Highest Similarity',
+                        'Lowest Similarity'
+                    ]
+                    summary_values = [
+                        'Power BI Similarity Analysis',
+                        datetime.now().strftime('%Y-%m-%d'),
+                        datetime.now().strftime('%H:%M:%S'),
+                        workspace_id,
+                        total_reports,
+                        len(comparisons),
+                        max([c['similarity_score'] for c in comparisons]) if comparisons else 0,
+                        min([c['similarity_score'] for c in comparisons]) if comparisons else 0
+                    ]
+                    if workspace_scan_note:
+                        summary_metrics.append('Note')
+                        summary_values.append(workspace_scan_note)
+                    summary_data = {'Metric': summary_metrics, 'Value': summary_values}
                     pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
 
                     # ===== SHEET 2: Comparison Overview =====
                     overview_data = []
                     for comp in comparisons:
+                        report_a_link = _powerbi_report_url(comp.get('report_a_workspace_id'), comp.get('report_a_id'))
+                        report_b_link = _powerbi_report_url(comp.get('report_b_workspace_id'), comp.get('report_b_id'))
                         overview_data.append({
+                            # --- Identity ---
                             'Report A': comp['report_a_name'],
                             'Workspace A': comp.get('report_a_workspace', ''),
+                            'Report A ID': comp.get('report_a_id', ''),
+                            'Report A Link': report_a_link,
                             'Report B': comp['report_b_name'],
                             'Workspace B': comp.get('report_b_workspace', ''),
+                            'Report B ID': comp.get('report_b_id', ''),
+                            'Report B Link': report_b_link,
                             'Cross-Workspace': comp.get('is_cross_workspace', 'No'),
+                            # --- Scores ---
                             'Overall Similarity %': comp['similarity_score'],
                             'DAX Logic %': comp['dax_similarity'],
                             'Schema %': comp['table_similarity'],
                             'Pages %': comp['page_similarity'],
                             'Visuals %': comp.get('visual_similarity', 0),
+                            # --- Counts ---
                             'Common Measures': comp['identical_measures_count'],
                             'Logic-Matched Measures': comp.get('logic_matched_measures_count', 0),
                             'Common Tables': comp['identical_tables_count'],
                             'Common Pages': comp['identical_pages_count'],
                             'Identical Visuals': comp.get('identical_visuals_count', 0),
-                            'Similar Visuals': comp.get('similar_visuals_count', 0)
+                            'Similar Visuals': comp.get('similar_visuals_count', 0),
+                            # --- Metadata / Action ---
+                            'Report A Modified By': comp.get('report_a_modified_by', ''),
+                            'Report A Last Modified': comp.get('report_a_modified_date', ''),
+                            'Report B Modified By': comp.get('report_b_modified_by', ''),
+                            'Report B Last Modified': comp.get('report_b_modified_date', ''),
+                            'Recommended Action': _recommended_action(comp['similarity_score'])
                         })
 
                     df_overview = pd.DataFrame(overview_data)
@@ -3903,17 +4002,26 @@ def export_similarity_analysis():
                     # ===== SHEET 3: Detailed Breakdown =====
                     detailed_data = []
                     for comp in comparisons:
+                        report_a_link = _powerbi_report_url(comp.get('report_a_workspace_id'), comp.get('report_a_id'))
+                        report_b_link = _powerbi_report_url(comp.get('report_b_workspace_id'), comp.get('report_b_id'))
                         detailed_data.append({
+                            # --- Identity ---
                             'Report A': comp['report_a_name'],
                             'Workspace A': comp.get('report_a_workspace', ''),
+                            'Report A ID': comp.get('report_a_id', ''),
+                            'Report A Link': report_a_link,
                             'Report B': comp['report_b_name'],
                             'Workspace B': comp.get('report_b_workspace', ''),
+                            'Report B ID': comp.get('report_b_id', ''),
+                            'Report B Link': report_b_link,
                             'Cross-Workspace': comp.get('is_cross_workspace', 'No'),
+                            # --- Scores ---
                             'Overall Similarity %': comp['similarity_score'],
                             'DAX Logic %': comp['dax_similarity'],
                             'Schema %': comp['table_similarity'],
                             'Pages %': comp['page_similarity'],
                             'Visuals %': comp.get('visual_similarity', 0),
+                            # --- Names/detail (kept for full traceability) ---
                             'Common Tables': comp['identical_tables'],
                             'Missing in A (Tables)': comp['unique_tables_b'],
                             'Missing in B (Tables)': comp['unique_tables_a'],
@@ -3925,7 +4033,13 @@ def export_similarity_analysis():
                             'Missing in A (Pages)': comp['unique_pages_b'],
                             'Missing in B (Pages)': comp['unique_pages_a'],
                             'Identical Visuals': comp.get('identical_visuals_count', 0),
-                            'Similar Visuals (70%+ Overlap)': comp.get('similar_visuals_count', 0)
+                            'Similar Visuals (70%+ Overlap)': comp.get('similar_visuals_count', 0),
+                            # --- Metadata / Action ---
+                            'Report A Modified By': comp.get('report_a_modified_by', ''),
+                            'Report A Last Modified': comp.get('report_a_modified_date', ''),
+                            'Report B Modified By': comp.get('report_b_modified_by', ''),
+                            'Report B Last Modified': comp.get('report_b_modified_date', ''),
+                            'Recommended Action': _recommended_action(comp['similarity_score'])
                         })
 
                     df_detailed = pd.DataFrame(detailed_data)
@@ -3949,12 +4063,37 @@ def export_similarity_analysis():
                 for sheet_name in wb.sheetnames:
                     ws = wb[sheet_name]
 
-                    # Format header row
+                    # Format header row + locate columns needing special treatment
+                    # (percentage number format, clickable report links) by header text.
+                    percent_cols = set()
+                    link_cols = set()
                     for cell in ws[1]:
                         cell.fill = header_fill
                         cell.font = header_font
                         cell.alignment = header_alignment
                         cell.border = thin_border
+                        header_text = str(cell.value or '')
+                        if header_text.endswith('%'):
+                            percent_cols.add(cell.column)
+                        elif header_text.endswith('Link'):
+                            link_cols.add(cell.column)
+
+                    # Apply percentage number formatting to score columns (values are
+                    # already 0-100 scale, so a literal "%" suffix is used rather than
+                    # dividing by 100 — display-only change, underlying value unchanged).
+                    if percent_cols and ws.max_row > 1:
+                        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                            for cell in row:
+                                if cell.column in percent_cols and isinstance(cell.value, (int, float)):
+                                    cell.number_format = '0.0"%"'
+
+                    # Turn report link columns into clickable hyperlinks
+                    if link_cols and ws.max_row > 1:
+                        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                            for cell in row:
+                                if cell.column in link_cols and cell.value:
+                                    cell.hyperlink = cell.value
+                                    cell.font = Font(color='0563C1', underline='single')
 
                     # Auto-adjust column widths
                     for column in ws.columns:
@@ -4005,6 +4144,7 @@ def export_similarity_analysis():
                 print(f"   Filename: {filename}")
                 print(f"   File size: {output.getbuffer().nbytes} bytes")
                 print(f"   Sending file to client...")
+                similarity_logger.info(f"Excel export ready: {filename} ({output.getbuffer().nbytes} bytes)")
 
                 return send_file(
                     output,
@@ -4032,17 +4172,24 @@ def export_similarity_analysis():
             writer.writerow(['Workspace ID:', workspace_id])
             writer.writerow(['Total Reports:', len(reports_data)])
             writer.writerow(['Similar Pairs:', len(comparisons)])
+            if workspace_scan_note:
+                writer.writerow(['Note:', workspace_scan_note])
             writer.writerow([])
 
-            # Write headers with enhanced columns
+            # Write headers with enhanced columns (grouped: identity, scores, counts,
+            # names, metadata/action — mirrors the Excel export column order)
             writer.writerow([
-                'Report A', 'Workspace A', 'Report B', 'Workspace B', 'Cross-Workspace',
+                'Report A', 'Workspace A', 'Report A ID', 'Report A Link',
+                'Report B', 'Workspace B', 'Report B ID', 'Report B Link', 'Cross-Workspace',
                 'Overall %', 'DAX Logic %', 'Schema %', 'Pages %', 'Visuals %',
                 'Common Measures', 'Logic-Matched Measures', 'Common Tables', 'Common Pages',
                 'Identical Visuals', 'Similar Visuals',
                 'Unique Tables (A)', 'Unique Tables (B)',
                 'Unique Measures (A)', 'Unique Measures (B)',
-                'Unique Pages (A)', 'Unique Pages (B)'
+                'Unique Pages (A)', 'Unique Pages (B)',
+                'Report A Modified By', 'Report A Last Modified',
+                'Report B Modified By', 'Report B Last Modified',
+                'Recommended Action'
             ])
 
             # Write data
@@ -4050,8 +4197,12 @@ def export_similarity_analysis():
                 writer.writerow([
                     comp['report_a_name'],
                     comp.get('report_a_workspace', ''),
+                    comp.get('report_a_id', ''),
+                    _powerbi_report_url(comp.get('report_a_workspace_id'), comp.get('report_a_id')),
                     comp['report_b_name'],
                     comp.get('report_b_workspace', ''),
+                    comp.get('report_b_id', ''),
+                    _powerbi_report_url(comp.get('report_b_workspace_id'), comp.get('report_b_id')),
                     comp.get('is_cross_workspace', 'No'),
                     comp['similarity_score'],
                     comp['dax_similarity'],
@@ -4069,7 +4220,12 @@ def export_similarity_analysis():
                     comp['unique_measures_a'],
                     comp['unique_measures_b'],
                     comp['unique_pages_a'],
-                    comp['unique_pages_b']
+                    comp['unique_pages_b'],
+                    comp.get('report_a_modified_by', ''),
+                    comp.get('report_a_modified_date', ''),
+                    comp.get('report_b_modified_by', ''),
+                    comp.get('report_b_modified_date', ''),
+                    _recommended_action(comp['similarity_score'])
                 ])
 
             output.seek(0)
@@ -4080,6 +4236,7 @@ def export_similarity_analysis():
             print(f"   Filename: {filename}")
             print(f"   File size: {len(csv_bytes)} bytes")
             print(f"   Sending file to client...")
+            similarity_logger.info(f"CSV export ready: {filename} ({len(csv_bytes)} bytes)")
 
             return send_file(
                 io.BytesIO(csv_bytes),
@@ -4090,6 +4247,7 @@ def export_similarity_analysis():
 
     except Exception as e:
         print(f"❌ Error in export: {str(e)}")
+        similarity_logger.error(f"Error in export: {str(e)}", exc_info=True)
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -10278,6 +10436,7 @@ def get_similarity_analysis():
             }), 400
 
         print(f"\n🔍 SIMILARITY ANALYSIS: type={analysis_type} ws={workspace_id} thr={threshold}")
+        similarity_logger.info(f"SIMILARITY ANALYSIS: type={analysis_type} ws={workspace_id} thr={threshold}")
 
         # Catalog-first payload for reports/tables
         catalog_ws, catalog_datasets = _similarity_catalog_workspace(workspace_id)
@@ -10390,6 +10549,7 @@ def get_similarity_analysis():
             notes.append(f'Showing top {max_rows} matches (truncated)')
 
         print(f"   ✅ {analysis_type}: {len(matches)} matches")
+        similarity_logger.info(f"{analysis_type}: {len(matches)} matches (truncated={truncated})")
 
         return jsonify({
             'success': True,
@@ -10405,6 +10565,7 @@ def get_similarity_analysis():
 
     except Exception as e:
         print(f"❌ Error in similarity analysis: {str(e)}")
+        similarity_logger.error(f"Error in similarity analysis: {str(e)}", exc_info=True)
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500

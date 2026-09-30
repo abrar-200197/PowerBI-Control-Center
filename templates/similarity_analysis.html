@@ -38,6 +38,11 @@
         --info-100: color-mix(in srgb, var(--info) 16%, var(--bg-surface));
         --info-600: var(--info);
         --info-700: color-mix(in srgb, var(--info) 80%, black);
+
+        --danger-50: color-mix(in srgb, var(--danger) 8%, var(--bg-surface));
+        --danger-100: color-mix(in srgb, var(--danger) 16%, var(--bg-surface));
+        --danger-600: var(--danger);
+        --danger-700: color-mix(in srgb, var(--danger) 80%, black);
     }
 
     /* ===== Shared dense Control Center chrome ===== */
@@ -233,9 +238,9 @@
     }
 
     .score-low {
-        background: #FEF2F2;
-        color: #B91C1C;
-        border-color: #FEE2E2;
+        background: var(--danger-50);
+        color: var(--danger-700);
+        border-color: var(--danger-100);
     }
 
     /* Badge Styles - Muted Tones */
@@ -261,8 +266,20 @@
     }
 
     .badge-warning {
-        background: #FEF3C7;
-        color: #92400E;
+        background: var(--warning-50);
+        color: var(--warning-700);
+    }
+
+    /* Reusable text utility classes — replaces repeated inline styles
+       (previously hardcoded hex colors) with theme-aware CSS variables so
+       these secondary/title text bits also adapt correctly in dark mode. */
+    .cell-subtext {
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+    .cell-title {
+        font-weight: 500;
+        color: var(--text-strong);
     }
 
     /* Empty State */
@@ -657,7 +674,6 @@
             </div>
             <div class="export-buttons" style="display:flex;gap:8px;">
                 <button onclick="exportToExcel()" class="btn btn-secondary" type="button">Export Excel</button>
-                <button onclick="exportToCSV()" class="btn btn-secondary" type="button">Export CSV</button>
             </div>
         </div>
 
@@ -946,7 +962,7 @@ function renderReportSimilarity(matches, noteHtml = '') {
                     <span class="badge badge-success">${identicalMeasures.length + logicMatchedMeasures.length} measures</span>
                     ${logicMatchedMeasures.length ? `<div style="font-size: 10px; color: #9F7AEA; margin-top: 2px;">+${logicMatchedMeasures.length} logic-matched</div>` : ''}
                 </td>
-                <td style="font-size: 12px; color: #718096;">
+                <td class="cell-subtext">
                     <div>DAX: ${daxScore}%</div>
                     <div>Tables: ${tableScore}%</div>
                     <div>Visuals: ${visualScore}%</div>
@@ -1049,9 +1065,9 @@ function renderVisualSimilarity(matches, noteHtml = '') {
         html += `
             <tr>
                 <td>
-                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.visual1_title || 'Untitled')}</div>
-                    <div style="font-size: 12px; color: #718096;">⇄</div>
-                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.visual2_title || 'Untitled')}</div>
+                    <div class="cell-title">${escapeHtml(match.visual1_title || 'Untitled')}</div>
+                    <div class="cell-subtext">⇄</div>
+                    <div class="cell-title">${escapeHtml(match.visual2_title || 'Untitled')}</div>
                 </td>
                 <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
                 <td><span class="badge badge-primary">${escapeHtml(match.visual_type || '—')}</span></td>
@@ -1059,7 +1075,7 @@ function renderVisualSimilarity(matches, noteHtml = '') {
                     <span class="badge badge-success">${match.common_fields_count || fields.length} fields</span>
                     ${fields.length ? `<div style="font-size: 11px; color: #718096; margin-top: 4px;">${escapeHtml(fields.slice(0,3).join(', '))}${fields.length > 3 ? '…' : ''}</div>` : ''}
                 </td>
-                <td style="font-size: 12px; color: #718096;">
+                <td class="cell-subtext">
                     ${escapeHtml(match.report1_name || '—')} · ${escapeHtml(match.page1 || '—')}<br>
                     ${escapeHtml(match.report2_name || '—')} · ${escapeHtml(match.page2 || '—')}
                 </td>
@@ -1099,12 +1115,12 @@ function renderMeasureSimilarity(matches, noteHtml = '') {
         html += `
             <tr>
                 <td>
-                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.measure1_name || '—')}</div>
-                    <div style="font-size: 12px; color: #718096;">⇄</div>
-                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.measure2_name || '—')}</div>
+                    <div class="cell-title">${escapeHtml(match.measure1_name || '—')}</div>
+                    <div class="cell-subtext">⇄</div>
+                    <div class="cell-title">${escapeHtml(match.measure2_name || '—')}</div>
                 </td>
                 <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
-                <td style="font-size: 12px; color: #718096;">
+                <td class="cell-subtext">
                     ${escapeHtml(match.table1_name || '—')}<br>
                     ${escapeHtml(match.table2_name || '—')}
                 </td>
@@ -1150,9 +1166,9 @@ function renderTableSimilarity(matches, noteHtml = '') {
         html += `
             <tr>
                 <td>
-                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.table1_name || '—')}</div>
-                    <div style="font-size: 12px; color: #718096;">⇄</div>
-                    <div style="font-weight: 500; color: #2D3748;">${escapeHtml(match.table2_name || '—')}</div>
+                    <div class="cell-title">${escapeHtml(match.table1_name || '—')}</div>
+                    <div class="cell-subtext">⇄</div>
+                    <div class="cell-title">${escapeHtml(match.table2_name || '—')}</div>
                 </td>
                 <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
                 <td>
@@ -1525,31 +1541,10 @@ function exportToExcel() {
     }
 
     console.log('   📤 Sending results to backend for Excel export...');
-    exportResults('excel');
+    exportResults();
 }
 
-function exportToCSV() {
-    console.log('📄 exportToCSV() called');
-    console.log('   currentResults.length:', currentResults.length);
-
-    const workspaceId = document.getElementById('workspaceSelect').value;
-    console.log('   workspaceId:', workspaceId);
-
-    if (!workspaceId) {
-        alert('⚠️ Please select a workspace first');
-        return;
-    }
-
-    if (currentResults.length === 0) {
-        alert('⚠️ No similarity data to export. Please run an analysis first.');
-        return;
-    }
-
-    console.log('   📤 Sending results to backend for CSV export...');
-    exportResults('csv');
-}
-
-function exportResults(format) {
+function exportResults() {
     const workspaceId = document.getElementById('workspaceSelect').value;
 
     // Create a form to POST the data
@@ -1564,10 +1559,10 @@ function exportResults(format) {
     wsInput.value = workspaceId;
     form.appendChild(wsInput);
 
-    // Add format
+    // Add format (Excel is the only supported export format)
     const formatInput = document.createElement('input');
     formatInput.name = 'format';
-    formatInput.value = format;
+    formatInput.value = 'excel';
     form.appendChild(formatInput);
 
     // Add results as JSON

@@ -693,7 +693,7 @@ function renderTable() {
       <td class="num">${fmt(r.workspaceCount)}</td>
       <td><button class="btn ghost sm" data-open="${escapeAttr(r.tableKey)}">Details</button></td>
     </tr>`;
-  }).join("") || `<tr><td colspan="8" class="muted">No rows match filters.</td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="muted">${(state.rows || []).length ? "No rows match filters." : "No table data loaded yet."}</td></tr>`;
 
   tb.querySelectorAll("[data-open]").forEach((btn) => {
     btn.addEventListener("click", () => openDrawer(btn.getAttribute("data-open")));
@@ -860,7 +860,7 @@ function renderReportTable() {
       <td class="pill-cell">${typesHtml}${more}</td>
       <td><button class="btn ghost sm" data-open-report="${escapeAttr(r.reportId)}">Sources</button></td>
     </tr>`;
-  }).join("") || `<tr><td colspan="6" class="muted">No reports match filters.</td></tr>`;
+  }).join("") || `<tr><td colspan="6" class="muted">${(state.reportRows || []).length ? "No reports match filters." : "No report data loaded yet."}</td></tr>`;
 
   tb.querySelectorAll("[data-open-report]").forEach((btn) => {
     btn.addEventListener("click", () => openReportSourcesDrawer(btn.getAttribute("data-open-report")));
@@ -1122,6 +1122,7 @@ async function openFieldDrawer(fieldKey) {
   if (!fieldKey) return;
   state.selectedFieldKey = fieldKey;
   const meta = state.fieldRows.find((r) => String(r.fieldKey) === String(fieldKey));
+  state.fieldDrawerTableName = meta?.table || "";
   $("#fieldDrawerTitle").textContent = meta?.field || fieldKey;
   $("#fieldDrawerSub").textContent = meta
     ? `${meta.table || "—"} · loading reports…`
@@ -1146,6 +1147,7 @@ async function openFieldDrawer(fieldKey) {
     }
     const field = body.field || {};
     state.fieldDrawerReports = field.reports || [];
+    state.fieldDrawerTableName = field.table || meta?.table || state.fieldDrawerTableName || "";
     $("#fieldDrawerTitle").textContent = field.field || meta?.field || fieldKey;
     $("#fieldDrawerSub").textContent = [
       field.table || meta?.table || "",
@@ -1202,7 +1204,7 @@ function renderFieldDrawerReports() {
 function closeFieldDrawer() {
   $("#fieldDrawer")?.classList.add("hidden");
   $("#fieldDrawer")?.setAttribute("aria-hidden", "true");
-  if ($("#drawer").classList.contains("hidden") && $("#reportDrawer").classList.contains("hidden")) {
+  if ($("#drawer")?.classList.contains("hidden") && $("#reportDrawer")?.classList.contains("hidden")) {
     $("#drawerBackdrop")?.classList.add("hidden");
     document.body.classList.remove("drawer-open");
   }
@@ -1376,14 +1378,19 @@ async function openDrawer(tableKey) {
         // Prefer ACL-scoped numbers when user can see at least one edge.
         // If ACL wiped everything but the grid had counts, keep tenant KPIs visible
         // and explain below (avoids "grid=1 / drawer=0" look).
+        let scopeLabel = "";
         if (aclRc > 0 || aclDc > 0 || !aclApplied) {
           row.reportCount = aclRc;
           row.datasetCount = aclDc;
           row.workspaceCount = aclWc;
+          scopeLabel = aclApplied
+            ? `<span class="pill" title="Counts reflect only workspaces you have access to">Your access (ACL-scoped)</span>`
+            : "";
         } else if (tenantSummary) {
           row.reportCount = Number(tenantSummary.reportCount) || gridRc;
           row.datasetCount = Number(tenantSummary.datasetCount) || gridDc;
           row.workspaceCount = Number(tenantSummary.workspaceCount) || gridWc;
+          scopeLabel = `<span class="pill" title="Counts include workspaces outside your access">Tenant-wide</span>`;
         } else {
           row.reportCount = gridRc;
           row.datasetCount = gridDc;
@@ -1395,7 +1402,7 @@ async function openDrawer(tableKey) {
           kpi("Reports affected", row.reportCount),
           kpi("Datasets affected", row.datasetCount),
           kpi("Workspaces", row.workspaceCount),
-        ].join("");
+        ].join("") + (scopeLabel ? `<div class="muted small" style="margin-top:6px">${scopeLabel}</div>` : "");
         const al = row.modelTableNames || [];
         $("#drawerModels").innerHTML = al.length
           ? al.slice(0, 100).map((n) => `<span class="chip">${escapeHtml(n)}</span>`).join("")
@@ -1550,15 +1557,16 @@ function renderDrawerReports() {
 }
 
 function closeDrawer() {
-  $("#drawer").classList.add("hidden");
-  $("#drawer").setAttribute("aria-hidden", "true");
+  $("#drawer")?.classList.add("hidden");
+  $("#drawer")?.setAttribute("aria-hidden", "true");
   const fieldDrawerClosed = !$("#fieldDrawer") || $("#fieldDrawer").classList.contains("hidden");
+  const reportDrawerClosed = !$("#reportDrawer") || $("#reportDrawer").classList.contains("hidden");
   if (
-    $("#reportDrawer").classList.contains("hidden") &&
+    reportDrawerClosed &&
     fieldDrawerClosed &&
     (!$("#modelModal") || $("#modelModal").classList.contains("hidden"))
   ) {
-    $("#drawerBackdrop").classList.add("hidden");
+    $("#drawerBackdrop")?.classList.add("hidden");
   }
 }
 
@@ -2527,8 +2535,8 @@ function resetLineageSearchUi() {
   }
 }
 
-async function ensureLineagePickData() {
-  const mode = $("#lineageStartMode")?.value || "table";
+async function ensureLineagePickData(preset) {
+  const mode = preset?.mode || $("#lineageStartMode")?.value || "table";
   if (mode === "report") {
     try {
       await ensureReportRows(false);
@@ -2536,7 +2544,35 @@ async function ensureLineagePickData() {
       console.warn("lineage report list", e);
     }
   }
+  if (preset && preset.id) {
+    // Programmatic navigation (e.g. cross-nav from Field drawer) — pre-fill
+    // the combobox instead of wiping it via resetLineageSearchUi().
+    if ($("#lineageStartMode")) $("#lineageStartMode").value = mode;
+    state._lineageOptions = getLineageOptions();
+    setLineagePick(preset.id, preset.label || preset.id);
+    hideLineageSearchResults();
+    if ($("#lineageMeta")) $("#lineageMeta").textContent = "Ready — click Show map.";
+    if (preset.autoRun) runLineageMap();
+    return;
+  }
   resetLineageSearchUi();
+}
+
+/** Jump to Lineage tab pre-selected on a source table (best-effort match by table name). */
+function jumpToLineageForTable(tableName) {
+  if (!tableName) return;
+  const needle = String(tableName).toLowerCase();
+  const row = (state.rows || []).find((r) => String(r.table || "").toLowerCase() === needle)
+    || (state.rows || []).find((r) => (r.modelTableNames || []).some((n) => String(n).toLowerCase() === needle));
+  closeAllDrawers();
+  setView("lineage", row
+    ? { lineagePreset: { mode: "table", id: row.tableKey, label: row.table, autoRun: true } }
+    : undefined);
+  if (!row && $("#lineageSearch")) {
+    // No exact match — prefill search text so the user can pick manually.
+    $("#lineageSearch").value = tableName;
+    onLineageSearchInput();
+  }
 }
 
 function lineageNodeHtml(n) {
@@ -2570,7 +2606,24 @@ function clearLineageMap() {
   if (cols) cols.innerHTML = "";
   if (svg) svg.innerHTML = "";
   state._lineageEdges = null;
+  state._lineageGraph = null;
   resetLineageSearchUi();
+}
+
+/** Flatten the current lineage graph (lane + node) for CSV export. */
+function exportLineageCsv() {
+  const graph = state._lineageGraph;
+  if (!graph || !(graph.columns || []).length) {
+    alert("Build a lineage map first (pick a table/report, then Show map).");
+    return;
+  }
+  const rows = [];
+  for (const col of graph.columns) {
+    for (const n of col.nodes || []) {
+      rows.push({ lane: col.title, name: n.name || "", detail: n.sub || "" });
+    }
+  }
+  exportCsv(rows, "impact_lineage_map.csv", ["lane", "name", "detail"]);
 }
 
 function drawLineageEdges(edgePairs) {
@@ -2846,6 +2899,7 @@ function renderLineageGraph(graph) {
 
   if ($("#lineageMeta")) $("#lineageMeta").textContent = graph.meta || "";
   state._lineageEdges = graph.edges || [];
+  state._lineageGraph = graph;
 
   // Edges after layout
   requestAnimationFrame(() => {
@@ -2897,13 +2951,12 @@ async function runLineageMap() {
     renderLineageGraph(graph);
   } catch (e) {
     console.warn("lineage map failed", e);
-    if (meta) meta.textContent = `Could not build map: ${e.message || e}`;
     clearLineageMap();
     if (meta) meta.textContent = `Could not build map: ${e.message || e}`;
   }
 }
 
-function setView(name) {
+function setView(name, opts) {
   // Table impact | Report sources | Impact lookup | Lineage map
   const allowed = new Set(["tables", "reports", "fields", "lookup", "lineage"]);
   if (!allowed.has(name)) name = "tables";
@@ -2929,10 +2982,10 @@ function setView(name) {
   }
   if ($("#viewSubtitle")) $("#viewSubtitle").textContent = pair[1];
 
-  // Export applies to the active grid
-  const exportMode = name === "tables" || name === "reports";
+  // Export applies to the active grid (Lineage export has no separate "filtered" set)
+  const exportMode = name === "tables" || name === "reports" || name === "fields" || name === "lineage";
   if ($("#exportCsvBtn")) $("#exportCsvBtn").style.display = exportMode ? "" : "none";
-  if ($("#exportFilteredBtn")) $("#exportFilteredBtn").style.display = exportMode ? "" : "none";
+  if ($("#exportFilteredBtn")) $("#exportFilteredBtn").style.display = (exportMode && name !== "lineage") ? "" : "none";
 
   // Lazy-load report→sources pack when user opens the tab
   if (name === "reports") {
@@ -2957,7 +3010,7 @@ function setView(name) {
       });
   }
   if (name === "lineage") {
-    ensureLineagePickData().catch(() => resetLineageSearchUi());
+    ensureLineagePickData(opts?.lineagePreset).catch(() => resetLineageSearchUi());
   }
 }
 
@@ -3150,11 +3203,24 @@ function wire() {
     state.wsReportFilter = e.target.value || "";
     renderWorkspaceDetail();
   });
+  $("#fieldDrawerLineageBtn")?.addEventListener("click", () => {
+    jumpToLineageForTable(state.fieldDrawerTableName);
+  });
   $("#lookupBtn")?.addEventListener("click", runLookup);
   $("#lookupInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") runLookup(); });
   $("#exportCsvBtn")?.addEventListener("click", () => {
     const onReports = $("#view-reports") && !$("#view-reports").classList.contains("hidden");
-    if (onReports) {
+    const onFields = $("#view-fields") && !$("#view-fields").classList.contains("hidden");
+    const onLineage = $("#view-lineage") && !$("#view-lineage").classList.contains("hidden");
+    if (onLineage) {
+      exportLineageCsv();
+    } else if (onFields) {
+      exportCsv(
+        state.fieldRows,
+        "impact_all_fields.csv",
+        ["field", "table", "type", "reportCount", "workspaceCount", "fieldKey"]
+      );
+    } else if (onReports) {
       exportCsv(
         state.reportRows,
         "impact_all_reports.csv",
@@ -3166,7 +3232,14 @@ function wire() {
   });
   $("#exportFilteredBtn")?.addEventListener("click", () => {
     const onReports = $("#view-reports") && !$("#view-reports").classList.contains("hidden");
-    if (onReports) {
+    const onFields = $("#view-fields") && !$("#view-fields").classList.contains("hidden");
+    if (onFields) {
+      exportCsv(
+        state.fieldFiltered,
+        "impact_filtered_fields.csv",
+        ["field", "table", "type", "reportCount", "workspaceCount", "fieldKey"]
+      );
+    } else if (onReports) {
       exportCsv(
         state.reportFiltered,
         "impact_filtered_reports.csv",
