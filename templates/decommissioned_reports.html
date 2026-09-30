@@ -275,6 +275,9 @@ let ACTIVE_TAB = 'detail';
 let overviewLoaded = false;
 let overviewLoading = false;
 let pbiReport = null;
+/** Background-warmed embed-token fetch, started right after page load so the
+ * first click into the Overview tab doesn't wait on the full round trip. */
+let overviewPrefetchPromise = null;
 /** Workspace names currently expanded. Empty = overview only (default). */
 const EXPANDED = new Set();
 /** Current render: group id -> workspace name */
@@ -608,8 +611,19 @@ async function ensureOverviewLoaded(force){
   overviewLoading=true;
   box.innerHTML='<div class="loading"><div class="spinner"></div>Finding and loading dashboard…</div>';
   try{
-    const res=await fetch('/api/decommissioned-reports/dashboard-embed-token',{credentials:'include'});
-    const data=await res.json().catch(()=>({}));
+    // Reuse a background-warmed request (kicked off right after page load) when
+    // available and not forced — avoids waiting on the Power BI "Get Report" +
+    // token round trip again on the user's first click into this tab.
+    let res, data;
+    if(!force && overviewPrefetchPromise){
+      const prefetched=await overviewPrefetchPromise.catch(()=>null);
+      overviewPrefetchPromise=null;
+      if(prefetched){ res=prefetched.res; data=prefetched.data; }
+    }
+    if(!res){
+      res=await fetch('/api/decommissioned-reports/dashboard-embed-token',{credentials:'include'});
+      data=await res.json().catch(()=>({}));
+    }
     if(!res.ok || !data.success || !data.token || !data.embedUrl){
       showOverviewFallback(
         data.error||('HTTP '+res.status),
@@ -773,6 +787,21 @@ if(ovSync) ovSync.addEventListener('click',()=>syncDecommDatasetFeed());
 
 // Detail inventory always loads (existing behaviour)
 loadData(false);
+
+// Warm the Overview embed-token endpoint in the background shortly after
+// page load (idle time), so switching to Overview later feels instant
+// instead of waiting on the Get Report + token round trip from cold.
+try{
+  const meta=pageMeta();
+  if(meta.embedEnabled){
+    const schedule=window.requestIdleCallback || function(fn){ setTimeout(fn, 400); };
+    schedule(()=>{
+      overviewPrefetchPromise=fetch('/api/decommissioned-reports/dashboard-embed-token',{credentials:'include'})
+        .then(async res=>({res, data: await res.json().catch(()=>({}))}));
+      overviewPrefetchPromise.catch(()=>{ overviewPrefetchPromise=null; });
+    });
+  }
+}catch(e){/* ignore */}
 
 // Optional deep-link ?tab=overview
 try{

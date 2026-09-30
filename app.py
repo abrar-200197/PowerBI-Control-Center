@@ -2240,6 +2240,12 @@ def orphaned_reports_page():
 # In-process cache for discovered programme report (user-token lookup by name)
 _DECOMM_DASH_RESOLVE_CACHE = {'ts': 0.0, 'payload': None}
 
+# In-process cache for the resolved Get-Report metadata (embedUrl/datasetId/name),
+# keyed by workspace+report GUID pair. Avoids one Power BI API round trip on every
+# Overview-tab open/re-open — metadata rarely changes, so a short TTL is safe.
+_DECOMM_DASH_META_CACHE = {'key': None, 'ts': 0.0, 'payload': None}
+_DECOMM_DASH_META_TTL_SECONDS = 300
+
 
 def _parse_pbi_service_url(url: str):
     """Extract workspace + report GUIDs from an app.powerbi.com report URL."""
@@ -2797,8 +2803,28 @@ def api_decommissioned_dashboard_embed_token():
                 timeout=45,
             )
 
+        class _CachedMetaResponse:
+            """Lightweight stand-in for a requests.Response, built from cached JSON."""
+            def __init__(self, payload):
+                self.status_code = 200
+                self.ok = True
+                self._payload = payload
+                self.text = ''
+
+            def json(self):
+                return self._payload
+
         meta_res = None
-        if workspace_id and report_id:
+        meta_cache_key = f'{workspace_id}::{report_id}' if (workspace_id and report_id) else None
+        now_ts = time.time()
+        if (
+            meta_cache_key
+            and _DECOMM_DASH_META_CACHE.get('key') == meta_cache_key
+            and _DECOMM_DASH_META_CACHE.get('payload') is not None
+            and (now_ts - float(_DECOMM_DASH_META_CACHE.get('ts') or 0)) < _DECOMM_DASH_META_TTL_SECONDS
+        ):
+            meta_res = _CachedMetaResponse(_DECOMM_DASH_META_CACHE['payload'])
+        elif workspace_id and report_id:
             meta_res = _get_report_meta(user_token, workspace_id, report_id)
             if meta_res.status_code == 401:
                 print('   ⚠️ decomm embed: 401 on Get Report — refreshing user token…')
@@ -2810,6 +2836,13 @@ def api_decommissioned_dashboard_embed_token():
                         'serviceUrl': service_url,
                     }), 401
                 meta_res = _get_report_meta(user_token, workspace_id, report_id)
+            if meta_res.ok:
+                try:
+                    _DECOMM_DASH_META_CACHE['key'] = meta_cache_key
+                    _DECOMM_DASH_META_CACHE['ts'] = now_ts
+                    _DECOMM_DASH_META_CACHE['payload'] = meta_res.json()
+                except Exception:
+                    pass
 
         # Always discover when IDs missing or Get Report failed (404/400).
         # Never keep using a dead GUID that makes Open-in-service 404 in the browser.
