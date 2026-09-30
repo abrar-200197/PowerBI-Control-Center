@@ -683,8 +683,8 @@
     </div>
 
     <!-- Empty State -->
-    <div class="empty-state panel" id="emptyState" style="text-align:center;padding:40px 16px;color:#718096;font-size:13px;">
-        <div class="empty-state-text" style="font-weight:650;color:#2D3748;margin-bottom:4px;">Select a workspace and analysis type</div>
+    <div class="empty-state panel" id="emptyState" style="text-align:center;padding:40px 16px;font-size:13px;">
+        <div class="empty-state-text" style="font-weight:650;margin-bottom:4px;">Select a workspace and analysis type</div>
         <div class="empty-state-subtext">Click Analyze to discover similarities across your environment</div>
     </div>
 
@@ -944,19 +944,19 @@ function renderReportSimilarity(matches, noteHtml = '') {
         html += `
             <tr>
                 <td>
-                    <div style="font-weight: 600; color: #2D3748; margin-bottom: 4px;">
+                    <div class="cell-title" style="margin-bottom: 4px;">
                         ${escapeHtml(reportAName)}
                         ${isCrossWorkspace ? '<span style="background: #DBEAFE; color: #1D4ED8; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-left: 4px;">Cross-WS</span>' : ''}
                     </div>
-                    ${workspaceAName ? `<div style="font-size: 11px; color: #94A3B8;">${escapeHtml(workspaceAName)}</div>` : ''}
-                    <div style="font-size: 12px; color: #718096; margin: 4px 0;">⇄</div>
-                    <div style="font-weight: 600; color: #2D3748; margin-top: 4px;">${escapeHtml(reportBName)}</div>
-                    ${workspaceBName ? `<div style="font-size: 11px; color: #94A3B8;">${escapeHtml(workspaceBName)}</div>` : ''}
+                    ${workspaceAName ? `<div class="cell-subtext">${escapeHtml(workspaceAName)}</div>` : ''}
+                    <div class="cell-subtext" style="margin: 4px 0;">⇄</div>
+                    <div class="cell-title" style="margin-top: 4px;">${escapeHtml(reportBName)}</div>
+                    ${workspaceBName ? `<div class="cell-subtext">${escapeHtml(workspaceBName)}</div>` : ''}
                 </td>
                 <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
                 <td>
                     <span class="badge badge-primary">${commonTables.length} tables</span>
-                    ${commonTables.length ? `<div style="font-size: 11px; color: #718096; margin-top: 4px;">${escapeHtml(commonTables.slice(0,2).join(', '))}${commonTables.length > 2 ? '…' : ''}</div>` : ''}
+                    ${commonTables.length ? `<div class="cell-subtext" style="margin-top: 4px;">${escapeHtml(commonTables.slice(0,2).join(', '))}${commonTables.length > 2 ? '…' : ''}</div>` : ''}
                 </td>
                 <td>
                     <span class="badge badge-success">${identicalMeasures.length + logicMatchedMeasures.length} measures</span>
@@ -1005,21 +1005,21 @@ function renderSimpleReportSimilarity(matches, noteHtml = '') {
         html += `
             <tr>
                 <td>
-                    <div style="font-weight:600;">${escapeHtml(match.report1_name || '—')}</div>
-                    <div style="font-size:12px;color:#718096;">⇄</div>
-                    <div style="font-weight:600;">${escapeHtml(match.report2_name || '—')}</div>
+                    <div class="cell-title">${escapeHtml(match.report1_name || '—')}</div>
+                    <div class="cell-subtext">⇄</div>
+                    <div class="cell-title">${escapeHtml(match.report2_name || '—')}</div>
                     ${match.same_dataset ? '<div style="font-size:10px;color:#2B6CB0;margin-top:4px;">Same dataset</div>' : ''}
                 </td>
                 <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
                 <td>
                     <span class="badge badge-primary">${match.common_tables_count || tables.length}</span>
-                    ${tables.length ? `<div style="font-size:11px;color:#718096;margin-top:4px;">${escapeHtml(tables.slice(0,3).join(', '))}${tables.length > 3 ? '…' : ''}</div>` : ''}
+                    ${tables.length ? `<div class="cell-subtext" style="margin-top:4px;">${escapeHtml(tables.slice(0,3).join(', '))}${tables.length > 3 ? '…' : ''}</div>` : ''}
                 </td>
                 <td>
                     <span class="badge badge-success">${match.common_measures_count || measures.length}</span>
-                    ${measures.length ? `<div style="font-size:11px;color:#718096;margin-top:4px;">${escapeHtml(measures.slice(0,3).join(', '))}${measures.length > 3 ? '…' : ''}</div>` : ''}
+                    ${measures.length ? `<div class="cell-subtext" style="margin-top:4px;">${escapeHtml(measures.slice(0,3).join(', '))}${measures.length > 3 ? '…' : ''}</div>` : ''}
                 </td>
-                <td style="font-size:12px;color:#718096;">
+                <td class="cell-subtext">
                     ${escapeHtml(match.dataset1_name || match.dataset_name || '—')}<br>
                     ${escapeHtml(match.dataset2_name || '')}
                 </td>
@@ -1073,7 +1073,7 @@ function renderVisualSimilarity(matches, noteHtml = '') {
                 <td><span class="badge badge-primary">${escapeHtml(match.visual_type || '—')}</span></td>
                 <td>
                     <span class="badge badge-success">${match.common_fields_count || fields.length} fields</span>
-                    ${fields.length ? `<div style="font-size: 11px; color: #718096; margin-top: 4px;">${escapeHtml(fields.slice(0,3).join(', '))}${fields.length > 3 ? '…' : ''}</div>` : ''}
+                    ${fields.length ? `<div class="cell-subtext" style="margin-top: 4px;">${escapeHtml(fields.slice(0,3).join(', '))}${fields.length > 3 ? '…' : ''}</div>` : ''}
                 </td>
                 <td class="cell-subtext">
                     ${escapeHtml(match.report1_name || '—')} · ${escapeHtml(match.page1 || '—')}<br>
@@ -1125,7 +1125,7 @@ function renderMeasureSimilarity(matches, noteHtml = '') {
                     ${escapeHtml(match.table2_name || '—')}
                 </td>
                 <td><span class="badge badge-warning">${escapeHtml(match.dax_pattern || 'Similar')}</span></td>
-                <td style="font-size:12px;color:#718096;">
+                <td class="cell-subtext">
                     ${escapeHtml(match.dataset1 || '—')}<br>
                     ${escapeHtml(match.dataset2 || '—')}
                 </td>
@@ -1173,10 +1173,10 @@ function renderTableSimilarity(matches, noteHtml = '') {
                 <td><span class="similarity-score ${scoreClass}">${score}%</span></td>
                 <td>
                     <span class="badge badge-success">${match.common_columns_count || cols.length} columns</span>
-                    ${cols.length ? `<div style="font-size: 11px; color: #718096; margin-top: 4px;">${escapeHtml(cols.slice(0,3).join(', '))}${cols.length > 3 ? '…' : ''}</div>` : ''}
+                    ${cols.length ? `<div class="cell-subtext" style="margin-top: 4px;">${escapeHtml(cols.slice(0,3).join(', '))}${cols.length > 3 ? '…' : ''}</div>` : ''}
                 </td>
                 <td><span class="badge badge-primary">${escapeHtml(match.source_type || '—')}</span></td>
-                <td style="font-size:12px;color:#718096;">
+                <td class="cell-subtext">
                     ${escapeHtml(match.dataset1 || '—')}<br>
                     ${escapeHtml(match.dataset2 || '—')}
                 </td>
@@ -1480,7 +1480,7 @@ function renderComparisonRow(featureName, commonItems, uniqueA, uniqueB) {
         <tr>
             <td class="feature-cell">
                 ${featureName}
-                <div style="font-size: 11px; color: #718096; margin-top: 4px;">
+                <div class="cell-subtext" style="margin-top: 4px;">
                     ${common.length} common, ${onlyA.length + onlyB.length} unique
                 </div>
             </td>
@@ -1505,7 +1505,7 @@ function renderSimilarMeasures(measures) {
     }
 
     const listItems = measures.map(m =>
-        `<li>${escapeHtml(m.name)} <span style="color: #718096; font-size: 11px;">(${m.similarity}% similar)</span></li>`
+        `<li>${escapeHtml(m.name)} <span class="cell-subtext" style="font-size: 11px;">(${m.similarity}% similar)</span></li>`
     ).join('');
     return `<ul class="item-list matched">${listItems}</ul>`;
 }
