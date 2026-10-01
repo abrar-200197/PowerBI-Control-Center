@@ -405,7 +405,27 @@ def login_required(f):
     return decorated_function
 
 
+# Debug/diagnostic routes (env/session/token inspection) are disabled by default
+# in any deployed environment to avoid leaking config/token details. They only
+# respond when ENABLE_DEBUG_ROUTES=1/true is explicitly set (e.g. local dev).
+# No behavior change for local dev if that flag is already set; this only
+# restricts access when it is not.
+_DEBUG_ROUTES_ENABLED = (os.getenv('ENABLE_DEBUG_ROUTES', '').strip().lower() in ('1', 'true', 'yes'))
+
+
+def debug_only(f):
+    """Decorator: 404s the route unless ENABLE_DEBUG_ROUTES is set."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not _DEBUG_ROUTES_ENABLED:
+            from flask import abort
+            abort(404)
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 @app.route('/debug/env')
+@debug_only
 def debug_env():
     """Debug endpoint to check environment configuration"""
     return jsonify({
@@ -426,6 +446,7 @@ def debug_env():
 
 
 @app.route('/debug/session-test')
+@debug_only
 def session_test():
     """Test if sessions are working"""
     import uuid
@@ -744,6 +765,7 @@ def logout():
 
 @app.route('/api/debug/token')
 @login_required
+@debug_only
 def debug_token():
     """Debug endpoint to check user's token and scopes"""
     try:
@@ -961,6 +983,7 @@ def auth_status():
 
 @app.route('/api/test-sso')
 @login_required
+@debug_only
 def test_sso():
     """Test endpoint to verify if SSO-based workspace access is working"""
     import requests
