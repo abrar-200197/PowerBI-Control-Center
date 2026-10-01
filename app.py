@@ -852,6 +852,21 @@ def get_user_powerbi_token():
 from routes.decommission import decommission_bp  # noqa: E402
 app.register_blueprint(decommission_bp)
 
+# Semantic Models blueprint — registered before Similarity Analysis because
+# routes/similarity.py's lazy proxies for `_semantic_scan_lock`,
+# `_semantic_scan_cache`, `_get_workspace_scan_cached`, and
+# `_extract_measures_and_relationships` resolve via `from app import ...`,
+# and those names are defined in routes/semantic_models.py and re-exported
+# here (not duplicated) so both blueprints share the same cache.
+from routes.semantic_models import (  # noqa: E402
+    semantic_models_bp,
+    _semantic_scan_cache,
+    _semantic_scan_lock,
+    _get_workspace_scan_cached,
+    _extract_measures_and_relationships,
+)
+app.register_blueprint(semantic_models_bp)
+
 # Similarity Analysis blueprint — same reasoning as above.
 from routes.similarity import similarity_bp  # noqa: E402
 app.register_blueprint(similarity_bp)
@@ -1090,11 +1105,8 @@ def documentation():
     return render_template('index.html', can_archive_reports=can_archive)
 
 
-@app.route('/semantic-models')
-@login_required
-def semantic_models_page():
-    """Semantic Models page - Analyze and health-check semantic models"""
-    return render_template('semantic_models.html')
+# Semantic Models routes/helpers moved to routes/semantic_models.py (blueprint).
+# See semantic_models_bp registration below (after login_required is defined).
 
 
 @app.route('/impact')

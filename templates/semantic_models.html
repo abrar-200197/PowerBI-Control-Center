@@ -143,7 +143,6 @@
         <div class="sm-modal-body" id="modelDetailsContent"></div>
         <div class="sm-modal-foot">
             <button type="button" class="btn btn-secondary" onclick="closeSmModal('modelDetailsModal')">Close</button>
-            <button type="button" class="btn btn-primary" id="downloadDocsBtn">Download docs</button>
         </div>
     </div>
 </div>
@@ -608,7 +607,22 @@ document.addEventListener('keydown', (e) => {
         try {
             showAlert('info', 'Generating documentation...');
 
-            const response = await fetch(`/api/semantic-model-documentation?workspace_id=${currentWorkspaceId}&dataset_id=${modelId}`);
+            const response = await fetch(
+                `/api/semantic-model-documentation?workspace_id=${encodeURIComponent(currentWorkspaceId)}&dataset_id=${encodeURIComponent(modelId)}`
+            );
+
+            if (!response.ok) {
+                const contentType = response.headers.get('content-type') || '';
+                let errMsg = `Request failed (HTTP ${response.status})`;
+                if (contentType.includes('application/json')) {
+                    try {
+                        const errData = await response.json();
+                        errMsg = errData.error || errMsg;
+                    } catch (_) { /* ignore parse failure, use default message */ }
+                }
+                throw new Error(errMsg);
+            }
+
             const blob = await response.blob();
 
             const url = window.URL.createObjectURL(blob);
