@@ -45,8 +45,42 @@ def _jwt_seconds_left(token):
     from app import _jwt_seconds_left as _real
     return _real(token)
 
-# In-process cache for discovered programme report (user-token lookup by name)
+# In-process cache for discovered programme report (user-token lookup by name).
+# Also persisted to disk so a server/app restart doesn't force a slow rediscovery
+# (the programme report essentially never moves workspaces).
 _DECOMM_DASH_RESOLVE_CACHE = {'ts': 0.0, 'payload': None}
+_DECOMM_DASH_RESOLVE_TTL_SECONDS = 6 * 3600  # 6h — was 600s (10 min)
+_DECOMM_DASH_RESOLVE_CACHE_FILE = os.path.join(
+    os.environ.get('TEMP') or os.environ.get('TMP') or '.',
+    'pbi_cc_decomm_dashboard_discover_cache.json',
+)
+
+
+def _load_decomm_resolve_cache_from_disk():
+    """Best-effort load of the persisted discovery cache at module import time."""
+    try:
+        import json
+        with open(_DECOMM_DASH_RESOLVE_CACHE_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f) or {}
+        ts = float(data.get('ts') or 0)
+        payload = data.get('payload')
+        if payload and (time.time() - ts) < _DECOMM_DASH_RESOLVE_TTL_SECONDS:
+            return {'ts': ts, 'payload': payload}
+    except Exception:
+        pass
+    return {'ts': 0.0, 'payload': None}
+
+
+def _save_decomm_resolve_cache_to_disk(ts, payload):
+    try:
+        import json
+        with open(_DECOMM_DASH_RESOLVE_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'ts': ts, 'payload': payload}, f)
+    except Exception:
+        pass
+
+
+_DECOMM_DASH_RESOLVE_CACHE = _load_decomm_resolve_cache_from_disk()
 
 # In-process cache for the resolved Get-Report metadata (embedUrl/datasetId/name),
 # keyed by workspace+report GUID pair. Avoids one Power BI API round trip on every
@@ -167,7 +201,7 @@ def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None
     global _DECOMM_DASH_RESOLVE_CACHE
     now = _time.time()
     cached = _DECOMM_DASH_RESOLVE_CACHE.get('payload')
-    if cached and (now - float(_DECOMM_DASH_RESOLVE_CACHE.get('ts') or 0)) < 600:
+    if cached and (now - float(_DECOMM_DASH_RESOLVE_CACHE.get('ts') or 0)) < _DECOMM_DASH_RESOLVE_TTL_SECONDS:
         return dict(cached)
 
     if not access_token:
@@ -219,7 +253,7 @@ def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None
         rr = requests.get(
             'https://api.powerbi.com/v1.0/myorg/reports',
             headers=headers,
-            timeout=90,
+            timeout=30,
         )
         if rr.ok:
             for rep in (rr.json() or {}).get('value') or []:
@@ -230,7 +264,8 @@ def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None
     except Exception as e:
         print(f'   ⚠️ decomm discover /reports: {e}')
 
-    # Pass 2: if nothing, walk workspaces (slower)
+    # Pass 2: if nothing, walk workspaces (slower) — parallelized to avoid a
+    # multi-minute sequential scan across hundreds of workspaces.
     if not hits:
         try:
             gr = requests.get(
@@ -242,29 +277,40 @@ def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None
                 print(f'   ⚠️ decomm discover groups HTTP {gr.status_code}')
             else:
                 groups = (gr.json() or {}).get('value') or []
-                for g in groups:
+
+                def _priority_for(gname_l):
+                    if 'fabric' in gname_l and 'admin' in gname_l:
+                        return 2
+                    if 'governance' in gname_l or 'decommission' in gname_l:
+                        return 1
+                    return 0
+
+                def _scan_group(g):
                     gid = g.get('id')
                     gname = g.get('name') or ''
                     if not gid:
-                        continue
-                    gname_l = gname.casefold()
-                    priority = 0
-                    if 'fabric' in gname_l and 'admin' in gname_l:
-                        priority = 2
-                    elif 'governance' in gname_l or 'decommission' in gname_l:
-                        priority = 1
+                        return []
+                    found = []
                     try:
                         r2 = requests.get(
                             f'https://api.powerbi.com/v1.0/myorg/groups/{gid}/reports',
                             headers=headers,
-                            timeout=45,
+                            timeout=20,
                         )
                         if not r2.ok:
-                            continue
+                            return []
                         for rep in (r2.json() or {}).get('value') or []:
-                            _add_hit(rep, workspace_id=gid, workspace_name=gname, priority=priority)
+                            found.append((rep, gid, gname, _priority_for(gname.casefold())))
                     except Exception as e:
                         print(f'   ⚠️ decomm discover reports in {gname}: {e}')
+                    return found
+
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                with ThreadPoolExecutor(max_workers=20) as executor:
+                    futures = [executor.submit(_scan_group, g) for g in groups]
+                    for fut in as_completed(futures):
+                        for rep, gid, gname, priority in fut.result():
+                            _add_hit(rep, workspace_id=gid, workspace_name=gname, priority=priority)
         except Exception as e:
             print(f'   ⚠️ decomm discover groups: {e}')
 
@@ -332,6 +378,7 @@ def _discover_decomm_dashboard_report(access_token: str, prefer_name: str = None
         'candidates': len(hits),
     }
     _DECOMM_DASH_RESOLVE_CACHE = {'ts': now, 'payload': payload}
+    _save_decomm_resolve_cache_to_disk(now, payload)
     print(
         f"   ✅ decomm discover: {payload.get('reportName')!r} "
         f"ws={payload.get('workspaceName') or wid!r} id={rid}"

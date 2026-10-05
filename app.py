@@ -871,6 +871,13 @@ app.register_blueprint(semantic_models_bp)
 from routes.similarity import similarity_bp  # noqa: E402
 app.register_blueprint(similarity_bp)
 
+# Catalog / Impact Explorer blueprint — same reasoning as above.
+# `_user_allowed_workspace_ids` is defined in routes/catalog.py (its home module)
+# and re-exported here because app.py still calls it directly (e.g. report
+# archive workspace-name resolution).
+from routes.catalog import catalog_bp, _user_allowed_workspace_ids  # noqa: E402
+app.register_blueprint(catalog_bp)
+
 
 def get_user_fabric_token():
     """
@@ -1082,6 +1089,4335 @@ def test_sso():
     return jsonify(result)
 
 
+@app.route('/api/workspaces')
+@login_required
+def get_workspaces():
+    """API endpoint to get workspaces the logged-in user has access to (user-delegated permissions)"""
+    try:
+        import time
+        import requests
+        current_time = time.time()
+
+        # Get user info for cache key - CRITICAL: Validate user is properly authenticated
+        user_id = session.get('user', {}).get('oid')
+        user_email = session.get('user', {}).get('preferred_username', 'Unknown')
+
+        # If no valid user ID, force re-authentication
+        if not user_id:
+            print("\n⚠️ NO USER ID IN SESSION - Forcing re-authentication")
+            session.clear()
+            return jsonify({
+                'success': False,
+                'error': 'Session invalid. Please log in again.',
+                'redirect': '/login'
+            }), 401
+
+        cache_key = f"workspaces_{user_id}"
+        print(f"\n📊 Fetching workspaces for user: {user_email} (ID: {user_id})")
+
+        # Check cache (per-user caching)
+        if cache_key in workspaces_cache and workspaces_cache[cache_key].get('data') and \
+           (current_time - workspaces_cache[cache_key].get('timestamp', 0)) < CACHE_DURATION:
+            print(f"   ✅ Returning cached workspaces ({len(workspaces_cache[cache_key]['data'])} items)")
+            return jsonify({
+                'success': True,
+                'workspaces': workspaces_cache[cache_key]['data']
+            })
+
+        # Fetch fresh data using USER'S delegated token (not service principal)
+        base_url = "https://api.powerbi.com/v1.0/myorg"
+        url = f"{base_url}/groups"
+
+        try:
+            # First check if we have a valid token
+            token = get_user_powerbi_token()
+            if not token:
+                print("\n❌ NO VALID TOKEN - User needs to re-authenticate")
+                # Clear session and redirect to login
+                session.pop("access_token", None)
+                return jsonify({
+                    'success': False,
+                    'error': 'Session expired. Please log in again.',
+                    'redirect': '/login'
+                }), 401
+
+            headers = get_user_powerbi_headers()
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+
+            workspaces = response.json().get('value', [])
+
+            # Log authentication method and user info
+            user_info = session.get('user', {})
+            user_name = user_info.get('name', 'Unknown')
+            user_email = user_info.get('preferred_username', 'Unknown')
+
+            print("\n" + "="*80)
+            print("🔐 SSO-BASED WORKSPACE ACCESS CONTROL TEST")
+            print("="*80)
+            print(f"✅ Authentication Method: USER DELEGATED TOKEN (SSO)")
+            print(f"👤 Logged-in User: {user_name} ({user_email})")
+            print(f"📊 Total Workspaces User Has Access To: {len(workspaces)}")
+
+            if workspaces:
+                print("\n📁 User's Accessible Workspaces:")
+                for idx, workspace in enumerate(workspaces, 1):
+                    print(f"   {idx}. {workspace['name']} (ID: {workspace['id']})")
+            else:
+                print("\n⚠️  User has no workspace access")
+            print("="*80 + "\n")
+
+        except requests.exceptions.RequestException as e:
+            print("\n" + "="*80)
+            print("❌ USER TOKEN FAILED")
+            print("="*80)
+            print(f"Error: {str(e)}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Status Code: {e.response.status_code}")
+                print(f"Response: {e.response.text[:500]}")
+
+                # Check if token expired
+                response_text = e.response.text.lower()
+                if 'tokenexpired' in response_text or 'token has expired' in response_text:
+                    print("\n⚠️ TOKEN EXPIRED - User needs to re-authenticate")
+                    print("="*80 + "\n")
+                    # Clear the expired token from session
+                    session.pop("access_token", None)
+                    # Return 401 to trigger re-login
+                    return jsonify({
+                        'success': False,
+                        'error': 'Session expired. Please log in again.',
+                        'redirect': '/login'
+                    }), 401
+
+                # If 403 Forbidden (not token expired), try fallback to service principal
+                if e.response.status_code == 403:
+                    print("\n⚠️  User delegated permissions not granted. Falling back to service principal...")
+                    print("   To fix this permanently, grant admin consent for Power BI API permissions in Azure Portal.")
+                    print("\n🔄 Authentication Method: SERVICE PRINCIPAL (FALLBACK)")
+
+                    try:
+                        # Fallback to service principal
+                        workspaces = powerbi.get_workspaces()
+                        print(f"✅ Service Principal returned {len(workspaces)} workspaces")
+                        print("⚠️  WARNING: User is seeing ALL workspaces (not filtered by user permissions)")
+                        print("="*80 + "\n")
+                    except Exception as fallback_error:
+                        print(f"❌ Fallback authentication failed: {str(fallback_error)}")
+                        print("="*80 + "\n")
+                        return jsonify({
+                            'success': False,
+                            'error': 'Unable to fetch workspaces. Please contact your administrator to grant Power BI API permissions.',
+                            'details': str(e)
+                        }), 500
+                else:
+                    # Other HTTP error - return error response
+                    print("="*80 + "\n")
+                    return jsonify({
+                        'success': False,
+                        'error': f'Failed to fetch workspaces: {str(e)}',
+                        'status_code': e.response.status_code if hasattr(e, 'response') and e.response else 500
+                    }), 500
+            else:
+                # Network error or other non-HTTP exception - try service principal fallback
+                print("\n⚠️  Network error accessing Power BI API. Falling back to service principal...")
+                print("="*80 + "\n")
+
+                try:
+                    # Fallback to service principal
+                    workspaces = powerbi.get_workspaces()
+                    print(f"✅ Service Principal returned {len(workspaces)} workspaces")
+                    print("⚠️  WARNING: User is seeing ALL workspaces (not filtered by user permissions)")
+                    print("="*80 + "\n")
+                except Exception as fallback_error:
+                    print(f"❌ Fallback authentication failed: {str(fallback_error)}")
+                    print("="*80 + "\n")
+                    return jsonify({
+                        'success': False,
+                        'error': f'Network error and fallback failed: {str(e)}',
+                        'details': str(fallback_error)
+                    }), 500
+
+        # Show all workspaces the user has access to (no filtering)
+        workspace_list = [
+            {
+                'id': ws['id'],
+                'name': ws['name']
+            }
+            for ws in workspaces
+        ]
+
+        print(f"📤 Returning {len(workspace_list)} workspace(s) to frontend")
+        print()
+
+        # Update cache (per-user)
+        if cache_key not in workspaces_cache:
+            workspaces_cache[cache_key] = {'data': None, 'timestamp': 0}
+
+        workspaces_cache[cache_key]['data'] = workspace_list
+        workspaces_cache[cache_key]['timestamp'] = current_time
+
+        return jsonify({
+            'success': True,
+            'workspaces': workspace_list
+        })
+    except Exception as e:
+        print(f"❌ Error fetching workspaces: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/workspace/table-search/<workspace_id>')
+@login_required
+def search_workspace_tables(workspace_id):
+    """Search for tables across workspace(s) - supports single workspace or 'ALL' for cross-workspace search"""
+    try:
+        from scanner_connector import PowerBIScanner
+        import requests
+
+        search_term = request.args.get('query', '').strip().lower()
+        folder_id = request.args.get('folder_id', '').strip()  # NEW: Get folder filter (ignored for ALL)
+
+        if not search_term:
+            return jsonify({'success': False, 'error': 'Search query is required'}), 400
+
+        # Check if cross-workspace search
+        is_global = workspace_id.upper() == 'ALL' or workspace_id.upper() == 'GLOBAL'
+
+        print(f"\n🔍 ===============================================")
+        if is_global:
+            print(f"🔍 TABLE SEARCH (CROSS-WORKSPACE): '{search_term}'")
+        else:
+            print(f"🔍 TABLE SEARCH: '{search_term}' in workspace {workspace_id}")
+            if folder_id:
+                print(f"🔍 FOLDER FILTER: {folder_id}")
+        print(f"🔍 ===============================================")
+
+        # Get user token for workspace enumeration and report lookups
+        user_token = session.get('access_token')
+        if not user_token:
+            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+        # Initialize Scanner API
+        scanner = PowerBIScanner()
+        scanner.access_token = scanner.get_access_token()
+
+        # Get list of workspaces to scan
+        workspaces_to_scan = []
+        workspace_names = {}  # Map workspace_id -> workspace_name
+
+        if is_global:
+            print("   🌍 Cross-workspace search - fetching all accessible workspaces...")
+            headers = {'Authorization': f'Bearer {user_token}', 'Content-Type': 'application/json'}
+            ws_response = requests.get('https://api.powerbi.com/v1.0/myorg/groups', headers=headers)
+            if ws_response.status_code == 200:
+                all_workspaces = ws_response.json().get('value', [])
+                workspaces_to_scan = [ws['id'] for ws in all_workspaces]
+                workspace_names = {ws['id']: ws['name'] for ws in all_workspaces}
+                print(f"   ✅ Will search across {len(workspaces_to_scan)} workspaces")
+            else:
+                return jsonify({'success': False, 'error': 'Failed to fetch workspaces'}), 500
+        else:
+            workspaces_to_scan = [workspace_id]
+
+        # Scan all workspaces
+        all_scan_data = {'workspaces': []}
+        for ws_id in workspaces_to_scan:
+            try:
+                print(f"   📊 Scanning workspace {workspace_names.get(ws_id, ws_id)[:30]}...")
+                ws_scan = scanner.run_scan(workspace_id=ws_id)
+                if ws_scan and 'workspaces' in ws_scan:
+                    all_scan_data['workspaces'].extend(ws_scan['workspaces'])
+            except Exception as e:
+                print(f"      ⚠️ Failed to scan workspace {ws_id}: {e}")
+                continue
+
+        scan_data = all_scan_data
+
+        if not scan_data or "workspaces" not in scan_data:
+            return jsonify({'success': False, 'error': 'Failed to scan workspaces'}), 500
+
+        # NEW: Get folder hierarchy if folder filter is applied
+        allowed_folder_ids = set()
+        if folder_id:
+            print(f"   🗂️  Folder filter requested: {folder_id}")
+
+            if folder_id != '__ROOT__':
+                # Fetch folder hierarchy from Fabric API
+                try:
+                    fabric_token = get_fabric_token()
+                    fabric_url = f'https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/items'
+                    fabric_headers = {
+                        'Authorization': f'Bearer {fabric_token}',
+                        'Content-Type': 'application/json'
+                    }
+
+                    print(f"   📁 Fetching folders from Fabric API...")
+                    fabric_response = requests.get(fabric_url, headers=fabric_headers)
+
+                    if fabric_response.status_code == 200:
+                        items = fabric_response.json().get('value', [])
+                        folder_map = {}
+
+                        # Build folder hierarchy map
+                        for item in items:
+                            # Only process items that are folders (have displayName but are Reports)
+                            if item.get('type') == 'Report':
+                                current_folder_id = item.get('id')
+                                current_parent_folder_id = item.get('parentFolderId')
+
+                                if current_parent_folder_id:  # This report is in a folder
+                                    # Track the folder if we haven't seen it yet
+                                    if current_parent_folder_id not in folder_map:
+                                        folder_map[current_parent_folder_id] = {
+                                            'id': current_parent_folder_id,
+                                            'parentFolderId': None  # Will be filled in later
+                                        }
+
+                        # Now get folder parent relationships by checking folder items
+                        # (Folders themselves don't appear as items, only reports with parentFolderId)
+                        # So we need to get unique folder structure from report placements
+
+                        # Get all child folders recursively
+                        allowed_folder_ids = get_all_child_folders_recursive(folder_id, folder_map)
+                        allowed_folder_ids.add(folder_id)  # Include the selected folder itself
+
+                        print(f"   📂 Folder filter active: {len(allowed_folder_ids)} folder(s) in tree (including children)")
+                    else:
+                        # Fallback: just use the exact folder ID without hierarchy
+                        allowed_folder_ids = {folder_id}
+                        print(f"   ⚠️ Could not fetch folder hierarchy, filtering by exact folder ID only")
+                except Exception as e:
+                    # Fallback: just use the exact folder ID without hierarchy
+                    allowed_folder_ids = {folder_id}
+                    print(f"   ⚠️ Error fetching folders: {e}, filtering by exact folder ID only")
+
+        # Search through all tables
+        matching_tables = []
+        total_tables_scanned = 0
+
+        for ws in scan_data["workspaces"]:
+            # Extract workspace ID and name from each workspace
+            ws_id = ws.get("id")
+            ws_name = ws.get("name", "Unknown Workspace")
+
+            for dataset in ws.get("datasets", []):
+                dataset_id = dataset.get("id")
+                dataset_name = dataset.get("name", "Unknown Dataset")
+
+                # Get data sources for this dataset
+                datasources = dataset.get("datasources", [])
+
+                print(f"\n   📁 Dataset: {dataset_name} ({dataset_id})")
+
+                for table in dataset.get("tables", []):
+                    total_tables_scanned += 1
+                    table_display_name = table.get("name", "")
+
+                    print(f"      🔎 Scanning table: '{table_display_name}'")
+
+                    # Extract native source table name from source expression or partition
+                    native_source_name = None
+                    source_expression = None
+
+                    import re
+
+                    # Try to extract from table source property (M query)
+                    source = table.get("source", [])
+                    if source and len(source) > 0:
+                        # Source is typically an array of partition expressions
+                        for src in source:
+                            expr = src.get("expression", "")
+                            if expr:
+                                source_expression = expr
+                                # DEBUG: Print first 300 characters of expression
+                                print(f"         📝 M Query Expression (first 300 chars): {expr[:300]}...")
+
+                                # ENHANCED REGEX PATTERNS for native table name extraction
+                                # IMPORTANT: Check SQL patterns FIRST before generic patterns
+
+                                # Pattern 1: SQL Database with curly braces - {[Schema="xxx",Item="yyy"]}
+                                sql_curly_match = re.search(r'\{?\[Schema="([^"]+)",\s*Item="([^"]+)"\]\}?', expr)
+                                if sql_curly_match:
+                                    schema = sql_curly_match.group(1)
+                                    item = sql_curly_match.group(2)
+                                    # Check if schema contains database name with brackets
+                                    if '[' in schema and ']' in schema:
+                                        # Extract from format like [PowerBI_QTIL]
+                                        schema = re.sub(r'[\[\]]', '', schema)
+                                    native_source_name = f"[{schema}].[{item}]"
+                                    print(f"      ✓ Extracted (Pattern 1 - SQL): {native_source_name} from display name '{table_display_name}'")
+                                    break
+
+                                # NEW Pattern: Extract from SQL Query parameter - FROM [schema].[table]
+                                # Matches: Sql.Database(..., [Query="SELECT ... FROM [schema].[table] ..."])
+                                sql_query_match = re.search(r'\[Query="[^"]*FROM\s+\[?([^\s\.\]]+)\]?\.\[?([^\s\.\]]+)\]?', expr, re.IGNORECASE)
+                                if sql_query_match:
+                                    schema = sql_query_match.group(1)
+                                    item = sql_query_match.group(2)
+                                    native_source_name = f"[{schema}].[{item}]"
+                                    print(f"      ✓ Extracted (Pattern 1b - SQL Query FROM): {native_source_name} from display name '{table_display_name}'")
+                                    break
+
+                                # Pattern 2: SharePoint/Excel - [Name="xxx"] (Check BEFORE generic patterns)
+                                name_match = re.search(r'\[Name="([^"]+)"\]', expr)
+                                if name_match:
+                                    native_source_name = name_match.group(1)
+                                    print(f"      ✓ Extracted (Pattern 2 - SharePoint/Excel): {native_source_name} from display name '{table_display_name}'")
+                                    break
+
+                                # Pattern 3: Direct reference with brackets - #"[Schema].[TableName]"
+                                bracket_match = re.search(r'#"\[([^\]]+)\]\.\[([^\]]+)\]"', expr)
+                                if bracket_match:
+                                    schema = bracket_match.group(1)
+                                    item = bracket_match.group(2)
+                                    native_source_name = f"[{schema}].[{item}]"
+                                    print(f"      ✓ Extracted (Pattern 3 - Bracketed): {native_source_name} from display name '{table_display_name}'")
+                                    break
+
+                                # Pattern 4: Simple schema.table format - #"dbo.TableName"
+                                # But NOT transformation steps like "Renamed Columns"
+                                simple_match = re.search(r'#"([^"\s]+)\.([^"\s]+)"', expr)
+                                if simple_match:
+                                    schema = simple_match.group(1)
+                                    item = simple_match.group(2)
+                                    # Skip if it looks like a transformation step (contains spaces or common step words)
+                                    if ' ' not in schema and ' ' not in item:
+                                        native_source_name = f"{schema}.{item}"
+                                        print(f"      ✓ Extracted (Pattern 4 - Schema.Table): {native_source_name} from display name '{table_display_name}'")
+                                        break
+
+                                # Pattern 5: SKIP - Don't extract generic transformation step names
+                                # Old Pattern 4 was too broad and caught "Renamed Columns", "Changed Type", etc.
+                                # We only want actual source table names, not transformation steps
+
+                    # Also check partitions array (alternative location)
+                    if not native_source_name:
+                        partitions = table.get("partitions", [])
+                        for partition in partitions:
+                            source_expr = partition.get("source", {})
+                            if isinstance(source_expr, dict):
+                                expr = source_expr.get("expression", "")
+                                if expr:
+                                    source_expression = expr
+                                    # DEBUG: Print first 300 characters of partition expression
+                                    print(f"         📝 Partition M Query (first 300 chars): {expr[:300]}...")
+
+                                    # Apply same enhanced patterns (SQL patterns FIRST)
+                                    sql_curly_match = re.search(r'\{?\[Schema="([^"]+)",\s*Item="([^"]+)"\]\}?', expr)
+                                    if sql_curly_match:
+                                        schema = sql_curly_match.group(1)
+                                        item = sql_curly_match.group(2)
+                                        if '[' in schema and ']' in schema:
+                                            schema = re.sub(r'[\[\]]', '', schema)
+                                        native_source_name = f"[{schema}].[{item}]"
+                                        print(f"      ✓ Extracted (Partition Pattern 1 - SQL): {native_source_name} from display name '{table_display_name}'")
+                                        break
+
+                                    # NEW: SQL Query FROM clause extraction
+                                    sql_query_match = re.search(r'\[Query="[^"]*FROM\s+\[?([^\s\.\]]+)\]?\.\[?([^\s\.\]]+)\]?', expr, re.IGNORECASE)
+                                    if sql_query_match:
+                                        schema = sql_query_match.group(1)
+                                        item = sql_query_match.group(2)
+                                        native_source_name = f"[{schema}].[{item}]"
+                                        print(f"      ✓ Extracted (Partition Pattern 1b - SQL Query FROM): {native_source_name} from display name '{table_display_name}'")
+                                        break
+
+                                    name_match = re.search(r'\[Name="([^"]+)"\]', expr)
+                                    if name_match:
+                                        native_source_name = name_match.group(1)
+                                        print(f"      ✓ Extracted (Partition Pattern 2 - SharePoint/Excel): {native_source_name} from display name '{table_display_name}'")
+                                        break
+
+                                    bracket_match = re.search(r'#"\[([^\]]+)\]\.\[([^\]]+)\]"', expr)
+                                    if bracket_match:
+                                        schema = bracket_match.group(1)
+                                        item = bracket_match.group(2)
+                                        native_source_name = f"[{schema}].[{item}]"
+                                        print(f"      ✓ Extracted (Partition Pattern 3 - Bracketed): {native_source_name} from display name '{table_display_name}'")
+                                        break
+
+                                    simple_match = re.search(r'#"([^"\s]+)\.([^"\s]+)"', expr)
+                                    if simple_match:
+                                        schema = simple_match.group(1)
+                                        item = simple_match.group(2)
+                                        if ' ' not in schema and ' ' not in item:
+                                            native_source_name = f"{schema}.{item}"
+                                            print(f"      ✓ Extracted (Partition Pattern 4 - Schema.Table): {native_source_name} from display name '{table_display_name}'")
+                                            break
+
+                    # Fallback: use display name if no native source found
+                    if not native_source_name:
+                        native_source_name = table_display_name
+                        print(f"      ⚠️ No native source found, using display name: {table_display_name}")
+
+                    # ENHANCED FUZZY MATCHING: Search in table names AND column names
+                    # Normalize by removing brackets, underscores, and special characters for better matching
+                    def normalize_for_search(text):
+                        """Remove brackets, dots, underscores for fuzzy matching"""
+                        # Remove brackets []
+                        text = re.sub(r'[\[\]]', '', text)
+                        # Replace dots and underscores with spaces for word matching
+                        text = re.sub(r'[._]', ' ', text)
+                        return text.lower()
+
+                    native_normalized = normalize_for_search(native_source_name)
+                    display_normalized = normalize_for_search(table_display_name)
+
+                    # Search in both exact and normalized forms (TABLE NAME)
+                    search_in_native = (search_term in native_source_name.lower() or
+                                       search_term in native_normalized)
+                    search_in_display = (search_term in table_display_name.lower() or
+                                        search_term in display_normalized)
+
+                    # NEW: Search in COLUMN NAMES
+                    matched_columns = []
+                    columns = table.get("columns", [])
+
+                    for col in columns:
+                        col_name = col.get('name', '')
+                        col_source = col.get('sourceColumn', col_name)
+
+                        # Normalize column names for search
+                        col_name_normalized = normalize_for_search(col_name)
+                        col_source_normalized = normalize_for_search(col_source)
+
+                        # Check if search term matches column name or source column
+                        if (search_term in col_name.lower() or
+                            search_term in col_name_normalized or
+                            search_term in col_source.lower() or
+                            search_term in col_source_normalized):
+                            matched_columns.append({
+                                'name': col_name,
+                                'source_name': col_source,
+                                'dataType': col.get('dataType', 'Unknown')
+                            })
+
+                    # Table is a match if:
+                    # 1. Table name matches (native or display)
+                    # 2. OR any column name matches
+                    is_match = search_in_native or search_in_display or len(matched_columns) > 0
+
+                    # Debug logging
+                    if is_match:
+                        print(f"         ✅ MATCH FOUND!")
+                        print(f"            Native: {native_source_name} (normalized: {native_normalized})")
+                        print(f"            Display: {table_display_name} (normalized: {display_normalized})")
+                        print(f"            Match in native: {search_in_native}, Match in display: {search_in_display}")
+                        if len(matched_columns) > 0:
+                            print(f"            Match in columns: {len(matched_columns)} column(s) - {[c['name'] for c in matched_columns]}")
+
+                    if is_match:
+                        # Build complete column info (already retrieved columns above for matching)
+                        column_info = []
+
+                        for col in columns:
+                            # Also extract native column source if available
+                            col_display_name = col.get('name', '')
+                            col_source_expr = col.get('sourceColumn', col_display_name)
+
+                            column_info.append({
+                                'name': col_display_name,
+                                'source_name': col_source_expr,
+                                'dataType': col.get('dataType', 'Unknown'),
+                                'isHidden': col.get('isHidden', False)
+                            })
+
+                        # Get measures in this table
+                        measures = table.get("measures", [])
+                        measure_info = [m.get('name', '') for m in measures]
+
+                        # Find which reports use this dataset
+                        report_names = []
+                        for report in ws.get("reports", []):
+                            if report.get("datasetId") == dataset_id:
+                                # NEW: Filter by folder if folder_id is specified
+                                if folder_id:
+                                    report_folder_id = report.get('folderObjectId') or report.get('folderId')
+
+                                    # Handle ROOT folder filter
+                                    if folder_id == '__ROOT__':
+                                        if report_folder_id:  # Skip reports WITH folders
+                                            continue
+                                    else:
+                                        # Only include reports in allowed folders
+                                        if not report_folder_id or report_folder_id not in allowed_folder_ids:
+                                            continue
+
+                                # Skip [App] shells + platform usage metrics reports
+                                if _is_excluded_report_name(report.get('name')):
+                                    continue
+
+                                report_names.append({
+                                    'id': report.get('id'),
+                                    'name': report.get('name', 'Unknown Report')
+                                })
+
+                        # Get datasource information
+                        datasource_info = []
+                        for ds in datasources:
+                            connection_details = ds.get("connectionDetails", {})
+                            datasource_info.append({
+                                'datasourceType': ds.get("datasourceType", "Unknown"),
+                                'server': connection_details.get("server", "N/A"),
+                                'database': connection_details.get("database", "N/A"),
+                                'url': connection_details.get("url", "N/A")
+                            })
+
+                        # FALLBACK: Extract datasource from M query expression if not in datasources array
+                        if not datasource_info or (len(datasource_info) == 1 and datasource_info[0]['server'] == 'N/A'):
+                            if source_expression:
+                                # Extract from Sql.Database("server", "database", ...)
+                                sql_db_match = re.search(r'Sql\.Database\("([^"]+)",\s*"([^"]+)"', source_expression, re.IGNORECASE)
+                                if sql_db_match:
+                                    server = sql_db_match.group(1)
+                                    database = sql_db_match.group(2)
+                                    datasource_info = [{
+                                        'datasourceType': 'Sql',
+                                        'server': server,
+                                        'database': database,
+                                        'url': 'N/A'
+                                    }]
+                                    print(f"         📡 Extracted datasource from M query: {server} / {database}")
+
+                        matching_tables.append({
+                            'workspace_id': ws_id,
+                            'workspace_name': workspace_names.get(ws_id, ws_name),
+                            'table_name': table_display_name,
+                            'native_source_name': native_source_name,
+                            'source_expression': source_expression,
+                            'has_different_names': native_source_name != table_display_name,
+                            'dataset_id': dataset_id,
+                            'dataset_name': dataset_name,
+                            'reports': report_names,
+                            'column_count': len(columns),
+                            'columns': column_info,
+                            'measure_count': len(measures),
+                            'measures': measure_info,
+                            'datasources': datasource_info,
+                            'is_hidden': table.get('isHidden', False),
+                            'matched_columns': matched_columns,  # NEW: Include matched columns
+                            'match_type': 'column' if len(matched_columns) > 0 and not (search_in_native or search_in_display) else 'table'
+                        })
+
+        # Sort by native source name (prioritize native name)
+        matching_tables.sort(key=lambda x: x['native_source_name'])
+
+        print(f"\n🔍 ===============================================")
+        print(f"🔍 SEARCH SUMMARY")
+        print(f"🔍 ===============================================")
+        print(f"   📊 Total tables scanned: {total_tables_scanned}")
+        print(f"   ✅ Matching tables found: {len(matching_tables)}")
+        if len(matching_tables) > 0:
+            print(f"   📋 Results:")
+            for tbl in matching_tables:
+                print(f"      - {tbl['native_source_name']} (display: {tbl['table_name']})")
+        print(f"🔍 ===============================================\n")
+
+        return jsonify({
+            'success': True,
+            'workspace_id': workspace_id,
+            'search_term': search_term,
+            'result_count': len(matching_tables),
+            'workspaces_scanned': len(workspaces_to_scan) if is_global else None,
+            'tables': matching_tables
+        })
+
+    except Exception as e:
+        print(f"❌ Error in table search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/workspace/table-columns/<workspace_id>/<dataset_name>/<table_name>')
+@login_required
+def get_table_columns(workspace_id, dataset_name, table_name):
+    """Get column details for a specific table in a dataset"""
+    try:
+        from scanner_connector import PowerBIScanner
+
+        print(f"\n📋 FETCHING COLUMNS FOR TABLE: {table_name}")
+        print(f"   Workspace: {workspace_id}")
+        print(f"   Dataset: {dataset_name}")
+
+        # Initialize Scanner API
+        scanner = PowerBIScanner()
+        scanner.access_token = scanner.get_access_token()
+
+        # Scan the workspace to get dataset metadata
+        scan_result = scanner.run_scan(workspace_id=workspace_id)
+
+        if not scan_result or 'workspaces' not in scan_result:
+            return jsonify({'success': False, 'error': 'Failed to scan workspace'}), 500
+
+        # Find the target dataset in the first workspace
+        target_dataset = None
+        if scan_result['workspaces']:
+            workspace_data = scan_result['workspaces'][0]
+            for dataset in workspace_data.get('datasets', []):
+                if dataset.get('name') == dataset_name:
+                    target_dataset = dataset
+                    break
+
+        if not target_dataset:
+            return jsonify({'success': False, 'error': f'Dataset "{dataset_name}" not found'}), 404
+
+        # Find the target table
+        target_table = None
+        if 'tables' in target_dataset:
+            for table in target_dataset['tables']:
+                if table.get('name') == table_name:
+                    target_table = table
+                    break
+
+        if not target_table:
+            return jsonify({'success': False, 'error': f'Table "{table_name}" not found in dataset'}), 404
+
+        # Extract column information
+        columns = []
+        if 'columns' in target_table:
+            for col in target_table['columns']:
+                columns.append({
+                    'name': col.get('name', 'Unknown'),
+                    'dataType': col.get('dataType', 'Unknown'),
+                    'expression': col.get('expression', None),
+                    'isHidden': col.get('isHidden', False),
+                    'sortByColumn': col.get('sortByColumn', None)
+                })
+
+        print(f"   ✅ Found {len(columns)} columns")
+
+        return jsonify({
+            'success': True,
+            'table_name': table_name,
+            'dataset_name': dataset_name,
+            'column_count': len(columns),
+            'columns': columns
+        })
+
+    except Exception as e:
+        print(f"❌ Error fetching table columns: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/workspace/table-search/export', methods=['POST'])
+@login_required
+def export_table_search():
+    """Export table dictionary search results to Excel"""
+    try:
+        import pandas as pd
+        import io
+        from datetime import datetime
+
+        data = request.get_json()
+        workspace_id = data.get('workspace_id')
+        search_term = data.get('search_term')
+        tables = data.get('results', [])
+
+        if not tables:
+            return jsonify({'success': False, 'error': 'No results to export'}), 400
+
+        print(f"\n📥 Exporting table search results: {len(tables)} table(s)")
+
+        # Create Excel file
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Prepare data for export
+            export_data = []
+            for table in tables:
+                base_row = {
+                    'Workspace': table.get('workspace_name', 'N/A'),
+                    'Table Name': table.get('table_name'),
+                    'Native Source Name': table.get('native_source_name'),
+                    'Dataset': table.get('dataset_name'),
+                    'Column Count': table.get('column_count', 0),
+                    'Measure Count': table.get('measure_count', 0),
+                    'Reports Using This Table': '; '.join([r['name'] for r in table.get('reports', [])]),
+                    'Columns': '; '.join([c['name'] for c in table.get('columns', [])]),
+                    'Measures': '; '.join(table.get('measures', [])),
+                    'Data Sources': '; '.join([f"{ds.get('datasourceType')} - {ds.get('server')}/{ds.get('database')}"
+                                               for ds in table.get('datasources', [])])
+                }
+                export_data.append(base_row)
+
+            # Create DataFrame and write to Excel
+            df = pd.DataFrame(export_data)
+            df.to_excel(writer, sheet_name='Table Dictionary', index=False)
+
+            # Auto-adjust column widths
+            worksheet = writer.sheets['Table Dictionary']
+            for idx, col in enumerate(df.columns):
+                max_length = max(df[col].astype(str).apply(len).max(), len(col)) + 2
+                worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+
+        output.seek(0)
+
+        # Generate filename
+        filename = f"table_dictionary_{search_term}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+        print(f"   ✅ Export complete: {filename}")
+
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as e:
+        print(f"❌ Error exporting table search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/workspace/deep-content-search/export', methods=['POST'])
+@login_required
+def export_deep_search():
+    """Export deep content search results to Excel"""
+    try:
+        import pandas as pd
+        import io
+        from datetime import datetime
+
+        data = request.get_json()
+        workspace_id = data.get('workspace_id')
+        search_term = data.get('search_term')
+        matches = data.get('results', [])
+
+        if not matches:
+            return jsonify({'success': False, 'error': 'No results to export'}), 400
+
+        print(f"\n📥 Exporting deep search results: {len(matches)} match(es)")
+
+        # Create Excel file
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Prepare data for export
+            export_data = []
+            for match in matches:
+                row = {
+                    'Report Name': match.get('report_name'),
+                    'Dataset': match.get('dataset_name'),
+                    'Page': match.get('page_name'),
+                    'Visual Title': match.get('visual_title'),
+                    'Visual Type': match.get('visual_type'),
+                    'Table Name': match.get('table_name', ''),
+                    'Table Native Name': match.get('table_native_name', ''),
+                    'Column Name': match.get('column_name', ''),
+                    'Column Source Name': match.get('column_source_name', ''),
+                    'Column Data Type': match.get('column_dataType', ''),
+                    'Is Alias': 'Yes' if match.get('is_alias') else 'No',
+                    'Match Type': match.get('match_type', 'Field'),
+                    'Matched Fields': ', '.join(match.get('matched_fields', [])) if match.get('matched_fields') else '',
+                    'Data Source': match.get('datasource', 'N/A'),
+                    'Workspace': match.get('workspace_name', '') if 'workspace_name' in match else ''
+                }
+                export_data.append(row)
+
+            # Create DataFrame and write to Excel
+            df = pd.DataFrame(export_data)
+            df.to_excel(writer, sheet_name='Deep Search Results', index=False)
+
+            # Auto-adjust column widths
+            worksheet = writer.sheets['Deep Search Results']
+            for idx, col in enumerate(df.columns):
+                # Handle NaN values by converting to string first
+                col_values = df[col].fillna('').astype(str)
+                max_length = max(col_values.apply(len).max(), len(col)) + 2
+                worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+
+        output.seek(0)
+
+        # Generate filename
+        filename = f"deep_search_{search_term}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+        print(f"   ✅ Export complete: {filename}")
+
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as e:
+        print(f"❌ Error exporting deep search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/workspace/content-search/<workspace_id>')
+@login_required
+def search_workspace_content(workspace_id):
+    """Unified content search: searches across visual titles, measure names, table names, and column names"""
+    try:
+        from scanner_connector import PowerBIScanner
+        import re
+
+        search_term = request.args.get('query', '').strip()
+
+        if not search_term:
+            return jsonify({'success': False, 'error': 'Search query is required'}), 400
+
+        # Use case-insensitive matching (SQL LIKE equivalent)
+        search_term_lower = search_term.lower()
+
+        print(f"\n📄 ===============================================")
+        print(f"📄 CONTENT SEARCH: '{search_term}' in workspace {workspace_id}")
+        print(f"📄 ===============================================")
+
+        # Initialize Scanner API
+        scanner = PowerBIScanner()
+        scanner.access_token = scanner.get_access_token()
+
+        # Run scan to get comprehensive metadata
+        print("   📊 Running Scanner API scan...")
+        scan_data = scanner.run_scan(workspace_id=workspace_id)
+
+        if not scan_data or "workspaces" not in scan_data:
+            return jsonify({'success': False, 'error': 'Failed to scan workspace'}), 500
+
+        # Collect all matches
+        all_matches = []
+        reports_with_matches = set()
+
+        for ws in scan_data["workspaces"]:
+            # SECTION 1: Search in VISUAL TITLES
+            print("\n   🎨 Searching visual titles...")
+            for report in ws.get("reports", []):
+                report_id = report.get("id")
+                report_name = report.get("name", "Unknown Report")
+
+                for page in report.get("pages", []):
+                    page_name = page.get("displayName", "Unknown Page")
+
+                    for visual in page.get("visuals", []):
+                        visual_title = visual.get("title", "")
+
+                        # Search in visual title using LIKE matching
+                        if visual_title and search_term_lower in visual_title.lower():
+                            reports_with_matches.add(report_id)
+                            all_matches.append({
+                                'match_type': 'visual_title',
+                                'matched_text': visual_title,
+                                'report_id': report_id,
+                                'report_name': report_name,
+                                'page_name': page_name,
+                                'dataset_name': None,
+                                'context': f"Visual on page '{page_name}'"
+                            })
+                            print(f"      ✅ VISUAL MATCH: '{visual_title}' in report '{report_name}' / page '{page_name}'")
+
+            # SECTION 2: Search in MEASURE NAMES
+            print("\n   📐 Searching measure names...")
+            for dataset in ws.get("datasets", []):
+                dataset_id = dataset.get("id")
+                dataset_name = dataset.get("name", "Unknown Dataset")
+
+                # Find reports using this dataset
+                using_reports = []
+                for report in ws.get("reports", []):
+                    if report.get("datasetId") == dataset_id:
+                        using_reports.append({
+                            'id': report.get('id'),
+                            'name': report.get('name', 'Unknown Report')
+                        })
+
+                for table in dataset.get("tables", []):
+                    for measure in table.get("measures", []):
+                        measure_name = measure.get("name", "")
+
+                        # Search in measure name using LIKE matching
+                        if measure_name and search_term_lower in measure_name.lower():
+                            # Add a match for each report that uses this dataset
+                            if using_reports:
+                                for report in using_reports:
+                                    reports_with_matches.add(report['id'])
+                                    all_matches.append({
+                                        'match_type': 'measure',
+                                        'matched_text': measure_name,
+                                        'report_id': report['id'],
+                                        'report_name': report['name'],
+                                        'page_name': None,
+                                        'dataset_name': dataset_name,
+                                        'context': f"DAX measure in table '{table.get('name', 'Unknown')}'"
+                                    })
+                                    print(f"      ✅ MEASURE MATCH: '{measure_name}' in dataset '{dataset_name}' used by '{report['name']}'")
+                            else:
+                                # Dataset not used by any report
+                                all_matches.append({
+                                    'match_type': 'measure',
+                                    'matched_text': measure_name,
+                                    'report_id': None,
+                                    'report_name': 'No reports using this dataset',
+                                    'page_name': None,
+                                    'dataset_name': dataset_name,
+                                    'context': f"DAX measure in table '{table.get('name', 'Unknown')}' (dataset not used in any report)"
+                                })
+                                print(f"      ✅ MEASURE MATCH: '{measure_name}' in dataset '{dataset_name}' (no reports)")
+
+            # SECTION 3: Search in TABLE NAMES
+            print("\n   🗂️ Searching table names...")
+            for dataset in ws.get("datasets", []):
+                dataset_id = dataset.get("id")
+                dataset_name = dataset.get("name", "Unknown Dataset")
+
+                # Find reports using this dataset
+                using_reports = []
+                for report in ws.get("reports", []):
+                    if report.get("datasetId") == dataset_id:
+                        using_reports.append({
+                            'id': report.get('id'),
+                            'name': report.get('name', 'Unknown Report')
+                        })
+
+                for table in dataset.get("tables", []):
+                    table_display_name = table.get("name", "")
+
+                    # Extract native source name (reuse logic from table-search)
+                    native_source_name = None
+                    source = table.get("source", [])
+                    if source and len(source) > 0:
+                        for src in source:
+                            expr = src.get("expression", "")
+                            if expr:
+                                # Use simplified extraction (just SQL pattern)
+                                sql_curly_match = re.search(r'\{?\[Schema="([^"]+)",\s*Item="([^"]+)"\]\}?', expr)
+                                if sql_curly_match:
+                                    schema = sql_curly_match.group(1)
+                                    item = sql_curly_match.group(2)
+                                    if '[' in schema and ']' in schema:
+                                        schema = re.sub(r'[\[\]]', '', schema)
+                                    native_source_name = f"[{schema}].[{item}]"
+                                    break
+
+                    if not native_source_name:
+                        native_source_name = table_display_name
+
+                    # Normalize for search
+                    def normalize_for_search(text):
+                        text = re.sub(r'[\[\]]', '', text)
+                        text = re.sub(r'[._]', ' ', text)
+                        return text.lower()
+
+                    native_normalized = normalize_for_search(native_source_name)
+                    display_normalized = normalize_for_search(table_display_name)
+
+                    # Check if matches using LIKE matching
+                    search_in_native = (search_term_lower in native_source_name.lower() or
+                                       search_term_lower in native_normalized)
+                    search_in_display = (search_term_lower in table_display_name.lower() or
+                                        search_term_lower in display_normalized)
+
+                    if search_in_native or search_in_display:
+                        # Add a match for each report that uses this dataset
+                        if using_reports:
+                            for report in using_reports:
+                                reports_with_matches.add(report['id'])
+                                all_matches.append({
+                                    'match_type': 'table',
+                                    'matched_text': f"{native_source_name}" if native_source_name != table_display_name else table_display_name,
+                                    'report_id': report['id'],
+                                    'report_name': report['name'],
+                                    'page_name': None,
+                                    'dataset_name': dataset_name,
+                                    'context': f"Table in dataset (display name: {table_display_name})" if native_source_name != table_display_name else f"Table in dataset"
+                                })
+                                print(f"      ✅ TABLE MATCH: '{native_source_name}' in dataset '{dataset_name}' used by '{report['name']}'")
+                        else:
+                            # Dataset not used by any report
+                            all_matches.append({
+                                'match_type': 'table',
+                                'matched_text': f"{native_source_name}" if native_source_name != table_display_name else table_display_name,
+                                'report_id': None,
+                                'report_name': 'No reports using this dataset',
+                                'page_name': None,
+                                'dataset_name': dataset_name,
+                                'context': f"Table in dataset (display name: {table_display_name})" if native_source_name != table_display_name else f"Table in dataset"
+                            })
+                            print(f"      ✅ TABLE MATCH: '{native_source_name}' in dataset '{dataset_name}' (no reports)")
+
+            # SECTION 4: Search in COLUMN NAMES
+            print("\n   📝 Searching column names...")
+            total_columns_searched = 0
+            for dataset in ws.get("datasets", []):
+                dataset_id = dataset.get("id")
+                dataset_name = dataset.get("name", "Unknown Dataset")
+
+                # Find reports using this dataset
+                using_reports = []
+                for report in ws.get("reports", []):
+                    if report.get("datasetId") == dataset_id:
+                        using_reports.append({
+                            'id': report.get('id'),
+                            'name': report.get('name', 'Unknown Report')
+                        })
+
+                print(f"      📁 Dataset: {dataset_name} - used by {len(using_reports)} report(s)")
+
+                for table in dataset.get("tables", []):
+                    table_name = table.get("name", "")
+                    columns = table.get("columns", [])
+                    total_columns_searched += len(columns)
+
+                    # Debug: Print table and column info if search term might match
+                    if search_term in table_name.lower():
+                        print(f"         🔎 Table '{table_name}' name contains search term")
+
+                    for col in table.get("columns", []):
+                        col_name = col.get('name', '')
+                        col_source = col.get('sourceColumn', col_name)
+
+                        # Debug: Log ALL column names if searching for HTS (for diagnostic)
+                        if 'hts' in search_term_lower and 'hts' in col_name.lower():
+                            print(f"         📝 Found column with 'hts': name='{col_name}', source='{col_source}'")
+
+                        # Normalize column names for search
+                        def normalize_for_search(text):
+                            # Only remove brackets and convert dots/underscores to spaces
+                            # DO NOT remove other special characters like #, $, etc.
+                            text = re.sub(r'[\[\]]', '', text)
+                            text = re.sub(r'[._]', ' ', text)
+                            return text.lower()
+
+                        col_name_normalized = normalize_for_search(col_name)
+                        col_source_normalized = normalize_for_search(col_source)
+
+                        # Enhanced matching: Check both exact (with special chars) and normalized
+                        # This ensures "HTS#" matches "HTS#" even with the # character
+                        # Using LIKE matching (case-insensitive substring match)
+                        is_col_name_match = (search_term_lower in col_name.lower() or
+                                            search_term_lower in col_name_normalized)
+                        is_col_source_match = (search_term_lower in col_source.lower() or
+                                              search_term_lower in col_source_normalized)
+
+                        # Check if search term matches
+                        if is_col_name_match or is_col_source_match:
+                            # Debug: Log what matched
+                            match_reason = []
+                            if search_term_lower in col_name.lower():
+                                match_reason.append(f"exact match in col_name '{col_name}'")
+                            if search_term_lower in col_name_normalized:
+                                match_reason.append(f"normalized match in col_name '{col_name_normalized}'")
+                            if search_term_lower in col_source.lower():
+                                match_reason.append(f"exact match in col_source '{col_source}'")
+                            if search_term_lower in col_source_normalized:
+                                match_reason.append(f"normalized match in col_source '{col_source_normalized}'")
+
+                            print(f"         🎯 COLUMN MATCH in table '{table_name}': {col_name} | Reason: {', '.join(match_reason)}")
+
+                            # Add a match for each report that uses this dataset
+                            column_display = f"{col_source} (as: {col_name})" if col_source != col_name else col_name
+
+                            if using_reports:
+                                for report in using_reports:
+                                    reports_with_matches.add(report['id'])
+                                    all_matches.append({
+                                        'match_type': 'column',
+                                        'matched_text': column_display,
+                                        'report_id': report['id'],
+                                        'report_name': report['name'],
+                                        'page_name': None,
+                                        'dataset_name': dataset_name,
+                                        'context': f"Column in table '{table_name}'"
+                                    })
+                                    print(f"      ✅ Added match for report: '{report['name']}'")
+                            else:
+                                # Dataset not used by any report
+                                all_matches.append({
+                                    'match_type': 'column',
+                                    'matched_text': column_display,
+                                    'report_id': None,
+                                    'report_name': 'No reports using this dataset',
+                                    'page_name': None,
+                                    'dataset_name': dataset_name,
+                                    'context': f"Column in table '{table_name}' (dataset not used in any report)"
+                                })
+                                print(f"      ✅ Added match (dataset not used in reports)")
+
+        # Sort results: Visual matches first, then measures, then tables, then columns
+        match_type_order = {'visual_title': 1, 'measure': 2, 'table': 3, 'column': 4}
+        all_matches.sort(key=lambda x: (match_type_order.get(x['match_type'], 5), x['matched_text']))
+
+        print(f"\n📄 ===============================================")
+        print(f"📄 CONTENT SEARCH SUMMARY")
+        print(f"📄 ===============================================")
+        print(f"   🔍 Search term: '{search_term}'")
+        print(f"   ✅ Total matches found: {len(all_matches)}")
+        print(f"   📊 Reports with matches: {len(reports_with_matches)}")
+        print(f"   📋 Breakdown:")
+        print(f"      - Visual Titles: {len([m for m in all_matches if m['match_type'] == 'visual_title'])}")
+        print(f"      - DAX Measures: {len([m for m in all_matches if m['match_type'] == 'measure'])}")
+        print(f"      - Tables: {len([m for m in all_matches if m['match_type'] == 'table'])}")
+        print(f"      - Columns: {len([m for m in all_matches if m['match_type'] == 'column'])}")
+        print(f"📄 ===============================================\n")
+
+        return jsonify({
+            'success': True,
+            'workspace_id': workspace_id,
+            'search_term': search_term,
+            'result_count': len(all_matches),
+            'reports_count': len(reports_with_matches),
+            'matches': all_matches
+        })
+
+    except Exception as e:
+        print(f"❌ Error in content search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# Global progress tracker for deep search
+deep_search_progress = {}
+
+@app.route('/api/workspace/deep-search-progress/<workspace_id>')
+@login_required
+def get_deep_search_progress(workspace_id):
+    """Get current progress of deep search operation"""
+    progress = deep_search_progress.get(workspace_id, {}).get('message', 'Processing...')
+    return jsonify({'progress': progress})
+
+@app.route('/api/workspace/deep-content-search/<workspace_id>')
+@login_required
+def deep_content_search(workspace_id):
+    """
+    OPTIMIZED Playwright Visual Extraction with:
+    - Parallel processing
+    - Metadata-driven pre-filtering
+    - Smart caching with modifiedDateTime validation
+    - Progress tracking for large workspaces
+    - Folder-level scoping for large workspaces
+    """
+    try:
+        from scanner_connector import PowerBIScanner
+        from visual_metadata_extractor import VisualMetadataExtractor
+        import re
+        import asyncio
+        import os
+        import pickle
+        from datetime import datetime, timedelta
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        search_term = request.args.get('query', '').strip()
+        folder_id = request.args.get('folder_id')  # Optional folder filter
+        report_id = request.args.get('report_id')  # Optional single report filter
+
+        if not search_term:
+            return jsonify({'success': False, 'error': 'Search query is required'}), 400
+
+        search_term_lower = search_term.lower()
+
+        # Build scope description
+        scope_info = []
+        if folder_id:
+            scope_info.append(f"Folder: {folder_id[:8]}...")
+        if report_id:
+            scope_info.append(f"Report: {report_id[:8]}...")
+        if not scope_info:
+            scope_info.append("All Reports")
+
+        scope_str = " | ".join(scope_info)
+        print(f"\n🔬 ===============================================")
+        print(f"🔬 OPTIMIZED DEEP SEARCH: '{search_term}' in workspace {workspace_id}")
+        print(f"🔬 Scope: {scope_str}")
+        print(f"🔬 ===============================================")
+
+        # Initialize progress tracker
+        deep_search_progress[workspace_id] = {'message': 'Initializing...', 'lock': threading.Lock()}
+
+        # Get user token
+        user_token = session.get('access_token')
+        if not user_token:
+            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+        # Create cache directory
+        cache_dir = os.path.join(os.getcwd(), '.visual_cache')
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # Step 1: Get Scanner API data for dataset metadata
+        deep_search_progress[workspace_id]['message'] = 'Scanning workspace metadata...'
+        print("\n   📊 Step 1: Running Scanner API scan for dataset metadata...")
+        scanner = PowerBIScanner()
+        scanner.access_token = scanner.get_access_token()
+        scan_data = scanner.run_scan(workspace_id=workspace_id)
+
+        if not scan_data or "workspaces" not in scan_data:
+            return jsonify({'success': False, 'error': 'Failed to scan workspace'}), 500
+
+        # Build dataset metadata index
+        dataset_metadata = {}
+        for ws in scan_data["workspaces"]:
+            for dataset in ws.get("datasets", []):
+                dataset_id = dataset.get("id")
+                dataset_name = dataset.get("name", "Unknown Dataset")
+
+                # Get datasources
+                datasources = dataset.get("datasources", [])
+                datasource_info = []
+                for ds in datasources:
+                    connection_details = ds.get("connectionDetails", {})
+                    datasource_info.append({
+                        'datasourceType': ds.get("datasourceType", "Unknown"),
+                        'server': connection_details.get("server", "N/A"),
+                        'database': connection_details.get("database", "N/A")
+                    })
+
+                # Build table/column index
+                tables = {}
+                for table in dataset.get("tables", []):
+                    table_name = table.get("name", "")
+
+                    # Extract native source name
+                    native_source_name = None
+                    source = table.get("source", [])
+                    if source and len(source) > 0:
+                        for src in source:
+                            expr = src.get("expression", "")
+                            if expr:
+                                sql_curly_match = re.search(r'\{?\[Schema="([^"]+)",\s*Item="([^"]+)"\]\}?', expr)
+                                if sql_curly_match:
+                                    schema = sql_curly_match.group(1)
+                                    item = sql_curly_match.group(2)
+                                    if '[' in schema and ']' in schema:
+                                        schema = re.sub(r'[\[\]]', '', schema)
+                                    native_source_name = f"[{schema}].[{item}]"
+                                    break
+
+                    if not native_source_name:
+                        native_source_name = table_name
+
+                    # Build column index
+                    columns = {}
+                    for col in table.get("columns", []):
+                        col_name = col.get('name', '')
+                        col_source = col.get('sourceColumn', col_name)
+                        columns[col_name.lower()] = {
+                            'name': col_name,
+                            'source_name': col_source,
+                            'dataType': col.get('dataType', 'Unknown'),
+                            'isHidden': col.get('isHidden', False)
+                        }
+
+                    tables[table_name] = {
+                        'native_source_name': native_source_name,
+                        'columns': columns
+                    }
+
+                dataset_metadata[dataset_id] = {
+                    'name': dataset_name,
+                    'tables': tables,
+                    'datasources': datasource_info
+                }
+
+        print(f"   ✅ Indexed {len(dataset_metadata)} dataset(s)")
+
+        # Step 1.5: PRE-FILTERING - Identify datasets containing search term
+        deep_search_progress[workspace_id]['message'] = 'Pre-filtering datasets...'
+        print("\n   🔍 Step 1.5: Pre-filtering datasets by search term...")
+        search_normalized = re.sub(r'[._-]', ' ', search_term_lower)
+        relevant_dataset_ids = set()
+
+        for dataset_id, dataset_meta in dataset_metadata.items():
+            tables = dataset_meta.get('tables', {})
+            for table_name, table_data in tables.items():
+                # Check table name
+                if search_term_lower in table_name.lower():
+                    relevant_dataset_ids.add(dataset_id)
+                    print(f"      ✓ Dataset '{dataset_meta['name']}' contains table '{table_name}'")
+                    break
+                # Check columns
+                for col_name in table_data.get('columns', {}).keys():
+                    col_normalized = re.sub(r'[._-]', ' ', col_name.lower())
+                    if search_term_lower in col_name.lower() or search_normalized in col_normalized:
+                        relevant_dataset_ids.add(dataset_id)
+                        print(f"      ✓ Dataset '{dataset_meta['name']}' contains column '{col_name}'")
+                        break
+                if dataset_id in relevant_dataset_ids:
+                    break
+
+        print(f"   ✅ Found {len(relevant_dataset_ids)} dataset(s) potentially containing '{search_term}'")
+        if not relevant_dataset_ids:
+            print(f"   ⚠️  No datasets contain the search term in schema - will search visual titles and aliases only")
+
+        # Step 2: Get all reports in workspace (using Scanner API to get folder info)
+        deep_search_progress[workspace_id]['message'] = 'Loading reports...'
+        print("\n   📄 Step 2: Getting reports from workspace (with folder info)...")
+
+        # Use Scanner API scan data which already has folder information
+        reports = []
+        for ws in scan_data.get("workspaces", []):
+            if ws.get("id") == workspace_id:
+                reports = ws.get("reports", [])
+                break
+
+        total_before_filter = len(reports)
+        print(f"   ✅ Found {total_before_filter} report(s) from Scanner API")
+
+        # NEW: Filter by folder if specified (including nested subfolders)
+        if folder_id:
+            print(f"\n   🗂️  Step 2.5: Filtering reports by folder {folder_id[:8]}...")
+
+            # Get folder hierarchy from Fabric API
+            try:
+                folders_url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/folders?recursive=true"
+                folders_response = requests.get(folders_url, headers=headers)
+
+                folder_hierarchy = {}
+                if folders_response.status_code == 200:
+                    folders_data = folders_response.json().get('value', [])
+                    for folder in folders_data:
+                        fid = folder.get('id')
+                        if fid:
+                            folder_hierarchy[fid] = {
+                                'id': fid,
+                                'name': folder.get('displayName', ''),
+                                'parentFolderId': folder.get('parentFolderId')
+                            }
+
+                    # Helper to get all child folder IDs recursively
+                    def get_child_folders(parent_id, hierarchy):
+                        children = {parent_id}
+                        for fid, finfo in hierarchy.items():
+                            if finfo.get('parentFolderId') == parent_id:
+                                children.add(fid)
+                                children.update(get_child_folders(fid, hierarchy))
+                        return children
+
+                    all_folder_ids = get_child_folders(folder_id, folder_hierarchy)
+                    print(f"   📁 Including {len(all_folder_ids)} folder(s) (selected + nested subfolders)")
+
+                    # Filter reports by folder hierarchy (Scanner API uses 'folderId')
+                    reports = [r for r in reports if r.get('folderId') in all_folder_ids]
+                else:
+                    # Fallback to single folder only if Fabric API fails
+                    reports = [r for r in reports if r.get('folderId') == folder_id]
+            except Exception as e:
+                print(f"   ⚠️ Error fetching folder hierarchy: {e}, filtering single folder only")
+                reports = [r for r in reports if r.get('folderId') == folder_id]
+
+            print(f"   ✅ Filtered from {total_before_filter} to {len(reports)} reports in selected folder")
+        else:
+            print(f"   ✅ Found {len(reports)} report(s) in workspace (all folders)")
+
+        # NEW: Filter by specific report if report_id is provided
+        if report_id:
+            reports_before_report_filter = len(reports)
+            reports = [r for r in reports if r.get('id') == report_id]
+            print(f"   🎯 Filtered to specific report: {reports_before_report_filter} → {len(reports)} report(s)")
+
+        # Step 3: Extract visual metadata with smart caching
+        deep_search_progress[workspace_id]['message'] = 'Extracting visual metadata...'
+        print(f"\n   🎨 Step 3: Extracting visual metadata with smart caching...")
+
+        all_matches = []
+        reports_processed = 0
+        reports_with_matches = set()
+        reports_from_cache = 0
+        reports_extracted = 0
+        reports_skipped = 0
+        reports_filtered = 0
+
+        # Initialize Visual Extractor
+        extractor = VisualMetadataExtractor(user_token=user_token)
+
+        total_reports = len(reports)
+        for idx, report in enumerate(reports, 1):
+            report_id = report.get('id')
+            report_name = report.get('name', 'Unknown Report')
+            dataset_id = report.get('datasetId')
+
+            # Update progress
+            with deep_search_progress[workspace_id]['lock']:
+                deep_search_progress[workspace_id]['message'] = f'Processing {idx}/{total_reports} reports...'
+
+            # Skip platform / system reports (usage metrics, capacity metrics, [App] shells)
+            if (
+                _is_excluded_report_name(report_name)
+                or 'Fabric Capacity Metrics' in report_name
+            ):
+                print(f"\n      ⏭️  Skipping system report: {report_name}")
+                reports_skipped += 1
+                continue
+
+            # PRE-FILTER DISABLED: We need to search ALL reports because the term might exist in:
+            # - Visual titles, field aliases, DAX measures, or visual-level renamed fields
+            # The pre-filtering was TOO AGGRESSIVE and caused false negatives
+            # if relevant_dataset_ids and dataset_id not in relevant_dataset_ids:
+            #     print(f"\n      🚫 Filtered out: {report_name} (dataset doesn't contain search term)")
+            #     reports_filtered += 1
+            #     continue
+
+            print(f"\n      📊 Processing report: {report_name}")
+
+            # Check cache first (SMART CACHE with modifiedDateTime validation)
+            cache_file = os.path.join(cache_dir, f"{report_id}.pkl")
+            visual_result = None
+            use_cache = False
+
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'rb') as f:
+                        cached_data = pickle.load(f)
+
+                    # Smart cache validation using report modifiedDateTime
+                    report_modified = report.get('modifiedDateTime')
+                    cache_timestamp = cached_data.get('cached_at')
+
+                    if report_modified and cache_timestamp:
+                        try:
+                            from dateutil import parser
+                            report_modified_dt = parser.parse(report_modified)
+                            cache_dt = datetime.fromisoformat(cache_timestamp) if isinstance(cache_timestamp, str) else cache_timestamp
+
+                            if report_modified_dt <= cache_dt:
+                                print(f"         💾 Using cache (report unchanged since {cache_dt.strftime('%Y-%m-%d %H:%M')})")
+                                visual_result = cached_data
+                                use_cache = True
+                                reports_from_cache += 1
+                            else:
+                                print(f"         🔄 Report modified on {report_modified_dt.strftime('%Y-%m-%d %H:%M')}, re-extracting...")
+                        except Exception as e:
+                            print(f"         ⚠️  Date parsing failed: {e}, using fallback cache logic")
+                            # Fallback to 24h TTL
+                            cache_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))
+                            if cache_age < timedelta(hours=24):
+                                visual_result = cached_data
+                                use_cache = True
+                                reports_from_cache += 1
+                                print(f"         💾 Using cache (age: {cache_age.seconds // 3600}h)")
+                    else:
+                        # Fallback to 24h TTL if no modifiedDateTime
+                        cache_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))
+                        if cache_age < timedelta(hours=24):
+                            visual_result = cached_data
+                            use_cache = True
+                            reports_from_cache += 1
+                            print(f"         💾 Using cache (age: {cache_age.seconds // 3600}h)")
+                        else:
+                            print(f"         🕐 Cache expired (age: {cache_age.days}d)")
+                except Exception as e:
+                    print(f"         ⚠️ Cache validation failed: {e}, will extract fresh")
+                    visual_result = None
+
+            # Extract if not in cache or cache invalid
+            if not use_cache:
+                print(f"         🌐 Extracting visual metadata via Playwright...")
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    visual_result = loop.run_until_complete(
+                        extractor.extract_visuals(workspace_id, report_id, timeout=60)
+                    )
+                    loop.close()
+
+                    if visual_result.get('success'):
+                        # Cache the result with timestamp
+                        visual_result['cached_at'] = datetime.now().isoformat()
+                        with open(cache_file, 'wb') as f:
+                            pickle.dump(visual_result, f)
+                        print(f"         💾 Cached visual metadata")
+                        reports_extracted += 1
+                    else:
+                        print(f"         ⚠️ Extraction failed: {visual_result.get('error')}")
+                        continue
+                except Exception as e:
+                    print(f"         ❌ Error extracting visuals: {str(e)}")
+                    continue
+
+            if not visual_result or not visual_result.get('success'):
+                continue
+
+            pages = visual_result.get('pages', [])
+            print(f"         ✅ Loaded {len(pages)} page(s)")
+
+            # Get dataset metadata
+            dataset_meta = dataset_metadata.get(dataset_id, {})
+            dataset_name = dataset_meta.get('name', 'Unknown Dataset')
+            dataset_tables = dataset_meta.get('tables', {})
+            dataset_datasources = dataset_meta.get('datasources', [])
+
+            # Search through visual titles AND field bindings
+            for page in pages:
+                page_name = page.get('displayName', 'Unknown Page')
+
+                for visual in page.get('visuals', []):
+                    visual_name = visual.get('name', 'Unknown')
+                    visual_type = visual.get('type', 'unknown')
+                    visual_title = visual.get('title', '')
+                    visual_fields = visual.get('fields', [])
+
+                    # FILTER: Skip ONLY non-data decorative visuals
+                    # Keep slicers, cards in case user wants to search for fields used there
+                    non_data_visuals = ['actionButton', 'textbox', 'image', 'shape', 'rectangle']
+                    if visual_type in non_data_visuals:
+                        continue  # Skip these visual types entirely
+
+                    # DEBUG: Show all fields for data visuals only
+                    if visual_fields:
+                        print(f"\n         🔍 DEBUG: Visual '{visual_title or visual_name}' (type: {visual_type}) on page '{page_name}' has {len(visual_fields)} fields:")
+                        for fld in visual_fields[:15]:  # Show first 15 fields
+                            print(f"            - name: '{fld.get('name')}', displayName: '{fld.get('displayName')}', table: '{fld.get('table', 'N/A')}'")
+
+                    # Check for matches in:
+                    # 1. Visual Title
+                    # 2. Field Names (columns/measures used in the visual)
+                    match_found = False
+                    match_reason = None
+                    matched_fields = []
+
+                    # Search in visual title
+                    if visual_title and search_term_lower in visual_title.lower():
+                        match_found = True
+                        match_reason = 'visual_title'
+                        print(f"         🎯 MATCH in TITLE: '{visual_title}' (type: {visual_type}) on page '{page_name}'")
+
+                    # Normalize function for field name matching (handle spaces, underscores, hyphens)
+                    def normalize_field_name(text):
+                        if not text:
+                            return ''
+                        # Replace underscores, hyphens, dots with spaces for matching
+                        text = re.sub(r'[._-]', ' ', text)
+                        return text.lower().strip()
+
+                    search_normalized = normalize_field_name(search_term)
+
+                    # Search in field bindings (METHOD 1: Direct field match)
+                    if not match_found and visual_fields:
+                        for field in visual_fields:
+                            field_name = field.get('name', '')
+                            field_display = field.get('displayName', '')
+
+                            # Normalize both field name and display name
+                            field_name_normalized = normalize_field_name(field_name)
+                            field_display_normalized = normalize_field_name(field_display)
+
+                            # Check if search term matches either the exact field name or normalized version
+                            if (search_term_lower in field_name.lower() or
+                                search_term_lower in field_display.lower() or
+                                search_normalized in field_name_normalized or
+                                search_normalized in field_display_normalized):
+                                match_found = True
+                                match_reason = 'field_binding'
+                                matched_fields.append(field.get('displayName') or field.get('name'))
+
+                        if match_found:
+                            fields_str = ', '.join(matched_fields[:3])  # Show first 3 fields
+                            if len(matched_fields) > 3:
+                                fields_str += f" (+{len(matched_fields)-3} more)"
+                            title_display = f"'{visual_title}'" if visual_title else "(no title)"
+                            print(f"         🎯 MATCH in FIELDS: {title_display} (type: {visual_type}) on page '{page_name}' - Fields: {fields_str}")
+
+                    # ENHANCED SEARCH (METHOD 2: Dataset column match via lineage)
+                    # Even if fields weren't captured, check if the visual uses tables with matching columns
+                    if not match_found:
+                        # Build list of tables this visual uses (from extracted fields)
+                        visual_tables = set()
+                        for field in visual_fields:
+                            table = field.get('table', '')
+                            if table:
+                                visual_tables.add(table.lower())
+
+                        # If no tables found, search ALL tables (for visuals with incomplete field extraction)
+                        # Otherwise, only search tables the visual is confirmed to use
+                        tables_to_search = visual_tables if visual_tables else [t.lower() for t in dataset_tables.keys()]
+
+                        # Search dataset tables for columns matching search term
+                        matching_tables = {}  # {table_name: [matching_columns]}
+                        for table_name, table_data in dataset_tables.items():
+                            # Skip if this visual doesn't use this table (if we have that info)
+                            if visual_tables and table_name.lower() not in visual_tables:
+                                continue
+
+                            table_columns = table_data.get('columns', {})
+                            table_matches = []
+                            for col_name_key, col_info in table_columns.items():
+                                col_name = col_info.get('name', '')
+                                col_normalized = normalize_field_name(col_name)
+
+                                # Check if column name matches search term
+                                if (search_term_lower in col_name.lower() or
+                                    search_normalized in col_normalized):
+                                    table_matches.append(col_name)
+                                    matched_fields.append(col_name)
+
+                            if table_matches:
+                                matching_tables[table_name] = table_matches
+
+                        if matched_fields:
+                            match_found = True
+                            match_reason = 'dataset_column_lineage'
+                            fields_str = ', '.join(matched_fields[:5])  # Show first 5 matches
+                            if len(matched_fields) > 5:
+                                fields_str += f" (+{len(matched_fields)-5} more)"
+                            title_display = f"'{visual_title}'" if visual_title else "(no title)"
+                            confidence = "HIGH" if visual_tables else "POSSIBLE"
+                            print(f"         🎯 {confidence} MATCH via LINEAGE: {title_display} (type: {visual_type}) on page '{page_name}' - Columns: {fields_str}")
+
+                    if match_found:
+
+                        # Try to find matching column in dataset
+                        matching_column_info = None
+                        matching_table_info = None
+
+                        # Try to match based on search term or matched fields
+                        search_fields = matched_fields if matched_fields else [search_term]
+
+                        for search_field in search_fields:
+                            search_field_lower = search_field.lower().strip()
+
+                            for table_name, table_data in dataset_tables.items():
+                                table_columns = table_data.get('columns', {})
+
+                                if search_field_lower in table_columns:
+                                    col_info = table_columns[search_field_lower]
+                                    matching_column_info = {
+                                        'column_name': col_info.get('name'),
+                                        'source_name': col_info.get('source_name'),
+                                        'dataType': col_info.get('dataType')
+                                    }
+                                    matching_table_info = {
+                                        'table_name': table_name,
+                                        'native_source_name': table_data.get('native_source_name')
+                                    }
+                                    break
+
+                            if matching_column_info:
+                                break
+
+                        # Build datasource text
+                        datasource_text = "N/A"
+                        if dataset_datasources:
+                            ds = dataset_datasources[0]
+                            if ds['server'] != 'N/A':
+                                datasource_text = f"{ds['server']} / {ds['database']}"
+
+                        # Add match
+                        all_matches.append({
+                            'match_type': match_reason,
+                            'report_id': report_id,
+                            'report_name': report_name,
+                            'page_name': page_name,
+                            'visual_type': visual_type,
+                            'visual_title': visual_title or '(no title)',
+                            'visual_name': visual_name,
+                            'matched_fields': matched_fields if matched_fields else None,
+                            'dataset_name': dataset_name,
+                            'table_name': matching_table_info.get('table_name') if matching_table_info else None,
+                            'table_native_name': matching_table_info.get('native_source_name') if matching_table_info else None,
+                            'column_name': matching_column_info.get('column_name') if matching_column_info else None,
+                            'column_source_name': matching_column_info.get('source_name') if matching_column_info else None,
+                            'column_dataType': matching_column_info.get('dataType') if matching_column_info else None,
+                            'datasource': datasource_text,
+                            'is_alias': visual_title != matching_column_info.get('source_name') if matching_column_info else False
+                        })
+
+                        reports_with_matches.add(report_id)
+
+            reports_processed += 1
+
+        print(f"\n🔬 ===============================================")
+        print(f"🔬 OPTIMIZED DEEP SEARCH SUMMARY")
+        print(f"🔬 ===============================================")
+        print(f"   🔍 Search term: '{search_term}'")
+        print(f"   📊 Total reports: {len(reports)}")
+        print(f"   ✅ Processed: {reports_processed}")
+        print(f"   ⏭️  Skipped: {reports_skipped} (system reports)")
+        print(f"   🚫 Filtered: {reports_filtered} (dataset pre-filter)")
+        print(f"   💾 From cache: {reports_from_cache}")
+        print(f"   🌐 Newly extracted: {reports_extracted}")
+        print(f"   🎯 Matches found: {len(all_matches)}")
+        print(f"   📊 Reports with matches: {len(reports_with_matches)}")
+        print(f"🔬 ===============================================\n")
+
+        # Clear progress
+        deep_search_progress[workspace_id]['message'] = 'Complete'
+
+        return jsonify({
+            'success': True,
+            'workspace_id': workspace_id,
+            'search_term': search_term,
+            'result_count': len(all_matches),
+            'reports_count': len(reports_with_matches),
+            'reports_total': len(reports),
+            'reports_processed': reports_processed,
+            'reports_skipped': reports_skipped,
+            'reports_filtered': reports_filtered,
+            'reports_from_cache': reports_from_cache,
+            'reports_extracted': reports_extracted,
+            'matches': all_matches
+        })
+
+    except Exception as e:
+        print(f"❌ Error in optimized deep search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/clear-cache', methods=['POST'])
+@login_required
+def clear_cache():
+    """
+    ⚡ PERFORMANCE OPTIMIZATION: Clear all caches for current user
+    This endpoint allows users to force a refresh of all cached data
+    """
+    try:
+        user_id = session.get('user', {}).get('oid')
+        if not user_id:
+            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+        # Clear user-specific caches
+        cleared_count = 0
+
+        # Clear workspaces cache
+        workspace_key = f"workspaces_{user_id}"
+        if workspace_key in workspaces_cache:
+            del workspaces_cache[workspace_key]
+            cleared_count += 1
+
+        # Clear all workspace summaries for this user
+        keys_to_delete = [k for k in workspace_cache.keys() if k.endswith(f"_{user_id}")]
+        for key in keys_to_delete:
+            del workspace_cache[key]
+            cleared_count += 1
+
+        # Clear reports cache for this user
+        report_keys_to_delete = [k for k in reports_cache.keys() if f"_{user_id}_" in k]
+        for key in report_keys_to_delete:
+            del reports_cache[key]
+            cleared_count += 1
+
+        print(f"🗑️  Cleared {cleared_count} cache entries for user: {user_id}")
+
+        return jsonify({
+            'success': True,
+            'message': f'Cache cleared successfully ({cleared_count} entries)',
+            'cleared_count': cleared_count
+        })
+
+    except Exception as e:
+        print(f"❌ Error clearing cache: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/datasets')
+@login_required
+def get_datasets():
+    """API endpoint to get datasets for a workspace"""
+    try:
+        workspace_id = request.args.get('workspaceId')
+
+        if not workspace_id:
+            return jsonify({
+                'success': False,
+                'error': 'workspaceId parameter is required'
+            }), 400
+
+        # Get user's access token
+        token = get_user_powerbi_token()
+        if not token:
+            return jsonify({
+                'success': False,
+                'error': 'Session expired. Please log in again.',
+                'redirect': '/login'
+            }), 401
+
+        # Fetch datasets from Power BI API
+        base_url = "https://api.powerbi.com/v1.0/myorg"
+        url = f"{base_url}/groups/{workspace_id}/datasets"
+
+        headers = get_user_powerbi_headers()
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+
+        datasets = response.json().get('value', [])
+
+        # Filter and format datasets
+        dataset_list = [
+            {
+                'id': ds['id'],
+                'name': ds['name'],
+                'configuredBy': ds.get('configuredBy', 'Unknown'),
+                'isRefreshable': ds.get('isRefreshable', False),
+                'isOnPremGatewayRequired': ds.get('isOnPremGatewayRequired', False)
+            }
+            for ds in datasets
+        ]
+
+        print(f"📊 Fetched {len(dataset_list)} dataset(s) from workspace {workspace_id}")
+
+        return jsonify({
+            'success': True,
+            'datasets': dataset_list
+        })
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error fetching datasets: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/reports')
+@login_required
+def get_reports():
+    """API endpoint to get reports for a workspace using user-delegated permissions - FAST initial load
+    Supports optional folder_id parameter for folder-level scoping
+    Supports optional status parameter for active/inactive filtering
+    """
+    try:
+        import time
+        import requests
+        workspace_id = request.args.get('workspace_id')
+        folder_id = request.args.get('folder_id')  # NEW: Optional folder filter
+        status_filter = request.args.get('status')  # NEW: Optional status filter (active/inactive)
+
+        print(f"\n🎯 get_reports() called:")
+        print(f"   workspace_id = {workspace_id}")
+        print(f"   folder_id (from URL) = {folder_id if folder_id else 'NULL (All Folders)'}")
+        print(f"   Full request URL: {request.url}")
+
+        if not workspace_id:
+            return jsonify({
+                'success': False,
+                'error': 'workspace_id is required'
+            }), 400
+
+        # Get user info for cache key (include folder_id in cache key)
+        user_id = session.get('user', {}).get('oid', 'unknown')
+        cache_key = f"{workspace_id}_{user_id}_{folder_id or 'all'}"
+        print(f"   Cache key: {cache_key}")
+
+        # Check cache first (per-user, per-workspace, per-folder)
+        current_time = time.time()
+        force_live = request.args.get('source') in ('live', 'api') or request.args.get('force_live') in ('1', 'true', 'yes')
+        if cache_key in reports_cache and not force_live:
+            cache_entry = reports_cache[cache_key]
+            if cache_entry['data'] and (current_time - cache_entry['timestamp']) < CACHE_DURATION:
+                print(f"📦 Using cached reports (folder: {folder_id or 'all'})")
+                return jsonify({
+                    'success': True,
+                    'reports': cache_entry['data'],
+                    'folders': cache_entry.get('folders', []),
+                    'reportFolderMap': cache_entry.get('reportFolderMap') or {},
+                    'source': cache_entry.get('source', 'cache'),
+                    'catalogGeneratedAt': cache_entry.get('catalogGeneratedAt'),
+                    'opsFromCatalog': cache_entry.get('opsFromCatalog'),
+                    'refreshIncluded': cache_entry.get('refreshIncluded'),
+                    'opsEnrichedAt': cache_entry.get('opsEnrichedAt'),
+                })
+
+        # =====================================================================
+        # FAST PATH: precomputed catalog (SharePoint / local)
+        # Default: return list immediately (no live refresh) — UI paints fast.
+        # Optional: include_refresh=1 overlays live refresh (slower; use after paint).
+        # Skip Scanner when catalog has this workspace. Fall through on miss.
+        # =====================================================================
+        include_refresh = request.args.get('include_refresh', '0').lower() in ('1', 'true', 'yes')
+        # Active/inactive filter needs refresh timestamps
+        if status_filter in ('active', 'inactive'):
+            include_refresh = True
+
+        if (
+            not force_live
+            and CATALOG_AVAILABLE
+            and catalog_service is not None
+            and catalog_service.is_available()
+        ):
+            try:
+                allowed = _user_allowed_workspace_ids()
+                if workspace_id not in (allowed or set()):
+                    print(f"   ⚠️ Catalog fast-path: user cannot access workspace {workspace_id[:8]}…")
+                else:
+                    catalog_payload = catalog_service.get_workspace_reports(
+                        workspace_id, allowed_workspace_ids=allowed
+                    )
+                    if catalog_payload and catalog_payload.get('reports') is not None:
+                        n_reports = len(catalog_payload['reports'])
+                        ops_cov = catalog_payload.get('opsCoverage') or {}
+                        ops_hits = int(ops_cov.get('reportsWithOps') or 0)
+                        # Prefer precomputed ops in catalog (6h batch). Live refresh only
+                        # when explicitly requested AND catalog lacks ops coverage.
+                        shell = _catalog_reports_shell(catalog_payload['reports'])
+                        catalog_has_ops = ops_hits > 0 or any(
+                            r.get('ops_from_catalog') for r in shell
+                        )
+                        need_live = include_refresh and not catalog_has_ops
+                        print(
+                            f"⚡ CATALOG FAST PATH for workspace {workspace_id[:8]}… "
+                            f"({n_reports} reports, ops={ops_hits}/{n_reports}, "
+                            f"generatedAt={catalog_payload.get('generatedAt')}, "
+                            f"opsEnrichedAt={catalog_payload.get('opsEnrichedAt')}, "
+                            f"live_refresh={need_live}, folder={folder_id or 'all'})"
+                        )
+                        if need_live:
+                            report_list = _enrich_catalog_reports_with_refresh(
+                                catalog_payload['reports'], workspace_id
+                            )
+                            source_label = 'catalog+live-refresh'
+                            refresh_included = True
+                        else:
+                            report_list = shell
+                            source_label = 'catalog+ops' if catalog_has_ops else 'catalog'
+                            refresh_included = catalog_has_ops
+
+                        if status_filter in ('active', 'inactive'):
+                            report_list = _filter_reports_by_refresh_status(
+                                report_list, status_filter
+                            )
+
+                        # Folders + report membership (Fabric items, cached).
+                        # Used for dropdown AND for fast folder filter without Scanner.
+                        folder_meta = {
+                            'folders': [],
+                            'report_folder_map': {},
+                            'folder_names_map': {},
+                        }
+                        try:
+                            folder_meta = _fetch_workspace_folder_meta(workspace_id)
+                        except Exception as folders_exc:
+                            print(f"   ⚠️ Folder meta on catalog path failed: {folders_exc}")
+                            folder_meta = {
+                                'folders': [],
+                                'report_folder_map': {},
+                                'folder_names_map': {},
+                            }
+                        folders_list = folder_meta.get('folders') or []
+                        report_list = _attach_folder_ids(
+                            report_list, folder_meta.get('report_folder_map') or {}
+                        )
+
+                        if folder_id:
+                            before = len(report_list)
+                            report_list = _filter_reports_by_folder(
+                                report_list, folder_id, folder_meta
+                            )
+                            print(
+                                f"   📂 Catalog folder filter '{folder_id[:8]}…': "
+                                f"{before} → {len(report_list)} reports"
+                            )
+                            source_label = f"{source_label}+folder"
+
+                        report_folder_map_out = folder_meta.get('report_folder_map') or {}
+                        # Cache instant/ops responses (safe — no per-click live fan-out)
+                        reports_cache[cache_key] = {
+                            'data': report_list,
+                            'folders': folders_list,
+                            'reportFolderMap': report_folder_map_out,
+                            'timestamp': current_time,
+                            'source': source_label,
+                            'catalogGeneratedAt': catalog_payload.get('generatedAt'),
+                            'opsEnrichedAt': catalog_payload.get('opsEnrichedAt'),
+                            'opsFromCatalog': catalog_has_ops,
+                            'refreshIncluded': refresh_included,
+                        }
+                        return jsonify({
+                            'success': True,
+                            'reports': report_list,
+                            'folders': folders_list,
+                            'reportFolderMap': report_folder_map_out,
+                            'source': source_label,
+                            'refreshIncluded': refresh_included,
+                            'opsFromCatalog': catalog_has_ops,
+                            'catalogGeneratedAt': catalog_payload.get('generatedAt'),
+                            'opsEnrichedAt': catalog_payload.get('opsEnrichedAt'),
+                            'ops': catalog_payload.get('ops'),
+                            'workspaceName': (catalog_payload.get('workspace') or {}).get('name'),
+                        })
+                    else:
+                        print(f"   ℹ️ Catalog miss for workspace {workspace_id[:8]}… — live Scanner fallback")
+            except Exception as catalog_exc:
+                print(f"   ⚠️ Catalog fast-path error (falling back to live): {catalog_exc}")
+                import traceback
+                traceback.print_exc()
+
+        # Get reports using Scanner API to get folder information
+        # Regular API doesn't return folderId/folderObjectId, so we need Scanner API
+        from scanner_connector import PowerBIScanner
+
+        scan_data = None
+        reports = []
+        try:
+            print(f"\n📊 Getting reports with folder info from Scanner API...")
+            scanner = PowerBIScanner()
+            scanner.access_token = scanner.get_access_token()
+            scan_data = scanner.run_scan(workspace_id=workspace_id)
+
+            reports = []
+            if scan_data and "workspaces" in scan_data:
+                for ws in scan_data["workspaces"]:
+                    if ws.get("id") == workspace_id:
+                        reports = ws.get("reports", [])
+                        break
+                print(f"   ✅ Found {len(reports)} reports from Scanner API (including [App] reports)")
+            else:
+                # Fallback to regular API if Scanner fails (no folder info)
+                print("⚠️ Scanner API failed, falling back to regular API (no folder info)")
+                base_url = "https://api.powerbi.com/v1.0/myorg"
+                url = f"{base_url}/groups/{workspace_id}/reports"
+                headers = get_user_powerbi_headers()
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
+                reports = response.json().get('value', [])
+
+            if reports:
+                print("\nReports in workspace:")
+                for idx, report in enumerate(reports, 1):
+                    print(f"   {idx}. {report['name']}")
+
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error fetching reports with user token: {str(e)}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"   Status Code: {e.response.status_code}")
+                print(f"   Response: {e.response.text[:500]}")
+
+                # If 403 Forbidden, try fallback to service principal
+                if e.response.status_code == 403:
+                    print("\n⚠️  User delegated permissions not granted. Falling back to service principal...")
+                    print("   To fix this permanently, grant admin consent for Power BI API permissions in Azure Portal.")
+
+                    try:
+                        # Fallback to service principal
+                        reports = powerbi.get_all_reports(workspace_id)
+                    except Exception as fallback_error:
+                        print(f"Error: Fallback authentication failed: {str(fallback_error)}")
+                        return jsonify({
+                            'success': False,
+                            'error': 'Unable to fetch reports. Please contact your administrator to grant Power BI API permissions.',
+                            'details': str(e)
+                        }), 500
+                else:
+                    raise
+
+        # Fetch folder names via shared helper (Fabric token + SP + Scanner fallbacks)
+        folder_names_map = {}
+        fabric_folders_list = []  # Store full folder hierarchy
+
+        try:
+            print("\n📁 Fetching folder names for live /api/reports path...")
+            shared_folders = _fetch_workspace_folders_list(workspace_id)
+            for f in shared_folders or []:
+                fid = f.get('id')
+                if not fid or fid == '__ROOT__':
+                    continue
+                # Prefer leaf displayName if path was already built into name
+                folder_names_map[fid] = {
+                    'id': fid,
+                    'name': f.get('name') or fid,
+                    'parentFolderId': f.get('parentFolderId'),
+                }
+                fabric_folders_list.append({
+                    'id': fid,
+                    'name': f.get('name') or fid,
+                    'parentFolderId': f.get('parentFolderId'),
+                })
+            print(f"   ✅ Folder map size: {len(folder_names_map)}")
+        except Exception as e:
+            print(f"   ⚠️ Error fetching folders: {e}, using folder IDs as names")
+
+        # Build report list with minimal processing
+        report_list = []
+        folders_map = {}  # Track unique folders
+        output_dir = 'output'
+        app_reports_excluded = 0  # Count of [App] reports excluded
+
+        # ⚡ Fetch refresh data from Power BI REST API (Scanner doesn't include refresh history).
+        # Robust resolver handles: null endTime (in-progress), DirectQuery/Live, cross-workspace datasets.
+        from powerbi_connector import resolve_dataset_refresh_info, _empty_refresh_info
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        dataset_refresh_map = {}
+
+        print(f"\n🔥 STARTING REFRESH DATA FETCH - Total reports from Scanner: {len(reports)}")
+
+        # Map dataset_id -> preferred dataset home workspace (from Scanner lineage when present)
+        dataset_workspace_hints = {}
+        dataset_ids = set()
+
+        # Scanner datasets in this workspace (local datasets)
+        scan_datasets_in_ws = set()
+        if scan_data and "workspaces" in scan_data:
+            for ws in scan_data["workspaces"]:
+                if ws.get("id") == workspace_id:
+                    for ds in ws.get("datasets", []) or []:
+                        if ds.get("id"):
+                            scan_datasets_in_ws.add(ds["id"])
+                            dataset_workspace_hints[ds["id"]] = workspace_id
+                    break
+
+        for report in reports:
+            if _is_excluded_report_name(report.get('name')):
+                continue
+            dataset_id = report.get('datasetId')
+            if not dataset_id:
+                continue
+            dataset_ids.add(dataset_id)
+
+            # Prefer explicit dataset workspace from Scanner report object when available
+            ds_ws = (
+                report.get('datasetWorkspaceId')
+                or report.get('datasetWorkspaceObjectId')
+                or report.get('workspaceId')
+            )
+            # If dataset is not among local workspace datasets, keep any cross-ws hint
+            if ds_ws and ds_ws != workspace_id:
+                dataset_workspace_hints[dataset_id] = ds_ws
+            elif dataset_id not in scan_datasets_in_ws and dataset_id not in dataset_workspace_hints:
+                # Unknown home workspace — resolver will try report WS then /datasets/{id}
+                dataset_workspace_hints[dataset_id] = None
+            elif dataset_id in scan_datasets_in_ws:
+                dataset_workspace_hints[dataset_id] = workspace_id
+
+        print(f"📊 Found {len(dataset_ids)} unique datasets after filtering [App] reports")
+        if not dataset_ids:
+            print("⚠️ WARNING: No dataset IDs found! Check if reports have 'datasetId' field.")
+
+        if dataset_ids:
+            print(f"\n📊 Fetching refresh data for {len(dataset_ids)} datasets...")
+            print(
+                f"   Dataset IDs: {list(dataset_ids)[:3]}..."
+                if len(dataset_ids) > 3
+                else f"   Dataset IDs: {list(dataset_ids)}"
+            )
+
+            # Headers must be captured before threads (Flask request context not available there)
+            headers = get_user_powerbi_headers()
+            base_url = "https://api.powerbi.com/v1.0/myorg"
+
+            def fetch_dataset_refresh(ds_id, headers_param, base_url_param, report_ws_id, ds_ws_hint):
+                """Thread-safe refresh fetch via shared robust resolver."""
+                try:
+                    print(f"   🔍 Fetching refresh for dataset: {ds_id[:8]}...")
+                    info = resolve_dataset_refresh_info(
+                        headers=headers_param,
+                        workspace_id=report_ws_id,
+                        dataset_id=ds_id,
+                        dataset_workspace_id=ds_ws_hint,
+                        history_top=5,
+                        base_url=base_url_param,
+                        timeout=8,
+                    )
+                    return ds_id, info
+                except Exception as e:
+                    print(f"      ❌ Error fetching dataset {ds_id[:8]}: {str(e)}")
+                    return ds_id, _empty_refresh_info(
+                        refresh_schedule='Error',
+                        last_refresh_status='Error',
+                        refresh_type='error',
+                        refresh_note=str(e),
+                        dataset_workspace_id=ds_ws_hint or report_ws_id,
+                    )
+
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {
+                    executor.submit(
+                        fetch_dataset_refresh,
+                        ds_id,
+                        headers,
+                        base_url,
+                        workspace_id,
+                        dataset_workspace_hints.get(ds_id),
+                    ): ds_id
+                    for ds_id in dataset_ids
+                }
+
+                for future in as_completed(futures):
+                    ds_id = futures[future]
+                    try:
+                        # Per-dataset budget: resolver itself uses 8s timeouts
+                        resolved_id, refresh_info = future.result(timeout=45)
+                        dataset_refresh_map[resolved_id] = refresh_info
+                    except Exception as e:
+                        print(f"   ⚠️ Error/timeout fetching refresh for dataset {ds_id[:8]}: {e}")
+                        dataset_refresh_map[ds_id] = _empty_refresh_info(
+                            refresh_schedule='Error',
+                            last_refresh_status='Error',
+                            refresh_type='error',
+                            refresh_note=f'Timeout or worker error: {e}',
+                            dataset_workspace_id=dataset_workspace_hints.get(ds_id) or workspace_id,
+                        )
+
+            print(f"   ✅ Fetched refresh data for {len(dataset_refresh_map)} datasets")
+
+            if dataset_refresh_map:
+                sample_id = list(dataset_refresh_map.keys())[0]
+                sample_data = dataset_refresh_map[sample_id]
+                print(f"   📋 Sample refresh data for {sample_id[:8]}...: {sample_data}")
+            else:
+                print(f"   ⚠️ WARNING: dataset_refresh_map is EMPTY!")
+
+        # Helper function to build full folder path for display
+        def build_folder_path(folder_id, folder_map):
+            """Build hierarchical path like 'Parent / Child / Grandchild'"""
+            if not folder_id or folder_id not in folder_map:
+                return None
+
+            path_parts = []
+            current_id = folder_id
+            visited = set()  # Prevent infinite loops
+
+            while current_id and current_id not in visited:
+                visited.add(current_id)
+                folder_info = folder_map.get(current_id)
+                if not folder_info:
+                    break
+                path_parts.insert(0, folder_info['name'])
+                current_id = folder_info.get('parentFolderId')
+
+            return ' / '.join(path_parts) if path_parts else None
+
+        # Use global helper function for getting child folders
+
+        # Track root-level reports (no folder assigned)
+        root_reports_count = 0
+
+        for report in reports:
+            # SKIP [App] shells + platform Usage Metrics reports
+            report_name = report.get('name', '')
+            if _is_excluded_report_name(report_name):
+                app_reports_excluded += 1
+                continue
+
+            dataset_id = report.get('datasetId', '')
+            report_folder_id = report.get('folderObjectId') or report.get('folderId')
+
+            # Debug first 5 reports' folder IDs
+            if reports.index(report) < 5:
+                print(f"\n🔍 DEBUG Report #{reports.index(report) + 1} '{report.get('name')}':")
+                print(f"   folder ID = {report_folder_id if report_folder_id else 'NULL (root-level)'}")
+                if report_folder_id:
+                    print(f"   Exists in folder_names_map: {report_folder_id in folder_names_map}")
+                    if report_folder_id in folder_names_map:
+                        print(f"   Folder name: {folder_names_map[report_folder_id]['name']}")
+
+            # Count root-level reports
+            if not report_folder_id:
+                root_reports_count += 1
+
+            # NEW: Track folders for dropdown population with proper names
+            if report_folder_id:
+                # Use folder name from API if available, otherwise use report's folderName, or fallback to ID
+                if report_folder_id in folder_names_map:
+                    folder_info = folder_names_map[report_folder_id]
+                    folder_name = build_folder_path(report_folder_id, folder_names_map) or folder_info['name']
+                    parent_folder_id = folder_info.get('parentFolderId')
+                else:
+                    folder_name = report.get('folderName', f'Folder {report_folder_id[:8]}')
+                    parent_folder_id = None
+
+                if report_folder_id not in folders_map:
+                    folders_map[report_folder_id] = {
+                        'id': report_folder_id,
+                        'name': folder_name,
+                        'parentFolderId': parent_folder_id,
+                        'report_count': 0,
+                        'hasChildren': False  # Will be updated later
+                    }
+                folders_map[report_folder_id]['report_count'] += 1
+
+            # Quick file check only
+            doc_filename = f"{report['name']}_Documentation.docx"
+            doc_path = os.path.join(output_dir, doc_filename)
+            has_documentation = os.path.exists(doc_path)
+
+            # Get file timestamp if exists
+            last_generated = None
+            if has_documentation:
+                try:
+                    doc_mtime = os.path.getmtime(doc_path)
+                    from datetime import datetime
+                    last_generated = datetime.fromtimestamp(doc_mtime).isoformat()
+                except:
+                    pass
+
+            # Get dataset refresh info if available
+            dataset_refresh_info = dataset_refresh_map.get(dataset_id, {})
+
+            # Debug: Log if we found refresh info for this dataset
+            if dataset_id and dataset_refresh_info:
+                print(
+                    f"   🔍 Report '{report['name'][:30]}' - Dataset {dataset_id[:8]}: "
+                    f"last={dataset_refresh_info.get('last_refreshed')} "
+                    f"status={dataset_refresh_info.get('last_refresh_status')} "
+                    f"type={dataset_refresh_info.get('refresh_type')}"
+                )
+            elif dataset_id:
+                print(f"   ⚠️ Report '{report['name'][:30]}' - Dataset {dataset_id[:8]}: NO REFRESH INFO FOUND")
+
+            # Build minimal report object for fast initial load
+            report_obj = {
+                'id': report['id'],
+                'name': report['name'],
+                'datasetId': dataset_id,
+                'folderId': report_folder_id,  # NEW: Include folder info
+                'folderName': report.get('folderName'),
+                'refresh_schedule': dataset_refresh_info.get('refresh_schedule'),
+                'last_refreshed': dataset_refresh_info.get('last_refreshed'),
+                'last_refresh_status': dataset_refresh_info.get('last_refresh_status'),
+                'refresh_type': dataset_refresh_info.get('refresh_type'),
+                'refresh_note': dataset_refresh_info.get('refresh_note'),
+                'dataset_workspace_id': dataset_refresh_info.get('dataset_workspace_id'),
+                'last_accessed': None,  # Not available in Scanner API
+                'last_accessed_by': None,  # Not available in Scanner API
+                'last_modified': report.get('modifiedDateTime'),
+                'last_generated': last_generated,
+                'has_documentation': has_documentation,
+                'needs_update': False,
+                'webUrl': report.get('webUrl', '')
+            }
+
+            report_list.append(report_obj)
+
+        # Log exclusion summary
+        if app_reports_excluded > 0:
+            print(f"\n🚫 Excluded {app_reports_excluded} [App] reports (published copies)")
+            print(f"✅ Returning {len(report_list)} original reports")
+
+        # CRITICAL FIX: Add ALL folders from Fabric API to folders_map (not just folders with reports)
+        # This ensures empty folders are visible in the dropdown
+        if folder_names_map:
+            print(f"\n📁 Merging ALL Fabric API folders into folders_map...")
+            for fabric_folder_id, fabric_folder_info in folder_names_map.items():
+                if fabric_folder_id not in folders_map:
+                    # Add folder with 0 reports
+                    folder_name = build_folder_path(fabric_folder_id, folder_names_map) or fabric_folder_info['name']
+                    folders_map[fabric_folder_id] = {
+                        'id': fabric_folder_id,
+                        'name': folder_name,
+                        'parentFolderId': fabric_folder_info.get('parentFolderId'),
+                        'report_count': 0,  # No reports in this folder
+                        'hasChildren': False
+                    }
+                    print(f"   + Added empty folder: {fabric_folder_info['name']} (0 reports)")
+
+        # Add virtual "Root Directory" folder for reports without folder assignment
+        if root_reports_count > 0:
+            print(f"\n📁 Found {root_reports_count} root-level reports (no folder assigned)")
+            folders_map['__ROOT__'] = {
+                'id': '__ROOT__',
+                'name': '📂 Root Directory (Uncategorized)',
+                'parentFolderId': None,
+                'report_count': root_reports_count,
+                'hasChildren': False
+            }
+
+        # Mark folders that have children
+        for folder_id_key, folder_info in folders_map.items():
+            parent_id = folder_info.get('parentFolderId')
+            if parent_id and parent_id in folders_map:
+                folders_map[parent_id]['hasChildren'] = True
+
+        # HIERARCHICAL FOLDER FILTERING: Filter by folder if specified (including nested subfolders)
+        if folder_id:
+            print(f"\n🗂️  Hierarchical Filtering: folder_id = {folder_id}")
+
+            # Special handling for Root Directory
+            if folder_id == '__ROOT__':
+                print(f"   ✅ Filtering for ROOT DIRECTORY (uncategorized reports)")
+                original_count = len(report_list)
+                report_list = [r for r in report_list if not (r.get('folderObjectId') or r.get('folderId'))]
+                print(f"   📊 Reports filtered: {original_count} → {len(report_list)} root-level reports")
+            else:
+                # SAFETY CHECK: Validate folder ID exists in workspace
+                folder_exists = folder_id in folder_names_map or folder_id in folders_map
+
+                if not folder_exists:
+                    print(f"   ⚠️  INVALID FOLDER ID: '{folder_id[:8]}...' not found in workspace!")
+                    print(f"   ✅ FALLBACK: Showing all {len(report_list)} reports (ignoring invalid filter)")
+                    # Don't filter - show all reports
+                else:
+                    # Get the folder name for logging
+                    folder_name = folder_names_map.get(folder_id, folders_map.get(folder_id, {})).get('name', 'Unknown')
+                    print(f"   ✅ Valid folder: '{folder_name}' (ID: {folder_id[:8]}...)")
+
+                    # Get all child folders recursively (folder + all descendants)
+                    all_folder_ids = get_all_child_folders_recursive(folder_id, folder_names_map if folder_names_map else folders_map)
+
+                    print(f"   📁 Folder hierarchy: {len(all_folder_ids)} folder(s) in tree")
+                    print(f"   📁 Folder IDs to match: {[fid[:8] + '...' for fid in list(all_folder_ids)[:3]]}")
+
+                    # Filter reports to only those in the selected folder or its children
+                    original_count = len(report_list)
+
+                    # DEBUG: Show what we're matching against
+                    filtered_reports = []
+                    for r in report_list:
+                        r_folder_id = r.get('folderObjectId') or r.get('folderId')
+                        if r_folder_id in all_folder_ids:
+                            filtered_reports.append(r)
+                            # Debug first match
+                            if len(filtered_reports) == 1:
+                                print(f"   🔍 First matching report: '{r.get('name')}' (folder: {r_folder_id[:8]}...)")
+
+                    report_list = filtered_reports
+
+                    print(f"   📊 Reports filtered: {original_count} → {len(report_list)} reports")
+
+                    if len(report_list) == 0:
+                        print(f"   ⚠️  WARNING: Zero reports matched! Possible ID mismatch.")
+                        print(f"   💡 TIP: Check if Scanner API folderObjectId matches Fabric API folder id")
+
+                    # Keep ALL folders in dropdown (don't filter folders_map)
+                    # This allows users to navigate to sibling folders without reloading workspace
+
+        # Apply status filter (active/inactive) if requested
+        if status_filter in ['active', 'inactive']:
+            from datetime import datetime, timezone
+
+            print(f"\n🔍 Applying status filter: {status_filter}")
+            original_count = len(report_list)
+            filtered_reports = []
+
+            def _is_live_connection(rep):
+                rtype = (rep.get('refresh_type') or '').lower()
+                status = (rep.get('last_refresh_status') or '').lower()
+                schedule = (rep.get('refresh_schedule') or '').lower()
+                return (
+                    rtype in ('directquery', 'live')
+                    or 'directquery' in status
+                    or 'live' in status
+                    or 'directquery' in schedule
+                    or 'live' in schedule
+                )
+
+            for report in report_list:
+                last_refreshed = report.get('last_refreshed')
+                is_live = _is_live_connection(report)
+
+                if status_filter == 'inactive':
+                    # DirectQuery/Live is not "stale import refresh" — exclude from inactive
+                    if is_live:
+                        continue
+                    # Inactive: no last_refreshed OR last_refreshed > 30 days ago
+                    if not last_refreshed:
+                        filtered_reports.append(report)
+                    else:
+                        try:
+                            # Parse the refresh time
+                            refresh_time_str = last_refreshed
+                            if refresh_time_str.endswith('Z'):
+                                refresh_time_str = refresh_time_str[:-1] + '+00:00'
+
+                            refresh_time = datetime.fromisoformat(refresh_time_str)
+                            if refresh_time.tzinfo is None:
+                                refresh_time = refresh_time.replace(tzinfo=timezone.utc)
+
+                            now = datetime.now(timezone.utc)
+                            days_since_refresh = (now - refresh_time).days
+
+                            if days_since_refresh >= 30:
+                                filtered_reports.append(report)
+                        except Exception:
+                            # Can't parse date - treat as inactive
+                            filtered_reports.append(report)
+
+                elif status_filter == 'active':
+                    # Live connections count as active (always current)
+                    if is_live:
+                        filtered_reports.append(report)
+                        continue
+                    # Active: has last_refreshed AND last_refreshed <= 30 days ago
+                    if last_refreshed:
+                        try:
+                            # Parse the refresh time
+                            refresh_time_str = last_refreshed
+                            if refresh_time_str.endswith('Z'):
+                                refresh_time_str = refresh_time_str[:-1] + '+00:00'
+
+                            refresh_time = datetime.fromisoformat(refresh_time_str)
+                            if refresh_time.tzinfo is None:
+                                refresh_time = refresh_time.replace(tzinfo=timezone.utc)
+
+                            now = datetime.now(timezone.utc)
+                            days_since_refresh = (now - refresh_time).days
+
+                            if days_since_refresh < 30:
+                                filtered_reports.append(report)
+                        except Exception:
+                            # Can't parse date - not active
+                            pass
+
+            report_list = filtered_reports
+            print(f"   📊 Status filtered: {original_count} → {len(report_list)} reports ({status_filter})")
+
+        # Convert folders to list and sort by hierarchy (root folders first, then children)
+        def get_folder_sort_key(folder):
+            """Sort by hierarchy: root folders first, then by name"""
+            # Build full path for sorting
+            path = build_folder_path(folder['id'], folder_names_map if folder_names_map else {f['id']: f for f in [folder]})
+            return path if path else folder['name']
+
+        folders_list = sorted(folders_map.values(), key=get_folder_sort_key)
+
+        # Build report→folder map for client-side filtering
+        live_report_folder_map = {}
+        for r in report_list or []:
+            rid = r.get('id')
+            if not rid:
+                continue
+            live_report_folder_map[str(rid)] = r.get('folderId') or r.get('folderObjectId')
+
+        # Update cache (per-user, per-workspace, per-folder)
+        reports_cache[cache_key] = {
+            'data': report_list,
+            'folders': folders_list,
+            'reportFolderMap': live_report_folder_map,
+            'timestamp': current_time,
+        }
+
+        print(f"✅ Returning {len(report_list)} reports, {len(folders_list)} folders")
+
+        # Debug: Check if first report has refresh data
+        if report_list and len(report_list) > 0:
+            first_report = report_list[0]
+            print(f"\n🔍 FINAL CHECK - First report '{first_report.get('name', 'Unknown')[:30]}':")
+            print(f"   refresh_schedule: {first_report.get('refresh_schedule')}")
+            print(f"   last_refreshed: {first_report.get('last_refreshed')}")
+            print(f"   last_refresh_status: {first_report.get('last_refresh_status')}")
+
+        return jsonify({
+            'success': True,
+            'reports': report_list,
+            'folders': folders_list,
+            'reportFolderMap': live_report_folder_map,
+        })
+
+    except Exception as e:
+        print(f"❌ Error fetching reports: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/export-inactive-reports/<workspace_id>')
+@login_required
+def export_inactive_reports(workspace_id):
+    """
+    Generate decommissioning Excel for a workspace.
+
+    A report is a decommission candidate if ANY of:
+      1) days_since_refresh > 90
+      2) no import refresh history (for models that should refresh)
+      3) views in last 30 days == 0
+
+    DirectQuery / Live connections are NOT flagged solely for "no refresh history"
+    (they have no import refresh cycle) — they still flag on 0 views / stale if applicable.
+
+    Prefers catalog ops fields; falls back to usage_cache + Scanner when needed.
+    """
+    try:
+        from datetime import datetime, timezone
+        import io
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from flask import send_file
+
+        print(f"\n📋 GENERATING DECOMMISSION REPORT FOR WORKSPACE: {workspace_id}")
+        REFRESH_STALE_DAYS = 90
+        VIEW_LOOKBACK_LABEL = '60 days'
+        VIEW_LOOKBACK_DAYS = 60
+
+        def _is_live_or_dq(report_or_ds):
+            rtype = str(
+                report_or_ds.get('refresh_type')
+                or report_or_ds.get('refreshType')
+                or ''
+            ).lower()
+            status = str(
+                report_or_ds.get('last_refresh_status')
+                or report_or_ds.get('refresh_schedule')
+                or ''
+            ).lower()
+            note = str(report_or_ds.get('refresh_note') or '').lower()
+            if rtype in {'directquery', 'live', 'push', 'streaming'}:
+                return True
+            if 'directquery' in status or 'live' in status or 'direct query' in status:
+                return True
+            if 'live connection' in note or 'directquery' in note:
+                return True
+            return False
+
+        def _parse_dt(value):
+            if value in (None, '', 'Unknown', '—', '-'):
+                return None
+            try:
+                if isinstance(value, (int, float)):
+                    ts = float(value)
+                    if ts > 1e12:
+                        ts /= 1000.0
+                    return datetime.fromtimestamp(ts, tz=timezone.utc)
+                s = str(value).strip()
+                if s.endswith('Z'):
+                    s = s[:-1] + '+00:00'
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except Exception:
+                return None
+
+        def _days_since(value):
+            dt = _parse_dt(value)
+            if not dt:
+                return None
+            return max(0, (datetime.now(timezone.utc) - dt).days)
+
+        def _clean_person(*vals):
+            for v in vals:
+                if v is None:
+                    continue
+                if isinstance(v, dict):
+                    v = (
+                        v.get('userPrincipalName')
+                        or v.get('emailAddress')
+                        or v.get('displayName')
+                        or ''
+                    )
+                s = str(v).strip()
+                if s and s.lower() not in {'unknown', 'n/a', 'none', 'null', '-', '—'}:
+                    return s
+            return ''
+
+        # ---------- 1) Catalog-first report list + ops ----------
+        workspace_name = 'Unknown Workspace'
+        reports_in = []
+        source = 'catalog'
+        report_views = {}
+        last_viewed_map = {}
+
+        pack = None
+        if CATALOG_AVAILABLE:
+            try:
+                pack = catalog_service.get_workspace_reports(workspace_id)
+            except Exception as e:
+                print(f"   ⚠️ catalog get_workspace_reports failed: {e}")
+                pack = None
+
+        if pack and (pack.get('reports') or []):
+            workspace_name = (
+                (pack.get('workspace') or {}).get('name')
+                or pack.get('workspace_name')
+                or workspace_name
+            )
+            # resolve workspace name from catalog if needed
+            if workspace_name == 'Unknown Workspace':
+                try:
+                    cat = catalog_service.get_workspace_catalog() or {}
+                    ws = next(
+                        (w for w in (cat.get('workspaces') or []) if w.get('id') == workspace_id),
+                        None,
+                    )
+                    if ws:
+                        workspace_name = ws.get('name') or workspace_name
+                except Exception:
+                    pass
+            reports_in = list(pack.get('reports') or [])
+            print(f"   📦 Catalog reports: {len(reports_in)}")
+        else:
+            # Scanner fallback for report list
+            source = 'scanner'
+            from scanner_connector import PowerBIScanner
+            scanner = PowerBIScanner()
+            scan_result = scanner.run_scan(workspace_id=workspace_id) or {}
+            workspace_data = None
+            for ws in scan_result.get('workspaces') or []:
+                if ws.get('id') == workspace_id:
+                    workspace_data = ws
+                    break
+            if not workspace_data and (scan_result.get('workspaces') or []):
+                workspace_data = scan_result['workspaces'][0]
+            if not workspace_data:
+                return jsonify({'error': 'Could not retrieve workspace data'}), 500
+            workspace_name = workspace_data.get('name', workspace_name)
+            reports_in = list(workspace_data.get('reports') or [])
+            print(f"   🛰️ Scanner reports: {len(reports_in)}")
+
+        # ---------- 2) Views (60-day window preferred) ----------
+        # a) catalog report.view_count
+        for r in reports_in:
+            rid = r.get('id')
+            if rid and r.get('view_count') is not None:
+                try:
+                    report_views[rid] = int(r.get('view_count') or 0)
+                except Exception:
+                    report_views[rid] = 0
+            lv = r.get('last_viewed')
+            if rid and lv:
+                last_viewed_map[rid] = lv if isinstance(lv, dict) else {'timestamp': lv}
+
+        # b) in-memory usage_cache overlay
+        cache_key = f"usage_{workspace_id}"
+        if cache_key in usage_cache:
+            cached = usage_cache[cache_key].get('data') or {}
+            for rid, cnt in (cached.get('report_views') or {}).items():
+                report_views[rid] = int(cnt or 0)
+            for rid, info in (cached.get('last_viewed') or {}).items():
+                last_viewed_map[rid] = info
+
+        # c) usage_snapshot.json overlay (catalog ops)
+        data_as_of_raw = None  # when usage / ops data is current through
+        if CATALOG_AVAILABLE:
+            try:
+                usage_snap = catalog_service.get_json('usage_snapshot.json') or {}
+                data_as_of_raw = (
+                    usage_snap.get('generatedAt')
+                    or usage_snap.get('opsEnrichedAt')
+                    or usage_snap.get('asOf')
+                    or usage_snap.get('endDate')
+                )
+                for rid, cnt in (usage_snap.get('report_views') or {}).items():
+                    # don't wipe known values with empty snapshot
+                    if rid not in report_views or report_views.get(rid) in (None,):
+                        report_views[rid] = int(cnt or 0)
+                    else:
+                        # prefer higher fidelity if snapshot has value
+                        report_views[rid] = int(cnt or report_views.get(rid) or 0)
+                for rid, info in (usage_snap.get('last_viewed') or {}).items():
+                    last_viewed_map.setdefault(rid, info)
+            except Exception as e:
+                print(f"   ⚠️ usage_snapshot overlay failed: {e}")
+
+        # ops / catalog timestamps for "as of" day math when usage has none
+        if not data_as_of_raw and pack:
+            data_as_of_raw = (
+                (pack.get('catalog_meta') or {}).get('opsEnrichedAt')
+                or pack.get('opsEnrichedAt')
+                or (pack.get('catalog_meta') or {}).get('generatedAt')
+                or pack.get('generatedAt')
+            )
+        if not data_as_of_raw and CATALOG_AVAILABLE:
+            try:
+                summary = catalog_service.get_summary() or {}
+                data_as_of_raw = summary.get('opsEnrichedAt') or summary.get('generatedAt')
+            except Exception:
+                pass
+
+        data_as_of_dt = _parse_dt(data_as_of_raw) or datetime.now(timezone.utc)
+        # Calendar date label for column header (local US style MM-DD-YYYY)
+        data_as_of_label = data_as_of_dt.strftime('%m-%d-%Y')
+
+        # Folder path map (best-effort) for Sub Folder column
+        folder_path_by_report = {}
+        try:
+            folder_meta = _fetch_workspace_folder_meta(workspace_id) or {}
+            report_folder_map = folder_meta.get('report_folder_map') or {}
+            folder_names_map = folder_meta.get('folder_names_map') or {}
+
+            def _build_folder_path(folder_id):
+                if not folder_id or folder_id not in folder_names_map:
+                    return None
+                parts = []
+                cur = folder_id
+                seen = set()
+                while cur and cur not in seen:
+                    seen.add(cur)
+                    info = folder_names_map.get(cur) or {}
+                    nm = info.get('name')
+                    if nm:
+                        parts.insert(0, nm)
+                    cur = info.get('parentFolderId')
+                return ' / '.join(parts) if parts else None
+
+            for rid, fid in report_folder_map.items():
+                path = _build_folder_path(fid)
+                if path:
+                    folder_path_by_report[rid] = path
+        except Exception as folder_err:
+            print(f"   ⚠️ folder map for decomm export skipped: {folder_err}")
+            folder_path_by_report = {}
+
+        def _days_until_as_of(value):
+            """Days from last refresh to catalog/usage data-as-of date."""
+            dt = _parse_dt(value)
+            if not dt:
+                return None
+            return max(0, (data_as_of_dt - dt).days)
+
+        # ---------- 3) Evaluate each report ----------
+        def evaluate_report(report):
+            name = report.get('name') or 'Unknown'
+            if _is_excluded_report_name(name):
+                return None  # skip [App] shells + platform usage metrics
+
+            rid = report.get('id') or ''
+            live_dq = _is_live_or_dq(report)
+
+            # Refresh signals
+            days = report.get('days_since_refresh')
+            try:
+                days = int(days) if days is not None and days != '' else None
+            except Exception:
+                days = None
+            last_ref = report.get('last_refreshed') or report.get('lastRefresh') or ''
+            # Prefer days relative to data-as-of (not wall-clock now) for the export column
+            days_as_of = _days_until_as_of(last_ref) if last_ref else None
+            if days_as_of is not None:
+                days = days_as_of
+            elif days is None and last_ref:
+                days = _days_since(last_ref)
+
+            refresh_status = (
+                report.get('last_refresh_status')
+                or report.get('refreshStatus')
+                or ''
+            )
+            refresh_type = report.get('refresh_type') or report.get('refreshType') or ''
+
+            # Views (60-day window when snapshot provides it)
+            if rid in report_views:
+                views = int(report_views.get(rid) or 0)
+                views_known = True
+            elif report.get('view_count') is not None:
+                views = int(report.get('view_count') or 0)
+                views_known = True
+            else:
+                views = 0
+                views_known = False
+
+            reasons = []
+            # Rule 1: stale refresh > 90 days
+            if days is not None and days > REFRESH_STALE_DAYS:
+                reasons.append(f'Days since refresh > {REFRESH_STALE_DAYS} ({days}d)')
+
+            # Rule 2: no refresh history (import models only)
+            no_history = False
+            if not live_dq:
+                if (not last_ref) and (days is None):
+                    no_history = True
+                elif str(refresh_status).lower() in {'error', 'failed'} and not last_ref:
+                    no_history = True
+            if no_history:
+                reasons.append('No refresh history')
+
+            # Rule 3: last 60 days views == 0
+            zero_views = False
+            if (views_known or report.get('view_count') is not None) and int(views or 0) == 0:
+                zero_views = True
+                reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
+
+            # Rule 4: Verify in PBI (content-modified / Unverified — not confirmed refresh history)
+            refresh_src = str(
+                report.get('refresh_source') or report.get('refreshSource') or ''
+            ).lower().replace('-', '_').replace(' ', '')
+            status_l = str(refresh_status or '').lower()
+            note_l = str(report.get('refresh_note') or report.get('refreshNote') or '').lower()
+            needs_verify = (
+                status_l in {'unverified', 'estimated'}
+                or refresh_src in {
+                    'content_modified', 'content_created', 'contentcreated', 'created',
+                }
+                or 'verify in power bi' in note_l
+                or 'verify in pbi' in note_l
+            )
+            if needs_verify and not live_dq:
+                reasons.append('Verify in PBI (unconfirmed refresh)')
+
+            is_candidate = len(reasons) > 0
+
+            owner = _clean_person(
+                report.get('dataset_owner'),
+                report.get('configuredBy'),
+                report.get('createdBy'),
+                report.get('created_by'),
+                report.get('modifiedBy'),
+                report.get('modified_by'),
+            )
+
+            # Sub folder: root = NA
+            sub_folder = (
+                report.get('folderPath')
+                or report.get('folder_path')
+                or report.get('folderName')
+                or report.get('folder_name')
+                or folder_path_by_report.get(rid)
+                or ''
+            )
+            sub_folder = str(sub_folder).strip() if sub_folder else ''
+            if not sub_folder or sub_folder.lower() in {'root', 'workspace', 'none', 'n/a', 'na', '—'}:
+                sub_folder = 'NA'
+
+            model_name = (
+                report.get('datasetName')
+                or report.get('dataset_name')
+                or ''
+            ).strip() or 'NA'
+
+            last_ref_disp = ''
+            if last_ref and str(last_ref) not in {'—', '-', 'Unknown', 'None'}:
+                last_ref_disp = str(last_ref)[:19].replace('T', ' ')
+
+            # Comments: verify flag first, then zero views
+            comment_parts = []
+            if needs_verify and not live_dq:
+                comment_parts.append('Verify in PBI — last refresh unconfirmed')
+            if zero_views:
+                comment_parts.append(f'Zero views in last {VIEW_LOOKBACK_LABEL}')
+            comments = '; '.join(comment_parts)
+
+            return {
+                'report_id': rid,
+                'workspace_name': workspace_name,
+                'sub_folder': sub_folder,
+                'report_name': name,
+                'model_name': model_name,
+                'last_refreshed_on': last_ref_disp or 'NA',
+                'days_since_refresh': days if days is not None else '',
+                'contact_owner': owner or 'NA',
+                'archived_status': '',
+                'comments': comments,
+                'can_decommission': '',
+                'review_comments': '',
+                'is_candidate': is_candidate,
+                'reasons': reasons,
+                'zero_views': zero_views,
+                'needs_verify': bool(needs_verify and not live_dq),
+            }
+
+        evaluated = []
+        for r in reports_in:
+            row = evaluate_report(r)
+            if row:
+                evaluated.append(row)
+
+        candidates = [r for r in evaluated if r['is_candidate']]
+        candidates.sort(key=lambda x: (
+            (x.get('workspace_name') or '').lower(),
+            (x.get('sub_folder') or '').lower(),
+            (x.get('report_name') or '').lower(),
+        ))
+
+        print(
+            f"   ✅ total={len(evaluated)} candidates={len(candidates)} "
+            f"source={source} views_keys={len(report_views)} as_of={data_as_of_label}"
+        )
+
+        # ---------- 4) Excel (single sheet — requested columns only) ----------
+        wb = Workbook()
+        ws_out = wb.active
+        ws_out.title = 'Decommission List'
+
+        header_fill = PatternFill(start_color='2B6CB0', end_color='2B6CB0', fill_type='solid')
+        header_font = Font(color='FFFFFF', bold=True, size=11)
+        center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        # Verify-in-PBI rows: light red so reviewers know to check before acting
+        verify_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+        verify_font = Font(color='9C0006')
+
+        days_header = f'LastRefresh in days till {data_as_of_label}'
+        headers = [
+            'Workspace Name',
+            'Sub Folder',
+            'Report Name',
+            'Model Name',
+            'LastRefreshedOn',
+            days_header,
+            'Contact/Owner',
+            'Archived Status',
+            'Comments',
+            'Can Decommission',
+            'Review Comments',
+        ]
+
+        ws_out.append(headers)
+        for col_num, _h in enumerate(headers, 1):
+            cell = ws_out.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_align
+        # AutoFilter + freeze
+        last_col_letter = chr(ord('A') + len(headers) - 1) if len(headers) <= 26 else 'K'
+        ws_out.auto_filter.ref = f'A1:{last_col_letter}1'
+        ws_out.freeze_panes = 'A2'
+        # Note in header comment on days column
+        ws_out.cell(row=1, column=6).comment = None
+        try:
+            from openpyxl.comments import Comment
+            ws_out.cell(row=1, column=6).comment = Comment(
+                f'Days from LastRefreshedOn through data-as-of date ({data_as_of_label}). '
+                f'Source: catalog/ops usage extract.',
+                'Power BI Control Center',
+            )
+        except Exception:
+            pass
+
+        for r in candidates:
+            ws_out.append([
+                r['workspace_name'],
+                r['sub_folder'],
+                r['report_name'],
+                r['model_name'],
+                r['last_refreshed_on'],
+                r['days_since_refresh'] if r['days_since_refresh'] != '' else 'NA',
+                r['contact_owner'],
+                r['archived_status'],  # empty for reviewers
+                r['comments'],
+                r['can_decommission'],  # empty
+                r['review_comments'],  # empty
+            ])
+            # Left-align text columns; red highlight = Verify in PBI
+            rn = ws_out.max_row
+            for c in range(1, 12):
+                cell = ws_out.cell(row=rn, column=c)
+                cell.alignment = left_align if c != 6 else center_align
+                if r.get('needs_verify'):
+                    cell.fill = verify_fill
+                    cell.font = verify_font
+
+        if not candidates:
+            ws_out.append(
+                [workspace_name, 'NA', 'No decommission candidates under current rules',
+                 'NA', 'NA', 'NA', 'NA', '', '', '', '']
+            )
+
+        # Column widths
+        widths = {
+            'A': 28, 'B': 22, 'C': 36, 'D': 28, 'E': 18, 'F': 28,
+            'G': 28, 'H': 16, 'I': 32, 'J': 16, 'K': 22,
+        }
+        for letter, w in widths.items():
+            ws_out.column_dimensions[letter].width = w
+
+        # Thin Rules sheet (optional reference — not the main list)
+        ws_rules = wb.create_sheet('Rules')
+        ws_rules.append(['Decommission list export'])
+        ws_rules.append(['Workspace', workspace_name])
+        ws_rules.append(['Generated (UTC)', datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')])
+        ws_rules.append(['Data as of', data_as_of_label])
+        ws_rules.append(['Data source', source])
+        ws_rules.append(['Candidates', len(candidates)])
+        ws_rules.append([])
+        ws_rules.append(['Candidate if ANY:'])
+        ws_rules.append(['1', f'Days since last refresh > {REFRESH_STALE_DAYS} (through {data_as_of_label})'])
+        ws_rules.append(['2', 'No import refresh history (not applied alone to DirectQuery/Live)'])
+        ws_rules.append(['3', f'Views in last {VIEW_LOOKBACK_LABEL} == 0'])
+        ws_rules.append(['4', 'Verify in PBI — Unverified / content-modified fallback (not confirmed Scheduled refresh)'])
+        ws_rules.append([])
+        ws_rules.append(['Comments column', f'Pre-filled with verify note and/or "Zero views in last {VIEW_LOOKBACK_LABEL}" when applicable'])
+        ws_rules.append(['Red rows', 'Verify in PBI — last refresh unconfirmed; review in Power BI before acting. You may change the fill color after review.'])
+        ws_rules.append(['Archived Status / Can Decommission / Review Comments', 'Left blank for reviewers'])
+        ws_rules.append(['Excluded', 'Usage Metrics Report, Report Usage Metrics Report, Dashboard Usage Metrics Report, [App] copies'])
+        ws_rules.column_dimensions['A'].width = 40
+        ws_rules.column_dimensions['B'].width = 80
+        ws_rules.cell(row=1, column=1).font = Font(bold=True, size=13, color='FFFFFF')
+        ws_rules.cell(row=1, column=1).fill = header_fill
+
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        safe_ws = ''.join(c if c.isalnum() or c in ('-', '_') else '_' for c in workspace_name)[:60]
+        filename = f'Decommission_List_{safe_ws}_{datetime.now(timezone.utc).strftime("%Y%m%d")}.xlsx'
+        print(f"   📁 {filename} candidates={len(candidates)}/{len(evaluated)} as_of={data_as_of_label}")
+
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename,
+        )
+
+    except Exception as e:
+        print(f"❌ Error generating decommission report: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/decommission-list-candidates/<workspace_id>')
+@login_required
+def decommission_list_candidates(workspace_id):
+    """
+    JSON list of Report Catalog decommission-list candidates for bulk SharePoint archive.
+
+    Same candidate rules as /api/export-inactive-reports. Does not export files —
+    the client calls POST /api/reports/archive-to-sharepoint once per candidate
+    (identical to the per-row Download button).
+
+    Requires archive allow-list (same as individual Download).
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from features.report_archive_service import user_can_archive
+
+        email = session.get('user', {}).get('preferred_username') or ''
+        if not user_can_archive(email):
+            return jsonify({
+                'success': False,
+                'error': 'Not authorized to archive reports to SharePoint.',
+            }), 403
+
+        workspace_id = (workspace_id or '').strip()
+        if not workspace_id:
+            return jsonify({'success': False, 'error': 'workspace_id required'}), 400
+
+        REFRESH_STALE_DAYS = 90
+        VIEW_LOOKBACK_LABEL = '60 days'
+
+        def _is_live_or_dq(report_or_ds):
+            rtype = str(
+                report_or_ds.get('refresh_type')
+                or report_or_ds.get('refreshType')
+                or ''
+            ).lower()
+            status = str(
+                report_or_ds.get('last_refresh_status')
+                or report_or_ds.get('refresh_schedule')
+                or ''
+            ).lower()
+            note = str(report_or_ds.get('refresh_note') or '').lower()
+            if rtype in {'directquery', 'live', 'push', 'streaming'}:
+                return True
+            if 'directquery' in status or 'live' in status or 'direct query' in status:
+                return True
+            if 'live connection' in note or 'directquery' in note:
+                return True
+            return False
+
+        def _parse_dt(value):
+            if value in (None, '', 'Unknown', '—', '-'):
+                return None
+            try:
+                if isinstance(value, (int, float)):
+                    ts = float(value)
+                    if ts > 1e12:
+                        ts /= 1000.0
+                    return datetime.fromtimestamp(ts, tz=timezone.utc)
+                s = str(value).strip()
+                if s.endswith('Z'):
+                    s = s[:-1] + '+00:00'
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except Exception:
+                return None
+
+        def _days_since(value, as_of=None):
+            dt = _parse_dt(value)
+            if not dt:
+                return None
+            end = as_of or datetime.now(timezone.utc)
+            return max(0, (end - dt).days)
+
+        workspace_name = 'Unknown Workspace'
+        reports_in = []
+        report_views = {}
+
+        pack = None
+        if CATALOG_AVAILABLE:
+            try:
+                pack = catalog_service.get_workspace_reports(workspace_id)
+            except Exception as e:
+                print(f"   ⚠️ decomm candidates catalog failed: {e}")
+                pack = None
+
+        if pack and (pack.get('reports') or []):
+            workspace_name = (
+                (pack.get('workspace') or {}).get('name')
+                or pack.get('workspace_name')
+                or workspace_name
+            )
+            if workspace_name == 'Unknown Workspace' and CATALOG_AVAILABLE:
+                try:
+                    cat = catalog_service.get_workspace_catalog() or {}
+                    ws = next(
+                        (w for w in (cat.get('workspaces') or []) if w.get('id') == workspace_id),
+                        None,
+                    )
+                    if ws:
+                        workspace_name = ws.get('name') or workspace_name
+                except Exception:
+                    pass
+            reports_in = list(pack.get('reports') or [])
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No reports found in catalog for this workspace.',
+            }), 404
+
+        for r in reports_in:
+            rid = r.get('id')
+            if rid and r.get('view_count') is not None:
+                try:
+                    report_views[rid] = int(r.get('view_count') or 0)
+                except Exception:
+                    report_views[rid] = 0
+
+        data_as_of_raw = None
+        if CATALOG_AVAILABLE:
+            try:
+                usage_snap = catalog_service.get_json('usage_snapshot.json') or {}
+                data_as_of_raw = (
+                    usage_snap.get('generatedAt')
+                    or usage_snap.get('opsEnrichedAt')
+                    or usage_snap.get('asOf')
+                )
+                for rid, cnt in (usage_snap.get('report_views') or {}).items():
+                    report_views[rid] = int(cnt or report_views.get(rid) or 0)
+            except Exception:
+                pass
+        if not data_as_of_raw and pack:
+            data_as_of_raw = (
+                (pack.get('catalog_meta') or {}).get('opsEnrichedAt')
+                or pack.get('opsEnrichedAt')
+                or pack.get('generatedAt')
+            )
+        data_as_of_dt = _parse_dt(data_as_of_raw) or datetime.now(timezone.utc)
+
+        # Folder map for archive path (same idea as single Download)
+        folder_path_by_report = {}
+        report_folder_map = {}
+        folder_names_map = {}
+        try:
+            folder_meta = _fetch_workspace_folder_meta(workspace_id) or {}
+            report_folder_map = folder_meta.get('report_folder_map') or {}
+            folder_names_map = folder_meta.get('folder_names_map') or {}
+            for rid, fid in report_folder_map.items():
+                info = folder_names_map.get(fid) or {}
+                nm = info.get('name')
+                if nm:
+                    folder_path_by_report[rid] = nm
+        except Exception as folder_err:
+            print(f"   ⚠️ folder map for decomm candidates skipped: {folder_err}")
+
+        candidates = []
+        for report in reports_in:
+            name = report.get('name') or 'Unknown'
+            if _is_excluded_report_name(name):
+                continue
+            rid = report.get('id') or ''
+            if not rid:
+                continue
+            live_dq = _is_live_or_dq(report)
+            days = report.get('days_since_refresh')
+            try:
+                days = int(days) if days is not None and days != '' else None
+            except Exception:
+                days = None
+            last_ref = report.get('last_refreshed') or report.get('lastRefresh') or ''
+            days_as_of = _days_since(last_ref, data_as_of_dt) if last_ref else None
+            if days_as_of is not None:
+                days = days_as_of
+            elif days is None and last_ref:
+                days = _days_since(last_ref)
+
+            refresh_status = report.get('last_refresh_status') or report.get('refreshStatus') or ''
+            if rid in report_views:
+                views = int(report_views.get(rid) or 0)
+                views_known = True
+            elif report.get('view_count') is not None:
+                views = int(report.get('view_count') or 0)
+                views_known = True
+            else:
+                views = 0
+                views_known = False
+
+            reasons = []
+            if days is not None and days > REFRESH_STALE_DAYS:
+                reasons.append(f'Days since refresh > {REFRESH_STALE_DAYS} ({days}d)')
+            no_history = False
+            if not live_dq:
+                if (not last_ref) and (days is None):
+                    no_history = True
+                elif str(refresh_status).lower() in {'error', 'failed'} and not last_ref:
+                    no_history = True
+            if no_history:
+                reasons.append('No refresh history')
+            if (views_known or report.get('view_count') is not None) and int(views or 0) == 0:
+                reasons.append(f'0 views in last {VIEW_LOOKBACK_LABEL}')
+
+            # Bulk SharePoint archive: original rules only (stale / no history / 0 views).
+            # Verify-in-PBI is Excel decommission-list only — not auto-archived here.
+
+            if not reasons:
+                continue
+
+            folder_id = (
+                report.get('folderId')
+                or report.get('folderObjectId')
+                or report_folder_map.get(rid)
+                or None
+            )
+            if folder_id in ('__ROOT__', '', None):
+                folder_id = None
+            folder_name = (
+                report.get('folderName')
+                or report.get('folder_name')
+                or folder_path_by_report.get(rid)
+                or None
+            )
+            if not folder_id:
+                folder_name = None
+
+            candidates.append({
+                'report_id': rid,
+                'report_name': name,
+                'folder_id': folder_id,
+                'folder_name': folder_name,
+                'reasons': reasons,
+            })
+
+        candidates.sort(key=lambda x: (x.get('report_name') or '').lower())
+
+        print(
+            f"📋 decomm candidates ws={workspace_name!r} "
+            f"count={len(candidates)}/{len(reports_in)}"
+        )
+        return jsonify({
+            'success': True,
+            'workspace_id': workspace_id,
+            'workspace_name': workspace_name,
+            'count': len(candidates),
+            'candidates': candidates,
+        })
+
+    except Exception as e:
+        print(f"❌ Error listing decommission candidates: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _usage_cache_path(workspace_id: str) -> str:
+    """Disk path for per-workspace Activity Events day cache."""
+    root = (os.getenv("USAGE_CACHE_DIR") or "").strip()
+    if not root:
+        # Prefer durable App Service path; fall back to repo-local .usage_cache
+        if os.getenv("WEBSITE_HOSTNAME"):
+            root = os.path.join("/home", "data", "usage_cache")
+        else:
+            root = os.path.join(os.getcwd(), ".usage_cache")
+    return os.path.join(root, f"usage_{workspace_id}.json")
+
+
+def _aggregate_usage_days(daily_data: dict):
+    """Sum report_views / last_viewed across day buckets."""
+    report_views = {}
+    last_viewed = {}
+    for _date_key, day_data in (daily_data or {}).items():
+        if not isinstance(day_data, dict):
+            continue
+        for report_id, count in (day_data.get("report_views") or {}).items():
+            try:
+                report_views[report_id] = report_views.get(report_id, 0) + int(count or 0)
+            except (TypeError, ValueError):
+                continue
+        for report_id, view_info in (day_data.get("last_viewed") or {}).items():
+            if not isinstance(view_info, dict):
+                continue
+            ts = view_info.get("timestamp") or ""
+            prev = last_viewed.get(report_id)
+            if not prev or ts > (prev.get("timestamp") or ""):
+                last_viewed[report_id] = view_info
+    return report_views, last_viewed
+
+
+def _usage_from_catalog_snapshot(workspace_id: str = None):
+    """
+    Fast path: precomputed usage_snapshot.json (ops extract).
+    Tenant-wide report_views / last_viewed — optionally filtered to workspace
+    report ids when known. Returns None when snapshot unavailable.
+    """
+    if not CATALOG_AVAILABLE or catalog_service is None:
+        return None
+    try:
+        snap = catalog_service.get_json("usage_snapshot.json")
+    except Exception as exc:
+        print(f"   ⚠️ Catalog usage_snapshot unavailable: {exc}")
+        return None
+    if not isinstance(snap, dict):
+        return None
+    report_views = snap.get("report_views") if isinstance(snap.get("report_views"), dict) else {}
+    last_viewed = snap.get("last_viewed") if isinstance(snap.get("last_viewed"), dict) else {}
+    if not report_views and not last_viewed:
+        return None
+
+    # Optionally narrow to reports present in this workspace (catalog or thin pack)
+    ws_report_ids = None
+    if workspace_id:
+        try:
+            pack = catalog_service.get_workspace_reports(workspace_id)
+            if pack and isinstance(pack.get("reports"), list):
+                ws_report_ids = {
+                    str(r.get("id") or r.get("reportId") or "").lower()
+                    for r in pack["reports"]
+                    if (r.get("id") or r.get("reportId"))
+                }
+                ws_report_ids.discard("")
+        except Exception:
+            ws_report_ids = None
+
+    if ws_report_ids:
+        # Keep original casing from snapshot keys
+        report_views = {
+            rid: cnt for rid, cnt in report_views.items()
+            if str(rid).lower() in ws_report_ids
+        }
+        last_viewed = {
+            rid: info for rid, info in last_viewed.items()
+            if str(rid).lower() in ws_report_ids
+        }
+
+    days = int(snap.get("lookbackDays") or os.getenv("USAGE_LOOKBACK_DAYS", "60") or 60)
+    return {
+        "success": True,
+        "workspace_id": workspace_id,
+        "days_analyzed": days,
+        "report_views": report_views,
+        "last_viewed": last_viewed,
+        "source": "catalog_usage_snapshot",
+        "generatedAt": snap.get("generatedAt"),
+        "note": (
+            f"Catalog usage snapshot"
+            f"{(' @ ' + str(snap.get('generatedAt'))) if snap.get('generatedAt') else ''}"
+            f" ({len(report_views)} reports with views)"
+        ),
+    }
+
+
+@app.route('/api/report-usage/<workspace_id>')
+@login_required
+def get_report_usage(workspace_id):
+    """
+    Get report usage metrics (view counts) for the last 60 days.
+
+    Priority:
+      1) Catalog usage_snapshot.json (ops extract — fast, reliable)
+      2) Non-empty per-workspace Activity Events day cache (< 24h)
+      3) Live Admin Activity Events fetch (service principal)
+      4) Stale / empty cache last resort
+    """
+    try:
+        from datetime import datetime, timedelta, timezone
+        import requests
+        from scanner_connector import PowerBIScanner
+
+        print(f"\n📊 FETCHING REPORT USAGE METRICS FOR WORKSPACE: {workspace_id}")
+        print(f"   ⚠️  NOTE: Live Activity Events requires Service Principal with Power BI Admin role")
+
+        days_back = int(os.getenv("USAGE_LOOKBACK_DAYS", "60"))  # default 60-day views
+        max_workers = 30
+        force_live = str(request.args.get("force") or request.args.get("refresh") or "").strip().lower() in (
+            "1", "true", "yes", "live"
+        )
+
+        # --- 1) Catalog snapshot first (instant, pre-aggregated by ops job) ---
+        if not force_live:
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage and (
+                cat_usage.get("report_views") or cat_usage.get("last_viewed")
+            ):
+                print(
+                    f"   ✅ Using catalog usage_snapshot "
+                    f"({len(cat_usage.get('report_views') or {})} reports, "
+                    f"generatedAt={cat_usage.get('generatedAt')})"
+                )
+                return jsonify(cat_usage)
+
+        # === PERSISTENT CACHE (Activity Events incremental) ===
+        cache_file = _usage_cache_path(workspace_id)
+        persistent_cache = {'daily_data': {}, 'last_updated': None}
+
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    persistent_cache = json.load(f)
+                    print(f"   📂 Loaded persistent cache from disk: {cache_file}")
+            except Exception as e:
+                print(f"   ⚠️ Cache load error: {e}")
+        else:
+            print(f"   🔍 No persistent cache found at {cache_file}")
+
+        cached_dates = set((persistent_cache.get('daily_data') or {}).keys())
+        all_dates_needed = [
+            (datetime.now(timezone.utc) - timedelta(days=i)).strftime('%Y-%m-%d')
+            for i in range(days_back)
+        ]
+        missing_dates = [d for d in all_dates_needed if d not in cached_dates]
+
+        cached_views, cached_last = _aggregate_usage_days(persistent_cache.get('daily_data') or {})
+        cached_total_views = sum(cached_views.values()) if cached_views else 0
+        print(
+            f"   📅 Period: {days_back} days | Cached days: {len(cached_dates)} | "
+            f"Missing: {len(missing_dates)} | Cached views: {cached_total_views}"
+        )
+
+        # Only short-circuit on cache when it actually has view data (avoid empty poison).
+        last_updated = persistent_cache.get('last_updated')
+        if (
+            not force_live
+            and last_updated
+            and len(missing_dates) == 0
+            and cached_total_views > 0
+        ):
+            try:
+                last_updated_dt = datetime.fromisoformat(last_updated)
+                if last_updated_dt.tzinfo is None:
+                    last_updated_dt = last_updated_dt.replace(tzinfo=timezone.utc)
+                cache_age_hours = (datetime.now(timezone.utc) - last_updated_dt).total_seconds() / 3600
+            except Exception:
+                cache_age_hours = 999
+
+            if cache_age_hours < 24:
+                print(
+                    f"   ✅ Using non-empty Activity cache "
+                    f"(age: {cache_age_hours:.1f}h, views={cached_total_views})"
+                )
+                return jsonify({
+                    'success': True,
+                    'workspace_id': workspace_id,
+                    'days_analyzed': days_back,
+                    'report_views': cached_views,
+                    'last_viewed': cached_last,
+                    'source': 'activity_cache',
+                    'note': f'Loaded from cache (age: {cache_age_hours:.1f}h, views={cached_total_views})'
+                })
+
+        # Empty full cache is useless — drop it so we re-fetch rather than serving zeros forever
+        if len(missing_dates) == 0 and cached_total_views == 0 and cached_dates:
+            print("   🗑️ Discarding empty Activity day-cache (0 total views) — will re-fetch")
+            missing_dates = list(all_dates_needed)
+            persistent_cache = {'daily_data': {}, 'last_updated': None}
+            cached_dates = set()
+            try:
+                if os.path.exists(cache_file):
+                    os.remove(cache_file)
+            except Exception:
+                pass
+
+        # Only fetch missing days (incremental update)
+        print(f"   🚀 Fetching {len(missing_dates)} missing Activity days...")
+
+        report_views = {}  # Dictionary to store view counts per report_id
+
+        # Use service principal token (Scanner API connector) instead of user token
+        # Activity Events API requires service principal authentication
+        scanner = PowerBIScanner()
+        service_principal_token = scanner.get_access_token()
+
+        if not service_principal_token:
+            # Fall back to whatever non-empty cache / catalog we still have
+            if cached_total_views > 0:
+                return jsonify({
+                    'success': True,
+                    'workspace_id': workspace_id,
+                    'days_analyzed': days_back,
+                    'report_views': cached_views,
+                    'last_viewed': cached_last,
+                    'source': 'activity_cache_stale',
+                    'note': 'Service principal token unavailable; serving Activity cache',
+                })
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage:
+                return jsonify(cat_usage)
+            return jsonify({
+                'success': False,
+                'error': 'Unable to obtain service principal token for Activity Events API'
+            }), 500
+
+        headers = {
+            'Authorization': f'Bearer {service_principal_token}',
+            'Content-Type': 'application/json'
+        }
+        base_url = "https://api.powerbi.com/v1.0/myorg/admin/activityevents"
+
+        # FIX FOR SYSTEM DATE ISSUE: Get real-world current date from Power BI API
+        # System date is 2026, but we need the actual current date
+        # Make a lightweight API call to get the server's current date from response headers
+        from datetime import timezone
+        import dateutil.parser
+
+        try:
+            # Make a simple GET request to Power BI to get server date from headers
+            test_url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}"
+            test_response = requests.get(test_url, headers=headers, timeout=10)
+            server_date_str = test_response.headers.get('Date')
+
+            if server_date_str:
+                # Parse the HTTP Date header to get current server time
+                server_date = dateutil.parser.parse(server_date_str)
+                # Use yesterday as end date (Activity Events API only has complete days)
+                end_date = (server_date - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+                print(f"   ✅ Retrieved real-world date from Power BI server: {server_date_str}")
+                print(f"   📅 Using end date: {end_date.strftime('%Y-%m-%d')} (yesterday from server time)")
+            else:
+                # Fallback: use utcnow() - timedelta(days=1) if header not available
+                end_date = (datetime.utcnow() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+                print(f"   ⚠️  Could not get server date, using UTC now: {end_date.strftime('%Y-%m-%d')}")
+        except Exception as e:
+            # Final fallback
+            end_date = (datetime.utcnow() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+            print(f"   ⚠️  Error getting server date ({str(e)}), using UTC now: {end_date.strftime('%Y-%m-%d')}")
+
+        print(f"   ⚡ MAXIMUM SPEED MODE: {max_workers} parallel workers with intelligent retry logic for {days_back} days...")
+
+        # Import parallel processing tools
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from threading import Lock
+
+        # Thread-safe lock for updating shared dictionary
+        views_lock = Lock()
+        last_viewed = {}  # Track last viewed info per report
+
+        # Define hex checker ONCE outside the loop (major performance gain)
+        def is_hex_identifier(value):
+            """
+            Check if value is a hex ID or GUID rather than email/username
+            Returns True if value looks like a user ID (hex or GUID) that should be rejected
+            Returns False if value looks like a human-readable identifier (email, UPN, name)
+            """
+            if not value:
+                return True  # Empty = invalid, treat as ID
+
+            # Valid human identifiers contain @ or spaces
+            if '@' in value or ' ' in value:
+                return False  # Has @ or space = email/name, keep it
+
+            # GUID format: 8-4-4-4-12 characters with dashes (e.g., 02453143-dc86-4125-a211-64162fc93005)
+            if '-' in value and len(value) >= 32:
+                # Check if it matches GUID pattern
+                parts = value.split('-')
+                if len(parts) == 5 and all(len(p) in [8, 4, 4, 4, 12] for p in parts):
+                    return True  # GUID format = reject
+
+            # Hex ID (no dashes, all hex chars, long string like 100FFF92C7717B)
+            if len(value) >= 12 and '.' not in value:
+                hex_chars = set('0123456789ABCDEFabcdef')
+                if all(c in hex_chars for c in value):
+                    return True  # Pure hex = reject
+
+            # Default: keep it (might be username or other readable format)
+            return False
+
+        def _resolve_viewer(activity):
+            """Human-readable viewer identity (prefer email/UPN over hex UserKey)."""
+            user_id = activity.get('UserId')
+            if user_id and not is_hex_identifier(str(user_id)):
+                return str(user_id)
+            return (
+                activity.get('UserPrincipalName')
+                or activity.get('UserEmail')
+                or activity.get('User')
+                or 'Unknown User'
+            )
+
+        def _ingest_view_activity(activity, day_views, day_last_viewed):
+            """Count a ViewReport for this workspace (crash-test compatible)."""
+            act = (activity.get('Activity') or '').strip()
+            if act and act != 'ViewReport':
+                return
+            ws = activity.get('WorkspaceId') or activity.get('WorkSpaceId')
+            if ws and str(ws).lower() != str(workspace_id).lower():
+                return
+            report_id = activity.get('ReportId') or activity.get('ArtifactId')
+            if not report_id:
+                return
+            report_id = str(report_id)
+            activity_time = activity.get('CreationTime') or ''
+            user_identifier = _resolve_viewer(activity)
+            # Skip known service/admin identity from counts (existing product rule)
+            if str(user_identifier).lower() == 'admin-rsteinke@ashleyfurniture.com':
+                return
+            day_views[report_id] = day_views.get(report_id, 0) + 1
+            if activity_time:
+                prev = day_last_viewed.get(report_id)
+                if not prev or activity_time > (prev.get('timestamp') or ''):
+                    day_last_viewed[report_id] = {
+                        'timestamp': activity_time,
+                        'user': user_identifier,
+                    }
+
+        def fetch_day_activities(day_offset):
+            """
+            Fetch ViewReport activities for a single day.
+            Aligned with PowerBI-Crash-Test (working in tenant):
+              - plain ISO times without trailing Z
+              - $filter=Activity eq 'ViewReport'
+              - pagination via continuationUri (full URL)
+            """
+            import time
+            import random
+
+            current_date = end_date - timedelta(days=day_offset)
+            day_key = current_date.strftime('%Y-%m-%d')
+            # No .000Z — matches working crash-test Activity Events calls
+            start_datetime = f"{day_key}T00:00:00"
+            end_datetime = f"{day_key}T23:59:59"
+            url = (
+                f"{base_url}"
+                f"?startDateTime='{start_datetime}'&endDateTime='{end_datetime}'"
+                f"&$filter=Activity eq 'ViewReport'"
+            )
+
+            day_views = {}
+            day_last_viewed = {}
+            pages = 0
+            max_pages = 100
+            max_retries = 3
+            base_delay = 0.5
+
+            while url and pages < max_pages:
+                response = None
+                for attempt in range(max_retries):
+                    try:
+                        if attempt == 0 and pages == 0:
+                            time.sleep(random.uniform(0.01, 0.02))
+                        response = requests.get(url, headers=headers, timeout=60)
+                        if response.status_code == 400:
+                            return (day_offset, {}, {}, 0, "HTTP 400 (no data)")
+                        if response.status_code == 429:
+                            if attempt < max_retries - 1:
+                                max_delay = min(10, base_delay * (2 ** attempt))
+                                time.sleep(random.uniform(base_delay, max_delay))
+                                continue
+                            return (day_offset, {}, {}, 0, "HTTP 429")
+                        break
+                    except requests.Timeout:
+                        if attempt < max_retries - 1:
+                            time.sleep(random.uniform(0.5, 1.0))
+                            continue
+                        return (day_offset, {}, {}, 0, "Timeout")
+                    except Exception as e:
+                        if attempt < max_retries - 1 and ('Connection' in str(e) or '10054' in str(e)):
+                            time.sleep(random.uniform(1.0, 2.0))
+                            continue
+                        return (day_offset, {}, {}, 0, f"{str(e)[:50]}")
+
+                if response is None or response.status_code != 200:
+                    status = getattr(response, 'status_code', 'n/a')
+                    if pages == 0:
+                        return (day_offset, {}, {}, 0, f"HTTP {status}")
+                    break
+
+                pages += 1
+                try:
+                    data = response.json() or {}
+                except Exception:
+                    break
+
+                for activity in data.get('activityEventEntities') or []:
+                    _ingest_view_activity(activity, day_views, day_last_viewed)
+
+                cont_uri = data.get('continuationUri')
+                cont_tok = data.get('continuationToken')
+                if cont_uri:
+                    url = cont_uri
+                elif cont_tok:
+                    tok = str(cont_tok).strip().strip("'")
+                    url = f"{base_url}?continuationToken='{tok}'"
+                else:
+                    url = None
+
+            # (day_offset, day_views, day_last_viewed, event_count, error)
+            event_count = sum(day_views.values())
+            return (day_offset, day_views, day_last_viewed, event_count, None)
+
+        # Fetch only missing days in parallel (incremental fetching)
+        # Convert missing date strings to day offsets
+        date_to_offset = {}
+        for date_str in missing_dates:
+            target_date = datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+            day_offset = (end_date - target_date).days
+            date_to_offset[day_offset] = date_str
+
+        new_daily_data = {}  # Store newly fetched data
+
+        if len(missing_dates) > 0:
+            with ThreadPoolExecutor(max_workers=min(len(missing_dates), max_workers)) as executor:
+                futures = [executor.submit(fetch_day_activities, day_offset) for day_offset in date_to_offset.keys()]
+
+                for future in as_completed(futures):
+                    day_offset, day_views, day_last_viewed, activity_count, error = future.result()
+                    current_date = end_date - timedelta(days=day_offset)
+                    date_str = current_date.strftime('%Y-%m-%d')
+
+                    if error:
+                        # Do NOT cache failed days — empty error days poison the 24h short-circuit
+                        if "429" in str(error):
+                            print(f"      ⚠️  {date_str}: Rate limit - {error}")
+                        elif "400" not in str(error) and error != "HTTP 200":
+                            print(f"      ⚠️  {date_str}: {error}")
+                        continue
+
+                    if day_views:
+                        print(f"      ✅ {date_str}: {sum(day_views.values())} views")
+
+                    # Successful API day (may legitimately have 0 views)
+                    with views_lock:
+                        new_daily_data[date_str] = {
+                            'report_views': day_views or {},
+                            'last_viewed': day_last_viewed or {},
+                        }
+
+        # Merge only successfully fetched days into cache
+        if 'daily_data' not in persistent_cache or not isinstance(persistent_cache.get('daily_data'), dict):
+            persistent_cache['daily_data'] = {}
+        persistent_cache['daily_data'].update(new_daily_data)
+
+        # Aggregate from ALL data (cached + new)
+        report_views, last_viewed = _aggregate_usage_days(persistent_cache.get('daily_data') or {})
+
+        print(f"\n✅ Report usage summary:")
+        print(f"   Total reports with views: {len(report_views)}")
+        print(f"   Total views across all reports: {sum(report_views.values()) if report_views else 0}")
+
+        # Debug: Show sample of last viewed users to verify email resolution
+        if last_viewed:
+            sample_users = list(set([info.get('user', '') for info in last_viewed.values() if isinstance(info, dict)]))[:5]
+            print(f"   📧 Sample users: {', '.join(str(u) for u in sample_users if u)}")
+
+        total_views = sum(report_views.values()) if report_views else 0
+
+        # If live Activity Events produced nothing, fall back to catalog snapshot
+        if total_views == 0:
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage and (cat_usage.get("report_views") or cat_usage.get("last_viewed")):
+                print(
+                    f"   ↩️ Live Activity returned 0 views — serving catalog usage_snapshot "
+                    f"({len(cat_usage.get('report_views') or {})} reports)"
+                )
+                return jsonify(cat_usage)
+
+        result = {
+            'success': True,
+            'workspace_id': workspace_id,
+            'days_analyzed': days_back,
+            'report_views': report_views,
+            'last_viewed': last_viewed,
+            'source': 'activity_events',
+            'note': (
+                f'Activity data: {days_back} days '
+                f'(fetched {len(new_daily_data)} new, '
+                f'had {len(cached_dates)} cached days)'
+            ),
+        }
+
+        # Save cache only when we have successful day data (avoid empty poison files)
+        if persistent_cache.get('daily_data'):
+            persistent_cache['last_updated'] = datetime.now(timezone.utc).isoformat()
+            persistent_cache['workspace_id'] = workspace_id
+            try:
+                os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(persistent_cache, f, indent=2)
+                print(f"   💾 Persistent cache saved: {cache_file}")
+            except Exception as e:
+                print(f"   ⚠️ Cache save error: {e}")
+        else:
+            print("   ℹ️ Skipping cache save (no successful Activity day buckets)")
+
+        return jsonify(result)
+
+    except Exception as e:
+        print(f"❌ Error fetching report usage: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # Last-chance catalog fallback on unexpected errors
+        try:
+            cat_usage = _usage_from_catalog_snapshot(workspace_id)
+            if cat_usage:
+                cat_usage["note"] = (cat_usage.get("note") or "") + f" (fallback after error: {e})"
+                return jsonify(cat_usage)
+        except Exception:
+            pass
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/orphaned-reports/<workspace_id>')
+@login_required
+def get_orphaned_reports(workspace_id):
+    """
+    Identify ownership gaps for reports in a workspace.
+
+    Why fields used to show "Unknown":
+      - Old path only read Scanner keys createdBy/modifiedBy/modifiedDateTime.
+      - Tenant Scanner often omits those on reports (especially without user graph data),
+        so every row became "Unknown" and almost everything looked orphaned.
+      - Catalog normalizer also dropped creator/modifier; it keeps dataset_owner only.
+
+    Fix:
+      1) Prefer Fast catalog list (names + dataset_owner / configuredBy).
+      2) Overlay Groups REST /reports which usually has createdBy, modifiedBy, dates.
+      3) Optional lightweight Scanner fallback for remaining gaps.
+      4) Treat as orphaned only when NO usable owner signal remains
+         (createdBy / modifiedBy / dataset owner / configuredBy).
+    """
+    try:
+        from datetime import datetime, timezone
+        import requests
+
+        print(f"\n👻 DETECTING ORPHANED REPORTS FOR WORKSPACE: {workspace_id}")
+
+        def _clean_person(value):
+            if value is None:
+                return ""
+            if isinstance(value, dict):
+                value = (
+                    value.get("userPrincipalName")
+                    or value.get("emailAddress")
+                    or value.get("displayName")
+                    or value.get("identifier")
+                    or value.get("id")
+                    or ""
+                )
+            s = str(value).strip()
+            if not s or s.lower() in {"unknown", "n/a", "none", "null", "-"}:
+                return ""
+            return s
+
+        def _pick(*vals):
+            for v in vals:
+                c = _clean_person(v)
+                if c:
+                    return c
+            return ""
+
+        def _parse_dt(value):
+            if not value or value in ("Unknown", "N/A", "-", None):
+                return None
+            try:
+                if isinstance(value, (int, float)):
+                    # epoch seconds / ms
+                    ts = float(value)
+                    if ts > 1e12:
+                        ts /= 1000.0
+                    return datetime.fromtimestamp(ts, tz=timezone.utc)
+                s = str(value).strip()
+                if s.endswith("Z"):
+                    s = s[:-1] + "+00:00"
+                return datetime.fromisoformat(s)
+            except Exception:
+                return None
+
+        def _age_days_from(*date_vals):
+            for raw in date_vals:
+                dt = _parse_dt(raw)
+                if dt is None:
+                    continue
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return max(0, (datetime.now(timezone.utc) - dt).days)
+            return None
+
+        # ---- 1) Catalog (fast structural + dataset owner) ----
+        by_id = {}
+        catalog_meta = None
+        pack = None
+        try:
+            if CATALOG_AVAILABLE:
+                pack = catalog_service.get_workspace_reports(workspace_id)
+        except Exception as e:
+            print(f"   ⚠️ catalog get_workspace_reports failed: {e}")
+            pack = None
+
+        if pack:
+            catalog_meta = pack.get("catalog_meta") or {
+                "generatedAt": pack.get("generatedAt"),
+                "source": pack.get("source") or "catalog",
+            }
+            datasets_map = pack.get("datasets_map") or {}
+            for r in pack.get("reports") or []:
+                rid = r.get("id")
+                if not rid:
+                    continue
+                name = r.get("name") or "Unknown"
+                if _is_excluded_report_name(name):
+                    continue
+                ds_id = r.get("datasetId") or ""
+                ds = datasets_map.get(ds_id) or {}
+                dataset_owner = _pick(
+                    r.get("dataset_owner"),
+                    r.get("configuredBy"),
+                    ds.get("configuredBy"),
+                    ds.get("configured_by"),
+                    ds.get("owner"),
+                )
+                by_id[rid] = {
+                    "report_id": rid,
+                    "report_name": name,
+                    "dataset_id": ds_id,
+                    "dataset_name": r.get("datasetName") or ds.get("name") or "",
+                    "created_by": _pick(r.get("createdBy"), r.get("created_by")),
+                    "modified_by": _pick(r.get("modifiedBy"), r.get("modified_by")),
+                    "created_date": r.get("createdDateTime") or r.get("created_date") or "",
+                    "modified_date": r.get("modifiedDateTime") or r.get("modified_date") or "",
+                    "dataset_owner": dataset_owner,
+                    "last_refreshed": r.get("last_refreshed") or ds.get("last_refreshed") or "",
+                    "source": "catalog",
+                }
+            print(f"   📦 Catalog reports: {len(by_id)}")
+
+        # ---- 2) Groups REST reports (best source for created/modified + dates) ----
+        rest_count = 0
+        try:
+            headers = get_user_powerbi_headers()
+            url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports"
+            resp = requests.get(url, headers=headers, timeout=60)
+            if resp.status_code == 200:
+                for r in resp.json().get("value") or []:
+                    rid = r.get("id")
+                    name = r.get("name") or "Unknown"
+                    if not rid or _is_excluded_report_name(name):
+                        continue
+                    row = by_id.get(rid) or {
+                        "report_id": rid,
+                        "report_name": name,
+                        "dataset_id": r.get("datasetId") or "",
+                        "dataset_name": "",
+                        "created_by": "",
+                        "modified_by": "",
+                        "created_date": "",
+                        "modified_date": "",
+                        "dataset_owner": "",
+                        "last_refreshed": "",
+                        "source": "rest",
+                    }
+                    row["report_name"] = name
+                    row["dataset_id"] = r.get("datasetId") or row.get("dataset_id") or ""
+                    row["created_by"] = _pick(
+                        r.get("createdBy"),
+                        r.get("createdByUser"),
+                        row.get("created_by"),
+                    )
+                    row["modified_by"] = _pick(
+                        r.get("modifiedBy"),
+                        r.get("modifiedByUser"),
+                        row.get("modified_by"),
+                    )
+                    row["created_date"] = (
+                        r.get("createdDateTime")
+                        or r.get("createdDate")
+                        or row.get("created_date")
+                        or ""
+                    )
+                    row["modified_date"] = (
+                        r.get("modifiedDateTime")
+                        or r.get("modifiedDate")
+                        or row.get("modified_date")
+                        or ""
+                    )
+                    row["source"] = (row.get("source") or "") + "+rest"
+                    by_id[rid] = row
+                    rest_count += 1
+                print(f"   🌐 REST reports overlaid: {rest_count}")
+            else:
+                print(f"   ⚠️ REST reports HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            print(f"   ⚠️ REST reports overlay failed: {e}")
+
+        # ---- 3) Scanner fallback only if we still lack people/dates for many rows ----
+        missing_meta = sum(
+            1
+            for row in by_id.values()
+            if not row.get("created_by") and not row.get("modified_by") and not row.get("modified_date")
+        )
+        if missing_meta and (missing_meta >= max(3, len(by_id) // 3) or not by_id):
+            try:
+                from scanner_connector import PowerBIScanner
+
+                print(f"   🛰️ Scanner fallback ({missing_meta} rows missing people/dates)…")
+                scanner = PowerBIScanner()
+                scan_result = scanner.run_scan(workspace_id=workspace_id) or {}
+                for ws in scan_result.get("workspaces") or []:
+                    if ws.get("id") != workspace_id:
+                        continue
+                    ds_owner_by_id = {}
+                    for d in ws.get("datasets") or []:
+                        did = d.get("id")
+                        if did:
+                            ds_owner_by_id[did] = _pick(
+                                d.get("configuredBy"),
+                                d.get("configured_by"),
+                                d.get("owner"),
+                            )
+                    for r in ws.get("reports") or []:
+                        rid = r.get("id")
+                        name = r.get("name") or "Unknown"
+                        if not rid or _is_excluded_report_name(name):
+                            continue
+                        row = by_id.get(rid) or {
+                            "report_id": rid,
+                            "report_name": name,
+                            "dataset_id": r.get("datasetId") or "",
+                            "dataset_name": "",
+                            "created_by": "",
+                            "modified_by": "",
+                            "created_date": "",
+                            "modified_date": "",
+                            "dataset_owner": "",
+                            "last_refreshed": "",
+                            "source": "scanner",
+                        }
+                        row["created_by"] = _pick(
+                            row.get("created_by"),
+                            r.get("createdBy"),
+                            r.get("createdByUserPrincipalName"),
+                        )
+                        row["modified_by"] = _pick(
+                            row.get("modified_by"),
+                            r.get("modifiedBy"),
+                            r.get("modifiedByUserPrincipalName"),
+                        )
+                        row["created_date"] = (
+                            row.get("created_date")
+                            or r.get("createdDateTime")
+                            or r.get("createdDate")
+                            or ""
+                        )
+                        row["modified_date"] = (
+                            row.get("modified_date")
+                            or r.get("modifiedDateTime")
+                            or r.get("modifiedDate")
+                            or ""
+                        )
+                        ds_id = row.get("dataset_id") or r.get("datasetId") or ""
+                        row["dataset_id"] = ds_id
+                        if not row.get("dataset_owner"):
+                            row["dataset_owner"] = ds_owner_by_id.get(ds_id, "")
+                        row["source"] = (row.get("source") or "") + "+scanner"
+                        by_id[rid] = row
+                    break
+            except Exception as e:
+                print(f"   ⚠️ Scanner fallback failed: {e}")
+
+        if not by_id:
+            return jsonify({
+                "success": False,
+                "error": "No reports found for workspace (catalog + REST + scanner empty)",
+            }), 404
+
+        # ---- Classify orphaned ----
+        orphaned_reports = []
+        total_reports = 0
+        for row in sorted(by_id.values(), key=lambda x: (x.get("report_name") or "").lower()):
+            total_reports += 1
+            created_by = _clean_person(row.get("created_by"))
+            modified_by = _clean_person(row.get("modified_by"))
+            dataset_owner = _clean_person(row.get("dataset_owner"))
+            created_date = row.get("created_date") or ""
+            modified_date = row.get("modified_date") or ""
+
+            age_days = _age_days_from(
+                modified_date,
+                created_date,
+                row.get("last_refreshed"),
+            )
+
+            orphan_reason = []
+            if not created_by:
+                orphan_reason.append("No report creator")
+            if not modified_by:
+                orphan_reason.append("No report modifier")
+            if not dataset_owner:
+                orphan_reason.append("No dataset owner")
+
+            # True orphan only when there is NO ownership signal at all
+            has_any_owner = bool(created_by or modified_by or dataset_owner)
+            is_orphaned = not has_any_owner
+            if is_orphaned:
+                orphan_reason = ["No creator, modifier, or dataset owner"]
+
+            risk_level = "Low"
+            if is_orphaned:
+                if age_days is not None and age_days > 365:
+                    risk_level = "Critical"
+                elif age_days is not None and age_days > 180:
+                    risk_level = "High"
+                elif age_days is not None and age_days > 90:
+                    risk_level = "Medium"
+                else:
+                    risk_level = "High" if age_days is None else "Medium"
+            elif not created_by and not modified_by:
+                # has dataset owner only — ownership gap, not full orphan
+                risk_level = "Low"
+                if age_days is not None and age_days > 365:
+                    risk_level = "Medium"
+
+            # Surface orphans + ownership gaps (missing creator/modifier)
+            if is_orphaned or not created_by or not modified_by:
+                orphaned_reports.append({
+                    "report_id": row.get("report_id"),
+                    "report_name": row.get("report_name") or "Unknown",
+                    "created_by": created_by or "—",
+                    "modified_by": modified_by or "—",
+                    "dataset_owner": dataset_owner or "—",
+                    "created_date": created_date or "—",
+                    "modified_date": modified_date or "—",
+                    "age_days": age_days,
+                    "is_orphaned": is_orphaned,
+                    "orphan_reasons": orphan_reason,
+                    "risk_level": risk_level,
+                    "source": row.get("source") or "",
+                })
+
+        orphaned_count = len([r for r in orphaned_reports if r["is_orphaned"]])
+        # Keep UI KPI meaningful: "orphaned" = no owner at all; table may also list gaps
+        gap_count = len(orphaned_reports)
+        orphaned_percentage = round((orphaned_count / total_reports) * 100) if total_reports else 0
+
+        critical_count = len([r for r in orphaned_reports if r["risk_level"] == "Critical"])
+        high_count = len([r for r in orphaned_reports if r["risk_level"] == "High"])
+        medium_count = len([r for r in orphaned_reports if r["risk_level"] == "Medium"])
+
+        print(
+            f"   ✅ total={total_reports} true_orphans={orphaned_count} "
+            f"rows_listed={gap_count} critical={critical_count}"
+        )
+
+        return jsonify({
+            "success": True,
+            "workspace_id": workspace_id,
+            "total_reports": total_reports,
+            "orphaned_count": orphaned_count,
+            "orphaned_percentage": orphaned_percentage,
+            "listed_count": gap_count,
+            "reports": orphaned_reports,
+            "risk_summary": {
+                "critical": critical_count,
+                "high": high_count,
+                "medium": medium_count,
+                "low": len(orphaned_reports) - critical_count - high_count - medium_count,
+            },
+            "catalog_meta": catalog_meta,
+            "note": (
+                "Unowned = no creator, modifier, or dataset owner signal. "
+                "Table also lists ownership gaps (missing creator/modifier)."
+            ),
+        })
+
+    except Exception as e:
+        print(f"Error detecting unowned reports: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 @app.route('/')
 @login_required
 def index():
@@ -1108,735 +5444,8 @@ def documentation():
 # Semantic Models routes/helpers moved to routes/semantic_models.py (blueprint).
 # See semantic_models_bp registration below (after login_required is defined).
 
-
-@app.route('/impact')
-@login_required
-def impact_explorer_page():
-    """
-    Table impact explorer (EDW → report blast radius).
-    Serves embedded Impact UI backed by precomputed catalog JSON.
-    """
-    return render_template('impact.html')
-
-
-# =============================================================================
-# CATALOG FAST PATH APIs (precomputed SharePoint/local metadata)
-# Live Power BI APIs remain the fallback when catalog is unavailable.
-# =============================================================================
-
-def _user_allowed_workspace_ids():
-    """
-    Workspace IDs the current SSO user can access (from live /groups, cached).
-    Returns None if undetermined (caller may skip filtering only for admin tools).
-    Returns set() on hard failure after auth.
-    """
-    try:
-        user_id = session.get('user', {}).get('oid', 'unknown')
-        cache_key = f"workspaces_{user_id}"
-        current_time = time.time()
-        if cache_key in workspaces_cache and workspaces_cache[cache_key].get('data') and \
-           (current_time - workspaces_cache[cache_key].get('timestamp', 0)) < CACHE_DURATION:
-            return {w.get('id') for w in workspaces_cache[cache_key]['data'] if w.get('id')}
-
-        # Lightweight live fetch (same as get_workspaces core)
-        headers = get_user_powerbi_headers()
-        resp = requests.get("https://api.powerbi.com/v1.0/myorg/groups", headers=headers, timeout=30)
-        if resp.status_code != 200:
-            print(f"⚠️ allowed workspaces fetch HTTP {resp.status_code}")
-            return set()
-        workspaces = resp.json().get('value', [])
-        workspaces_cache[cache_key] = {'data': workspaces, 'timestamp': current_time}
-        return {w.get('id') for w in workspaces if w.get('id')}
-    except Exception as exc:
-        print(f"⚠️ _user_allowed_workspace_ids: {exc}")
-        return set()
-
-
-@app.route('/api/catalog/status')
-@login_required
-def api_catalog_status():
-    """Catalog availability, mode, freshness — for UI banners and ops."""
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({
-            'success': True,
-            'enabled': False,
-            'mode': 'off',
-            'message': 'Catalog service not loaded; using live APIs only.',
-        })
-    try:
-        st = catalog_service.status()
-        st['success'] = True
-        return jsonify(st)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-def _perform_catalog_refresh() -> dict:
-    """
-    Shared body for interactive and machine catalog refresh.
-    Force re-download of catalog artifacts from SharePoint into server memory/disk mirror.
-    Also clears per-user /api/reports response cache so Report Catalog picks up new ops.
-    """
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return {'success': False, 'error': 'Catalog not available', '_http': 503}
-
-    catalog_service.invalidate()
-    # Prefer thin packs first (fast UI), then heavy files for report/model APIs
-    home = catalog_service.get_json('ui_home_index.json', force_refresh=True)
-    tables = catalog_service.get_json('ui_impact_tables.json', force_refresh=True)
-    try:
-        impact_reports = catalog_service.get_json('ui_impact_reports.json', force_refresh=True)
-    except Exception:
-        impact_reports = None
-    summary = catalog_service.get_summary(force_refresh=True)
-    cat = catalog_service.get_workspace_catalog(force_refresh=True)
-    impact = catalog_service.get_impact_index(force_refresh=True)
-    # Rebuild report→sources pack if SharePoint has old pack without it
-    if impact and (not impact_reports or not isinstance((impact_reports or {}).get('rows'), list)):
-        try:
-            catalog_service._ensure_thin_impact_pack(impact)
-            impact_reports = catalog_service.get_json('ui_impact_reports.json')
-        except Exception as exc:
-            print(f"⚠️ thin impact reports pack rebuild: {exc}")
-    # Ops snapshot used for last refresh / views — reload so Catalog is not stuck on old ops
-    try:
-        catalog_service.get_json('refresh_snapshot.json', force_refresh=True)
-    except Exception:
-        pass
-    try:
-        catalog_service.get_json('usage_snapshot.json', force_refresh=True)
-    except Exception:
-        pass
-
-    # Ensure Home KPI detail lists + report directory exist (older SP packs may lack them)
-    home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
-    report_dir = None
-    try:
-        report_dir = catalog_service.get_json('ui_report_directory.json')
-    except Exception:
-        report_dir = None
-    need_home_rebuild = cat and (
-        not home_has_details
-        or not report_dir
-        or not isinstance((report_dir or {}).get('rows'), list)
-    )
-    if need_home_rebuild:
-        try:
-            catalog_service._ensure_thin_home_pack(cat)
-            home = catalog_service.get_json('ui_home_index.json')
-            home_has_details = isinstance(home, dict) and isinstance(home.get('detailLists'), dict)
-            report_dir = catalog_service.get_json('ui_report_directory.json')
-        except Exception as exc:
-            print(f"⚠️ thin home/report-directory pack rebuild after refresh: {exc}")
-
-    # Drop in-process /api/reports shells + folder tree so next load is fresh
-    cleared_reports = 0
-    try:
-        global reports_cache, workspace_folders_cache
-        cleared_reports = len(reports_cache)
-        reports_cache = {}
-        workspace_folders_cache = {}
-    except Exception:
-        pass
-
-    ops_at = None
-    if isinstance(cat, dict):
-        ops_at = cat.get('opsEnrichedAt') or cat.get('generatedAt')
-    return {
-        'success': True,
-        'ui_home_index': bool(home),
-        'ui_home_detailLists': home_has_details,
-        'ui_report_directory': bool(report_dir and (report_dir.get('rows') is not None)),
-        'ui_impact_tables': bool(tables),
-        'ui_impact_reports': bool(impact_reports),
-        'workspace_catalog': bool(cat),
-        'impact_index': bool(impact),
-        'summary': bool(summary),
-        'opsEnrichedAt': ops_at,
-        'generatedAt': (cat or {}).get('generatedAt') if isinstance(cat, dict) else None,
-        'clearedReportsCacheEntries': cleared_reports,
-        'status': catalog_service.status(),
-    }
-
-
-@app.route('/api/catalog/refresh', methods=['POST'])
-@login_required
-def api_catalog_refresh():
-    """
-    Force re-download of catalog artifacts from SharePoint into server memory/disk mirror.
-    Also clears per-user /api/reports response cache so Report Catalog picks up new ops.
-    """
-    try:
-        body = _perform_catalog_refresh()
-        code = int(body.pop('_http', 200)) if isinstance(body, dict) else 200
-        return jsonify(body), code
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/refresh-internal', methods=['POST'])
-def api_catalog_refresh_internal():
-    """
-    Machine-callable catalog refresh after ops/fresh SharePoint publish.
-    Auth: header X-Catalog-Refresh-Key (or Authorization: Bearer) must match
-    App Setting CATALOG_REFRESH_SECRET. No user SSO session required.
-    """
-    secret = (os.getenv('CATALOG_REFRESH_SECRET') or '').strip()
-    if not secret:
-        return jsonify({
-            'success': False,
-            'error': 'CATALOG_REFRESH_SECRET is not configured on the app',
-        }), 503
-
-    provided = (
-        (request.headers.get('X-Catalog-Refresh-Key') or '').strip()
-        or (request.headers.get('X-Api-Key') or '').strip()
-    )
-    auth_h = (request.headers.get('Authorization') or '').strip()
-    if auth_h.lower().startswith('bearer '):
-        provided = provided or auth_h[7:].strip()
-    if not provided or provided != secret:
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-
-    try:
-        body = _perform_catalog_refresh()
-        code = int(body.pop('_http', 200)) if isinstance(body, dict) else 200
-        body['triggeredBy'] = 'internal'
-        print(f"🔄 catalog refresh-internal OK opsEnrichedAt={body.get('opsEnrichedAt')}")
-        return jsonify(body), code
-    except Exception as e:
-        print(f"❌ catalog refresh-internal failed: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/data/<path:name>')
-@login_required
-def api_catalog_data(name):
-    """
-    Serve *small* catalog JSON only (summary, ops_summary, ui packs).
-
-    Large files (workspace_catalog, impact_index) are server-side only —
-    use /api/catalog/impact/* and workspace report APIs instead.
-    Browser never downloads SharePoint blobs.
-    """
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'error': 'Catalog not available'}), 503
-    safe = os.path.basename(name)
-    if not safe.endswith('.json') or '..' in safe:
-        return jsonify({'error': 'Only .json filenames allowed'}), 400
-    # Hard block large artifacts from leaving the server
-    try:
-        from catalog_service import catalog_config as _ccfg
-        blocked = getattr(_ccfg, 'BROWSER_BLOCKED_CATALOG_FILES', set())
-        allowed = getattr(_ccfg, 'BROWSER_ALLOWED_CATALOG_FILES', None)
-    except Exception:
-        blocked = {
-            'workspace_catalog.json', 'impact_index.json',
-            'inventory.json', 'refresh_snapshot.json',
-        }
-        allowed = None
-    if safe in blocked or (allowed is not None and safe not in allowed):
-        return jsonify({
-            'error': f'{safe} is server-side only and cannot be downloaded by the browser',
-            'hint': (
-                'Use thin APIs: /api/home-summary, /api/catalog/impact/tables, '
-                '/api/catalog/impact/lookup, /api/catalog/impact/table?key=..., '
-                '/api/reports?workspace_id=...'
-            ),
-        }), 403
-    force = request.args.get('refresh') in ('1', 'true', 'yes')
-    try:
-        data = catalog_service.get_json(safe, force_refresh=force)
-        if data is None:
-            return jsonify({
-                'error': f'File not available: {safe}',
-                'hint': 'Run: python run_catalog_extract.py --fresh -v  (publishes to SharePoint latest/)',
-                'status': catalog_service.status(),
-            }), 404
-        resp = jsonify(data)
-        resp.headers['X-Data-Source'] = 'server-cache'
-        return resp
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/catalog/impact/tables')
-@login_required
-def api_catalog_impact_tables():
-    """
-    Thin table list for Impact Explorer (no nested datasets).
-    Strips bulky searchText field — browser builds search locally.
-    Enables short browser/proxy cache so revisits are near-instant.
-    """
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    try:
-        force = request.args.get('refresh') in ('1', 'true', 'yes')
-        rows_in = catalog_service.impact_table_rows(force_refresh=force)
-        # Compact rows for wire size (searchText alone is multi-MB)
-        rows = []
-        for r in rows_in or []:
-            rows.append({
-                'k': r.get('tableKey'),
-                't': r.get('table'),
-                'st': r.get('sourceType') or 'Unknown',
-                'sv': r.get('server') or '',
-                'db': r.get('database') or '',
-                'sc': r.get('schema') or '',
-                'mn': r.get('modelTableNames') or [],
-                'rc': int(r.get('reportCount') or 0),
-                'dc': int(r.get('datasetCount') or 0),
-                'wc': int(r.get('workspaceCount') or 0),
-            })
-        summary = catalog_service.get_summary() or {}
-        pack = catalog_service.get_json('ui_impact_tables.json') or {}
-        payload = {
-            'success': True,
-            'v': 2,  # compact schema version
-            'count': len(rows),
-            'rows': rows,
-            'generatedAt': pack.get('generatedAt') or summary.get('generatedAt'),
-            'stats': summary.get('stats') or {},
-            'source': 'server-thin',
-        }
-        resp = jsonify(payload)
-        # Same user/session: allow brief cache so switching back to Impact is fast
-        if not force:
-            resp.headers['Cache-Control'] = 'private, max-age=120'
-        else:
-            resp.headers['Cache-Control'] = 'no-store'
-        resp.headers['X-Data-Source'] = 'server-thin'
-        return resp
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/impact/table')
-@login_required
-def api_catalog_impact_table_detail():
-    """One table's full impact (drawer) — server reads index, browser gets one object."""
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    key = (request.args.get('key') or request.args.get('table') or '').strip()
-    if not key:
-        return jsonify({'success': False, 'error': 'key (tableKey) required'}), 400
-    try:
-        entry = catalog_service.impact_table_detail(key)
-        if not entry:
-            return jsonify({'success': False, 'error': f'No impact entry for {key}'}), 404
-
-        # Snapshot tenant-wide summary before ACL (grid uses this; drawer may be smaller)
-        entry = dict(entry)
-        tenant_summary = dict(entry.get('impactSummary') or {})
-        entry['tenantImpactSummary'] = tenant_summary
-
-        allowed = _user_allowed_workspace_ids()
-        acl_applied = False
-        if allowed is not None and len(allowed) > 0:
-            acl_applied = True
-            filtered_datasets = []
-            for d in entry.get('datasets') or []:
-                if not isinstance(d, dict):
-                    continue
-                d2 = dict(d)
-                # Keep reports in workspaces the user can open
-                reps = []
-                for r in d2.get('reports') or []:
-                    if not isinstance(r, dict):
-                        continue
-                    rid_ws = r.get('workspaceId') or d2.get('workspaceId') or ''
-                    if rid_ws in allowed:
-                        reps.append(r)
-                d2['reports'] = reps
-                # Keep dataset if its home workspace is allowed OR any remaining report is
-                ds_ws = d2.get('workspaceId') or ''
-                if ds_ws in allowed or reps:
-                    # If dataset home is outside ACL but reports inside, still show
-                    filtered_datasets.append(d2)
-            entry['datasets'] = filtered_datasets
-
-            report_ids = set()
-            workspace_ids = set()
-            for d in filtered_datasets:
-                if d.get('workspaceId'):
-                    workspace_ids.add(d['workspaceId'])
-                for r in d.get('reports') or []:
-                    if r.get('reportId'):
-                        report_ids.add(r['reportId'])
-                    if r.get('workspaceId'):
-                        workspace_ids.add(r['workspaceId'])
-            entry['impactSummary'] = {
-                **tenant_summary,
-                'datasetCount': len(filtered_datasets),
-                'reportCount': len(report_ids),
-                'workspaceCount': len(workspace_ids),
-            }
-
-        entry['aclApplied'] = acl_applied
-        return jsonify({'success': True, 'table': entry})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/reports/search')
-@login_required
-def api_catalog_reports_search():
-    """
-    Reverse search: report name → workspace(s).
-    Thin catalog directory (not full workspace_catalog in browser).
-    ?q=wanek&limit=40
-    """
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    try:
-        q = (request.args.get('q') or request.args.get('query') or '').strip()
-        try:
-            limit = int(request.args.get('limit') or 50)
-        except Exception:
-            limit = 50
-        allowed = _user_allowed_workspace_ids()
-        result = catalog_service.search_reports(
-            query=q,
-            allowed_workspace_ids=allowed if allowed is not None else None,
-            limit=limit,
-        )
-        # Compact wire format
-        rows = []
-        for r in result.get('rows') or []:
-            rows.append({
-                'id': r.get('reportId'),
-                'n': r.get('reportName') or '',
-                'wid': r.get('workspaceId') or '',
-                'wn': r.get('workspaceName') or '',
-                'did': r.get('datasetId') or '',
-            })
-        payload = {
-            'success': True,
-            'query': result.get('query') or q,
-            'count': len(rows),
-            'total': result.get('total'),
-            'capped': bool(result.get('capped')),
-            'rows': rows,
-            'source': 'ui_report_directory',
-        }
-        resp = jsonify(payload)
-        resp.headers['Cache-Control'] = 'private, max-age=60'
-        return resp
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/impact/reports')
-@login_required
-def api_catalog_impact_reports():
-    """
-    Thin report list for Impact Explorer «Report sources» tab (report → source counts).
-    No nested source lists on the wire — use /impact/report for drawer detail.
-    """
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    try:
-        force = request.args.get('refresh') in ('1', 'true', 'yes')
-        allowed = _user_allowed_workspace_ids()
-        rows_in = catalog_service.impact_report_rows(
-            force_refresh=force,
-            allowed_workspace_ids=allowed if allowed is not None else None,
-        )
-        rows = []
-        for r in rows_in or []:
-            rows.append({
-                'id': r.get('reportId'),
-                'n': r.get('reportName') or '',
-                'wid': r.get('workspaceId') or '',
-                'wn': r.get('workspaceName') or '',
-                'rt': r.get('reportType') or '',
-                'tc': int(r.get('tableCount') or 0),
-                'dc': int(r.get('datasetCount') or 0),
-                'st': r.get('sourceTypes') or [],
-            })
-        pack = catalog_service.get_json('ui_impact_reports.json') or {}
-        payload = {
-            'success': True,
-            'v': 1,
-            'count': len(rows),
-            'rows': rows,
-            'generatedAt': pack.get('generatedAt'),
-            'source': 'server-thin',
-        }
-        resp = jsonify(payload)
-        if not force:
-            resp.headers['Cache-Control'] = 'private, max-age=120'
-        else:
-            resp.headers['Cache-Control'] = 'no-store'
-        resp.headers['X-Data-Source'] = 'server-thin'
-        return resp
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/impact/report')
-@login_required
-def api_catalog_impact_report_detail():
-    """
-    All sources for one report (SQL / Excel / SharePoint / model tables / …).
-    Drawer payload for Report sources tab.
-    """
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    report_id = (request.args.get('report_id') or request.args.get('id') or '').strip()
-    if not report_id:
-        return jsonify({'success': False, 'error': 'report_id required'}), 400
-    try:
-        allowed = _user_allowed_workspace_ids()
-        detail = catalog_service.impact_report_detail(
-            report_id,
-            allowed_workspace_ids=allowed if allowed is not None else None,
-        )
-        if not detail:
-            return jsonify({'success': False, 'error': f'No sources for report {report_id}'}), 404
-        return jsonify({'success': True, 'report': detail})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/impact/fields')
-@login_required
-def api_catalog_impact_fields():
-    """
-    Thin field/metric usage list for Impact Explorer «Field usage» tab.
-    Built weekly (--fresh) — see catalog_service/field_usage_index.py.
-    """
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    try:
-        force = request.args.get('refresh') in ('1', 'true', 'yes')
-        allowed = _user_allowed_workspace_ids()
-        data = catalog_service.field_usage_rows(
-            force_refresh=force,
-            allowed_workspace_ids=allowed if allowed is not None else None,
-        )
-        payload = {
-            'success': True,
-            'v': 1,
-            'count': len(data.get('rows') or []),
-            'rows': data.get('rows') or [],
-            'generatedAt': data.get('generatedAt'),
-            'reportsProcessed': data.get('reportsProcessed'),
-            'reportsSkippedUnchanged': data.get('reportsSkippedUnchanged'),
-            'reportsFailed': data.get('reportsFailed'),
-            'source': 'server-thin',
-        }
-        resp = jsonify(payload)
-        resp.headers['Cache-Control'] = 'no-store' if force else 'private, max-age=120'
-        resp.headers['X-Data-Source'] = 'server-thin'
-        return resp
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/impact/field-detail')
-@login_required
-def api_catalog_impact_field_detail():
-    """All reports using one field/metric (drawer) for Field usage tab."""
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    field_key = (request.args.get('field_key') or request.args.get('key') or '').strip()
-    if not field_key:
-        return jsonify({'success': False, 'error': 'field_key required'}), 400
-    try:
-        allowed = _user_allowed_workspace_ids()
-        detail = catalog_service.field_usage_detail(
-            field_key,
-            allowed_workspace_ids=allowed if allowed is not None else None,
-        )
-        if not detail:
-            return jsonify({'success': False, 'error': f'No usage found for field {field_key}'}), 404
-        return jsonify({'success': True, 'field': detail})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/impact/lookup')
-@login_required
-def api_catalog_impact_lookup():
-    """Lookup table → datasets → reports blast radius from impact index (server-side)."""
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    table = (request.args.get('table') or '').strip()
-    if not table:
-        return jsonify({'success': False, 'error': 'table query param required'}), 400
-    try:
-        hits = catalog_service.lookup_table(table)
-        allowed = _user_allowed_workspace_ids()
-        if allowed is not None and len(allowed) > 0:
-            filtered = []
-            for entry in hits:
-                datasets = [d for d in (entry.get('datasets') or []) if d.get('workspaceId') in allowed]
-                if datasets:
-                    e2 = dict(entry)
-                    e2['datasets'] = datasets
-                    filtered.append(e2)
-            hits = filtered
-        return jsonify({'success': True, 'table': table, 'count': len(hits), 'results': hits})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/impact/model-details')
-@login_required
-def api_catalog_impact_model_details():
-    """
-    Thin semantic-model payload for Impact Explorer popup.
-    Catalog-only (no full workspace_catalog in browser). Optional focus_table
-    highlights the impact table the user came from.
-    """
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    dataset_id = (request.args.get('dataset_id') or '').strip()
-    workspace_id = (request.args.get('workspace_id') or '').strip()
-    focus_table = (request.args.get('focus_table') or request.args.get('table') or '').strip()
-    model_table = (request.args.get('model_table') or '').strip()
-    report_name = (request.args.get('report_name') or '').strip()
-    report_id = (request.args.get('report_id') or '').strip()
-    if not dataset_id:
-        return jsonify({'success': False, 'error': 'dataset_id required'}), 400
-    try:
-        allowed = _user_allowed_workspace_ids()
-        if allowed is not None and len(allowed) > 0 and workspace_id and workspace_id not in allowed:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
-
-        details = catalog_service.impact_model_details(
-            dataset_id=dataset_id,
-            workspace_id=workspace_id,
-            focus_table=focus_table,
-            model_table_name=model_table,
-        )
-        if not details:
-            return jsonify({
-                'success': False,
-                'error': 'Dataset not found in catalog. Run a fresh extract if this model is new.',
-            }), 404
-
-        # ACL: if no workspace_id was passed, still enforce when we resolved one
-        ws_resolved = details.get('workspaceId') or workspace_id
-        if allowed is not None and len(allowed) > 0 and ws_resolved and ws_resolved not in allowed:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
-
-        payload = {
-            'success': True,
-            'source': 'catalog',
-            'reportName': report_name or None,
-            'reportId': report_id or None,
-            **details,
-        }
-        resp = jsonify(payload)
-        resp.headers['Cache-Control'] = 'private, max-age=60'
-        resp.headers['X-Data-Source'] = 'catalog-impact-model'
-        return resp
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/home-summary')
-@login_required
-def api_home_summary():
-    """
-    Fast Home dashboard: one response for all accessible workspaces.
-    Prefers precomputed SharePoint/local catalog (report/inactive/orphaned counts).
-    Falls back to workspace list only if catalog unavailable (UI may still use live paths).
-    """
-    try:
-        allowed = _user_allowed_workspace_ids()
-        # allowed may be empty set on failure — still try catalog unfiltered only if None
-        if CATALOG_AVAILABLE and catalog_service is not None and catalog_service.is_available():
-            summary = catalog_service.build_home_summary(
-                allowed_workspace_ids=allowed if allowed is not None else None,
-                inactive_days=30,
-            )
-            if summary:
-                print(
-                    f"⚡ HOME SUMMARY from catalog: ws={summary.get('workspaceCount')} "
-                    f"reports={summary.get('totalReports')} "
-                    f"inactive={summary.get('inactiveReports')} "
-                    f"orphaned={summary.get('orphanedReports')} "
-                    f"zeroViews={summary.get('zeroViewsReports')} "
-                    f"opsEnrichedAt={summary.get('opsEnrichedAt')}"
-                )
-                return jsonify(summary)
-
-        # Catalog miss — return minimal payload so UI can fall back
-        return jsonify({
-            'success': True,
-            'source': 'none',
-            'fallback': True,
-            'message': 'Catalog not available; use live home loaders',
-            'workspaceCount': len(allowed or []),
-            'totalReports': None,
-            'inactiveReports': None,
-            'orphanedReports': None,
-            'zeroViewsReports': None,
-            'workspaces': [],
-        })
-    except Exception as e:
-        print(f"❌ home-summary error: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/home-summary/details')
-@login_required
-def api_home_summary_details():
-    """
-    Row lists for Home KPI tabs.
-    ?metric=workspaces|reports|inactive|orphaned|zero_views
-    """
-    try:
-        metric = (request.args.get('metric') or 'workspaces').strip().lower()
-        try:
-            limit = int(request.args.get('limit') or 5000)
-        except Exception:
-            limit = 5000
-        limit = max(1, min(limit, 20000))
-        allowed = _user_allowed_workspace_ids()
-        if not CATALOG_AVAILABLE or catalog_service is None or not catalog_service.is_available():
-            return jsonify({
-                'success': False,
-                'error': 'Catalog not available',
-                'metric': metric,
-                'rows': [],
-            }), 503
-        details = catalog_service.build_home_details(
-            metric=metric,
-            allowed_workspace_ids=allowed if allowed is not None else None,
-            inactive_days=30,
-            limit=limit,
-        )
-        if not details:
-            return jsonify({'success': False, 'error': 'No details', 'metric': metric, 'rows': []}), 404
-        if details.get('success') is False:
-            return jsonify(details), 400
-        return jsonify(details)
-    except Exception as e:
-        print(f"❌ home-summary/details error: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/catalog/impact/top')
-@login_required
-def api_catalog_impact_top():
-    """Top blast-radius tables from precomputed impact index."""
-    if not CATALOG_AVAILABLE or catalog_service is None:
-        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
-    try:
-        n = min(int(request.args.get('n', 50)), 500)
-        rows = catalog_service.impact_top(n=n)
-        return jsonify({'success': True, 'count': len(rows), 'tables': rows,
-                        'generatedAt': (catalog_service.get_impact_index() or {}).get('generatedAt')})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+# Catalog / Impact Explorer routes/helpers moved to routes/catalog.py (blueprint).
+# See catalog_bp registration below (after login_required is defined).
 
 
 def _resolve_person_identity(*values):
