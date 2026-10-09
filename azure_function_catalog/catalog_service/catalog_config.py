@@ -61,6 +61,14 @@ SHAREPOINT_SITE_HOSTNAME = os.getenv("SHAREPOINT_SITE_HOSTNAME", "")
 SHAREPOINT_SITE_PATH = os.getenv("SHAREPOINT_SITE_PATH", "")
 SHAREPOINT_DRIVE_NAME = os.getenv("SHAREPOINT_DRIVE_NAME", "Documents")
 SHAREPOINT_FOLDER_PATH = os.getenv("SHAREPOINT_FOLDER_PATH", "PowerBI Reports MetaData")
+# Dedicated "agent" subfolder under the same parent folder as the main catalog
+# (BA Retail Analytics site -> .../Power BI reports metadata/agent). Used only
+# by catalog_service.semantic_models_index — isolated from SHAREPOINT_PUBLISH_FILES
+# and the latest/ clean-before-upload flow, so it never interacts with the
+# existing catalog publish/clean logic.
+SHAREPOINT_AGENT_FOLDER_PATH = (
+    os.getenv("SHAREPOINT_AGENT_FOLDER_PATH") or f"{SHAREPOINT_FOLDER_PATH}/agent"
+).strip("/")
 # Default ON — extract publishes to SharePoint as system of record
 SHAREPOINT_UPLOAD_ENABLED = os.getenv("SHAREPOINT_UPLOAD_ENABLED", "true").lower() in (
     "1", "true", "yes", "y",

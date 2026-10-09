@@ -588,6 +588,21 @@ def main(argv=None) -> int:
         except Exception as exc:
             print(f"WARNING: thin pack build failed (UI can fall back): {exc}")
 
+        # Tenant-wide semantic models search index -> SharePoint "agent" subfolder.
+        # Additive, fully isolated step (separate module + separate SharePoint
+        # folder from the main latest/ publish tree below). Any failure here is
+        # caught and logged only — it can never fail the --fresh / --ops-only run.
+        try:
+            from catalog_service.semantic_models_index import (
+                write_semantic_models_index,
+                upload_semantic_models_index,
+            )
+            sem_path = write_semantic_models_index(latest)
+            if sem_path:
+                upload_semantic_models_index(sem_path)
+        except Exception as exc:
+            print(f"WARNING: semantic_models_index build/upload failed (non-fatal): {exc}")
+
         # Fresh: wipe then replace. Ops-only: overlay produced files only so a
         # partial ops run cannot delete workspace_catalog / impact packs.
         publish_temp_latest(
