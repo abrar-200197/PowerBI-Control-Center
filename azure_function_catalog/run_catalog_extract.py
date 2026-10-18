@@ -97,7 +97,7 @@ def publish_names(include_inventory: bool = False) -> List[str]:
         names.append("inventory.json")
     for extra in ("refresh_snapshot.json", "usage_snapshot.json", "ops_summary.json",
                   "workspace_catalog.json", "impact_index.json", "summary.json", "sources.json",
-                  "field_usage_index.json"):
+                  "field_usage_index.json", "unused_fields_index.json"):
         if extra not in names:
             names.append(extra)
     # de-dupe preserve order
@@ -300,6 +300,34 @@ def build_field_usage_index_step(latest: Path, prior_index: Optional[dict]) -> N
         print(f"WARNING: field usage index build failed (non-fatal): {exc}")
 
 
+def build_unused_fields_index_step(latest: Path) -> None:
+    """
+    Weekly-only step: tenant-wide "truly unused" column/measure index
+    (Impact Explorer 'Unused Columns & Measures' tab). Runs right after the
+    field usage index (same --fresh run) since it depends on that file.
+    Wrapped so a failure here can never break the rest of the --fresh rebuild.
+    """
+    cat_path = latest / "workspace_catalog.json"
+    fld_path = latest / "field_usage_index.json"
+    if not cat_path.is_file() or not fld_path.is_file():
+        print("WARNING: unused fields index skipped — workspace_catalog.json or field_usage_index.json missing")
+        return
+    try:
+        from catalog_service.unused_fields_index import build_unused_fields_index
+
+        catalog = json.loads(cat_path.read_text(encoding="utf-8"))
+        field_usage = json.loads(fld_path.read_text(encoding="utf-8"))
+        idx = build_unused_fields_index(catalog, field_usage)
+        p = latest / "unused_fields_index.json"
+        p.write_text(json.dumps(idx, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        print(
+            f"Unused fields index: {idx.get('unusedCount', 0)} unused "
+            f"(columns={idx.get('totalColumns', 0)}, measures={idx.get('totalMeasures', 0)}) -> {p}"
+        )
+    except Exception as exc:
+        print(f"WARNING: unused fields index build failed (non-fatal): {exc}")
+
+
 def publish_temp_latest(
     latest_dir: Path,
     *,
@@ -324,6 +352,7 @@ def publish_temp_latest(
         "ui_impact_reports.json",
         "ui_report_directory.json",
         "ui_field_index.json",
+        "ui_unused_fields_index.json",
     ):
         if thin not in names:
             names.append(thin)
@@ -571,6 +600,7 @@ def main(argv=None) -> int:
             clean_sharepoint_latest()
             latest = run_full_extract(temp_root, args)
             build_field_usage_index_step(latest, prior_field_index)
+            build_unused_fields_index_step(latest)
         elif args.ops_only:
             print("=== OPS-ONLY (6h) ===")
             latest = run_ops_only(temp_root, args)

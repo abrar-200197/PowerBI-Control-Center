@@ -32,6 +32,9 @@
         <button class="section-tab nav-item" data-view="fields" type="button" role="tab" aria-selected="false">
           Field usage
         </button>
+        <button class="section-tab nav-item" data-view="unused" type="button" role="tab" aria-selected="false">
+          Unused columns &amp; measures
+        </button>
         <button class="section-tab nav-item" data-view="lineage" type="button" role="tab" aria-selected="false">
           Lineage map
         </button>
@@ -233,6 +236,59 @@
           </div>
         </section>
 
+        <!-- UNUSED COLUMNS & MEASURES (Level 1 — tenant-wide, safe-to-review-for-removal) -->
+        <section id="view-unused" class="view hidden">
+          <div class="filters card filters-one-line">
+            <div class="filter-row one-line">
+              <label class="field grow">
+                <span class="sr-only">Search field / table / dataset</span>
+                <input id="unusedSearchInput" type="search" placeholder="Search column / measure / table / dataset…" />
+              </label>
+              <label class="field field-sm">
+                <span class="sr-only">Field type</span>
+                <select id="unusedTypeFilter" title="Type">
+                  <option value="" selected>Type: All</option>
+                  <option value="measure">Measures</option>
+                  <option value="column">Columns</option>
+                </select>
+              </label>
+              <button id="clearUnusedFilters" class="btn ghost sm" type="button">Clear</button>
+            </div>
+            <div class="filter-meta compact">
+              <span id="unusedResultCount" class="muted small"></span>
+              <span id="unusedIndexMeta" class="muted small"></span>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:12px">
+            <p class="muted small" style="margin:0">
+              Fields here are not bound in any report visual, relationship key, DAX measure, or calculated-column
+              expression tenant-wide — candidates to review for removal from the model. Row-level security filters
+              and sort-by-column bindings are not visible to this tool, so always verify in the model before deleting.
+            </p>
+          </div>
+          <div class="card table-card">
+            <div class="table-wrap">
+              <table id="unusedFieldsTable">
+                <thead>
+                  <tr>
+                    <th data-usort="field">Field / metric</th>
+                    <th data-usort="table">Table</th>
+                    <th data-usort="type">Type</th>
+                    <th data-usort="datasetName">Dataset</th>
+                    <th data-usort="workspaceName">Workspace</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <button id="unusedPrevPage" class="btn ghost sm" type="button">Previous</button>
+              <span id="unusedPageInfo" class="muted small"></span>
+              <button id="unusedNextPage" class="btn ghost sm" type="button">Next</button>
+            </div>
+          </div>
+        </section>
+
         <!-- LOOKUP -->
         <section id="view-lookup" class="view hidden">
           <div class="card">
@@ -356,6 +412,15 @@
         <p class="muted small" style="margin:0 0 8px">SQL, Excel, SharePoint, files, and model tables from lineage — everything bound through the report’s dataset(s).</p>
         <input id="reportDrawerSourceFilter" type="search" placeholder="Filter sources…" class="drawer-search" />
         <div id="reportDrawerBody" class="drawer-list"></div>
+      </div>
+      <div class="drawer-section">
+        <h3>Column usage by table (this report)</h3>
+        <p class="muted small" style="margin:0 0 8px">
+          Columns/measures this report's visuals actually bind vs. everything available in each table.
+          A table with many unused fields may be a candidate to trim or split for this report — but other
+          reports may still need those fields, so this is a design signal, not a safe-to-delete list.
+        </p>
+        <div id="reportColumnUsageBody" class="drawer-list"></div>
       </div>
     </aside>
     <!-- FIELD USAGE DRAWER (which reports use this column / measure) -->

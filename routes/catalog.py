@@ -130,6 +130,17 @@ def _perform_catalog_refresh() -> dict:
         impact_reports = catalog_service.get_json('ui_impact_reports.json', force_refresh=True)
     except Exception:
         impact_reports = None
+    # Field usage / unused-fields thin packs (Impact Explorer "Field usage" and
+    # "Unused columns & measures" tabs) — NOT covered by the generic home/impact
+    # reload above, so force them here too or Refresh silently leaves them stale.
+    try:
+        field_index = catalog_service.get_json('ui_field_index.json', force_refresh=True)
+    except Exception:
+        field_index = None
+    try:
+        unused_index = catalog_service.get_json('ui_unused_fields_index.json', force_refresh=True)
+    except Exception:
+        unused_index = None
     summary = catalog_service.get_summary(force_refresh=True)
     cat = catalog_service.get_workspace_catalog(force_refresh=True)
     impact = catalog_service.get_impact_index(force_refresh=True)
@@ -191,6 +202,8 @@ def _perform_catalog_refresh() -> dict:
         'ui_report_directory': bool(report_dir and (report_dir.get('rows') is not None)),
         'ui_impact_tables': bool(tables),
         'ui_impact_reports': bool(impact_reports),
+        'ui_field_index': bool(field_index),
+        'ui_unused_fields_index': bool(unused_index),
         'workspace_catalog': bool(cat),
         'impact_index': bool(impact),
         'summary': bool(summary),
@@ -602,6 +615,68 @@ def api_catalog_impact_field_detail():
         if not detail:
             return jsonify({'success': False, 'error': f'No usage found for field {field_key}'}), 404
         return jsonify({'success': True, 'field': detail})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@catalog_bp.route('/api/catalog/impact/unused-fields')
+@login_required
+def api_catalog_impact_unused_fields():
+    """
+    Thin tenant-wide "truly unused" column/measure list for Impact Explorer
+    «Unused Columns & Measures» tab (Level 1).
+    Built weekly (--fresh) — see catalog_service/unused_fields_index.py.
+    """
+    catalog_service = _get_catalog_service()
+    if not _catalog_available() or catalog_service is None:
+        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
+    try:
+        force = request.args.get('refresh') in ('1', 'true', 'yes')
+        allowed = _user_allowed_workspace_ids()
+        data = catalog_service.unused_fields_rows(
+            force_refresh=force,
+            allowed_workspace_ids=allowed if allowed is not None else None,
+        )
+        payload = {
+            'success': True,
+            'v': 1,
+            'count': len(data.get('rows') or []),
+            'rows': data.get('rows') or [],
+            'generatedAt': data.get('generatedAt'),
+            'caveat': data.get('caveat'),
+            'totalColumns': data.get('totalColumns'),
+            'totalMeasures': data.get('totalMeasures'),
+            'excludedViaReportUsage': data.get('excludedViaReportUsage'),
+            'excludedViaDaxOrMExpression': data.get('excludedViaDaxOrMExpression'),
+            'excludedViaRelationshipKey': data.get('excludedViaRelationshipKey'),
+            'source': 'server-thin',
+        }
+        resp = jsonify(payload)
+        resp.headers['Cache-Control'] = 'no-store' if force else 'private, max-age=120'
+        resp.headers['X-Data-Source'] = 'server-thin'
+        return resp
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@catalog_bp.route('/api/catalog/impact/report-column-usage')
+@login_required
+def api_catalog_report_column_usage():
+    """
+    Level 2 — per-report column/measure usage breakdown (report drawer
+    signal, NOT a deletion list). See CatalogService.report_column_usage.
+    """
+    catalog_service = _get_catalog_service()
+    if not _catalog_available() or catalog_service is None:
+        return jsonify({'success': False, 'error': 'Catalog not available'}), 503
+    report_id = (request.args.get('report_id') or '').strip()
+    if not report_id:
+        return jsonify({'success': False, 'error': 'report_id required'}), 400
+    try:
+        detail = catalog_service.report_column_usage(report_id)
+        if not detail:
+            return jsonify({'success': False, 'error': f'No column usage data found for report {report_id}'}), 404
+        return jsonify({'success': True, 'data': detail})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

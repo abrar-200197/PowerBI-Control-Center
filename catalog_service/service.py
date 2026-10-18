@@ -46,6 +46,7 @@ _THIN_UI_PACKS = frozenset({
     "ui_impact_reports.json",
     "ui_report_directory.json",
     "ui_field_index.json",
+    "ui_unused_fields_index.json",
     "summary.json",
     "ops_summary.json",
 })
@@ -1347,6 +1348,133 @@ class CatalogService:
             "reportCount": len(reports),
             "reports": reports,
             "generatedAt": pack.get("generatedAt"),
+        }
+
+    def unused_fields_rows(
+        self,
+        force_refresh: bool = False,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Thin tenant-wide "truly unused" column/measure list for Impact
+        Explorer «Unused Columns & Measures» tab (Level 1).
+        Built weekly (--fresh only) by catalog_service.unused_fields_index;
+        may be absent on a fresh deploy until the first weekly run completes.
+        """
+        pack = self.get_json("ui_unused_fields_index.json", force_refresh=force_refresh) or {}
+        rows = list(pack.get("rows") or [])
+        if allowed_workspace_ids is not None:
+            rows = [r for r in rows if r.get("workspaceId") in allowed_workspace_ids]
+        return {
+            "rows": rows,
+            "generatedAt": pack.get("generatedAt"),
+            "caveat": pack.get("caveat") or "",
+            "totalColumns": pack.get("totalColumns") or 0,
+            "totalMeasures": pack.get("totalMeasures") or 0,
+            "unusedCount": len(rows),
+            "excludedViaReportUsage": pack.get("excludedViaReportUsage") or 0,
+            "excludedViaDaxOrMExpression": pack.get("excludedViaDaxOrMExpression") or 0,
+            "excludedViaRelationshipKey": pack.get("excludedViaRelationshipKey") or 0,
+        }
+
+    def report_column_usage(self, report_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Level 2 — per-report column/measure usage breakdown (report drawer
+        signal, NOT a deletion list). For the given report, cross-references
+        its dataset's full table/column list against the fields it actually
+        binds in visuals (field_usage_index.perReportCache), grouped by table
+        so a report author can see "table X has 10 columns, this report only
+        uses 3" at a glance.
+
+        Server-side only (reads field_usage_index.json + workspace_catalog.json
+        directly, not a browser-exposed thin pack) since this is a drill-down
+        for one report at a time, not a tenant-wide searchable grid.
+        """
+        if not report_id:
+            return None
+        field_usage = self.get_json("field_usage_index.json") or {}
+        per_report_cache = field_usage.get("perReportCache") or {}
+        report_entry = per_report_cache.get(report_id)
+        if report_entry is None:
+            return None
+        used_fields = report_entry.get("fields") or {}
+        used_keys = set(used_fields.keys())
+
+        dataset_id = report_entry.get("datasetId") or None
+        dataset_schemas = field_usage.get("datasetSchemas") or {}
+        ds_schema = dataset_schemas.get(dataset_id) if dataset_id else None
+
+        ds_name = ""
+        tables_src: List[Dict[str, Any]] = []
+        if ds_schema and isinstance(ds_schema, dict):
+            # Fast path — small per-dataset schema already embedded in
+            # field_usage_index.json; never touches workspace_catalog.json.
+            ds_name = ds_schema.get("name") or ""
+            tables_src = [
+                {
+                    "name": t.get("name") or "",
+                    "columns": list(t.get("columns") or []),
+                    "measures": list(t.get("measures") or []),
+                }
+                for t in (ds_schema.get("tables") or [])
+            ]
+        else:
+            # Fallback for an older field_usage_index.json built before
+            # datasetSchemas existed — re-run --fresh to get the fast path.
+            catalog = self.get_workspace_catalog() or {}
+            if not dataset_id:
+                for ws in catalog.get("workspaces") or []:
+                    for r in ws.get("reports") or []:
+                        if r.get("id") == report_id:
+                            dataset_id = r.get("datasetId")
+                            break
+                    if dataset_id:
+                        break
+            if not dataset_id:
+                return None
+            ds = (catalog.get("datasets") or {}).get(dataset_id)
+            if not isinstance(ds, dict):
+                return None
+            ds_name = ds.get("name") or ""
+            tables_src = [
+                {
+                    "name": t.get("name") or "",
+                    "columns": [c.get("name") for c in (t.get("columns") or []) if c.get("name")],
+                    "measures": [m.get("name") for m in (t.get("measures") or []) if m.get("name")],
+                }
+                for t in (ds.get("tables") or [])
+            ]
+
+        if not dataset_id:
+            return None
+
+        tables_out: List[Dict[str, Any]] = []
+        for t in tables_src:
+            table_name = t.get("name") or ""
+            all_fields = list(t.get("columns") or []) + list(t.get("measures") or [])
+            if not all_fields:
+                continue
+            used = [f for f in all_fields if f"{table_name}.{f}".strip(".").lower() in used_keys]
+            tables_out.append({
+                "table": table_name,
+                "totalFieldCount": len(all_fields),
+                "usedFieldCount": len(used),
+                "unusedFieldCount": len(all_fields) - len(used),
+                "usedFields": sorted(used),
+            })
+        tables_out.sort(key=lambda t: t["unusedFieldCount"], reverse=True)
+        return {
+            "reportId": report_id,
+            "datasetId": dataset_id,
+            "datasetName": ds_name,
+            "generatedAt": field_usage.get("generatedAt"),
+            "tables": tables_out,
+            "note": (
+                "Shows columns/measures this report's visuals actually bind, out of "
+                "all fields available in each table. Over-fetched columns are a "
+                "report-design signal only — other reports may still need them, so "
+                "this is NOT a safe-to-delete list."
+            ),
         }
 
     def impact_table_detail(self, table_key: str) -> Optional[Dict[str, Any]]:

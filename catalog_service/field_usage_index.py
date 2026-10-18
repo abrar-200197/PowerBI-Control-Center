@@ -94,8 +94,37 @@ def _empty_index() -> Dict[str, Any]:
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "schemaVersion": "1.0",
         "reportsProcessed": 0, "reportsSkippedUnchanged": 0, "reportsFailed": 0,
-        "fieldCount": 0, "fields": {}, "perReportCache": {},
+        "fieldCount": 0, "fields": {}, "perReportCache": {}, "datasetSchemas": {},
     }
+
+
+def _build_dataset_schemas(
+    catalog: Dict[str, Any], dataset_ids: set
+) -> Dict[str, Any]:
+    """
+    Lightweight per-dataset table/column/measure NAME-only schema, for the
+    datasets actually referenced by processed reports. Lets report_column_usage()
+    answer "used vs total fields per table" without ever loading the full
+    300MB+ workspace_catalog.json (which holds relationships, RLS, lineage,
+    etc. that this per-report drill-down doesn't need).
+    """
+    out: Dict[str, Any] = {}
+    all_datasets = catalog.get("datasets") or {}
+    for ds_id in dataset_ids:
+        if not ds_id:
+            continue
+        ds = all_datasets.get(ds_id)
+        if not isinstance(ds, dict):
+            continue
+        tables: list = []
+        for t in ds.get("tables") or []:
+            cols = [c.get("name") for c in (t.get("columns") or []) if c.get("name")]
+            measures = [m.get("name") for m in (t.get("measures") or []) if m.get("name")]
+            if not cols and not measures:
+                continue
+            tables.append({"name": t.get("name") or "", "columns": cols, "measures": measures})
+        out[ds_id] = {"name": ds.get("name") or "", "tables": tables}
+    return out
 
 
 def _assemble_index(
@@ -104,6 +133,7 @@ def _assemble_index(
     processed: int,
     skipped: int,
     failed: int,
+    dataset_schemas: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     out_fields: Dict[str, Any] = {}
     for key, bucket in fields_map.items():
@@ -125,6 +155,7 @@ def _assemble_index(
         "fieldCount": len(out_fields),
         "fields": out_fields,
         "perReportCache": per_report_cache,
+        "datasetSchemas": dataset_schemas or {},
     }
 
 
@@ -167,8 +198,8 @@ def build_field_usage_index(
     lock = threading.Lock()
 
     def _merge_report_fields(rid: str, rname: str, wid: str, wname: str,
-                              mod_key: str, report_fields: Dict[str, Dict[str, Any]]) -> None:
-        per_report_cache[rid] = {"modifiedDateTime": mod_key, "fields": report_fields}
+                              mod_key: str, ds_id: str, report_fields: Dict[str, Dict[str, Any]]) -> None:
+        per_report_cache[rid] = {"modifiedDateTime": mod_key, "datasetId": ds_id, "fields": report_fields}
         for key, info in report_fields.items():
             bucket = fields_map.setdefault(key, {
                 "table": info.get("table") or "", "field": info.get("field") or "",
@@ -180,13 +211,16 @@ def build_field_usage_index(
                 "visualCount": info.get("visualCount") or 0,
             }
 
+    referenced_dataset_ids: set = set()
+
     def _maybe_checkpoint(completed_count: int) -> None:
         if not on_checkpoint:
             return
         if checkpoint_every <= 0 or completed_count % checkpoint_every != 0:
             return
         try:
-            snapshot = _assemble_index(fields_map, per_report_cache, processed, skipped, failed)
+            schemas = _build_dataset_schemas(catalog, referenced_dataset_ids)
+            snapshot = _assemble_index(fields_map, per_report_cache, processed, skipped, failed, schemas)
             on_checkpoint(snapshot)
             logger.info(
                 "field_usage_index: checkpoint at %d completed (processed=%d skipped=%d failed=%d)",
@@ -212,25 +246,28 @@ def build_field_usage_index(
                 break
             n += 1
 
+            ds_id = report.get("datasetId") or ""
+            if ds_id:
+                referenced_dataset_ids.add(ds_id)
             mod_key = _report_modified_key(report)
             prior = prior_reports.get(rid)
 
             if prior and mod_key and prior.get("modifiedDateTime") == mod_key and isinstance(prior.get("fields"), dict):
                 skipped += 1
-                _merge_report_fields(rid, rname, wid, wname, mod_key, prior["fields"])
+                _merge_report_fields(rid, rname, wid, wname, mod_key, ds_id, prior["fields"])
             else:
-                to_extract.append((rid, rname, wid, wname, mod_key, prior))
+                to_extract.append((rid, rname, wid, wname, mod_key, ds_id, prior))
 
     completed = 0
     if to_extract:
         with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
             future_map = {
-                pool.submit(_extract_fields_for_report, extractor, wid, rid): (rid, rname, wid, wname, mod_key, prior)
-                for (rid, rname, wid, wname, mod_key, prior) in to_extract
+                pool.submit(_extract_fields_for_report, extractor, wid, rid): (rid, rname, wid, wname, mod_key, ds_id, prior)
+                for (rid, rname, wid, wname, mod_key, ds_id, prior) in to_extract
             }
             try:
                 for future in as_completed(future_map):
-                    rid, rname, wid, wname, mod_key, prior = future_map[future]
+                    rid, rname, wid, wname, mod_key, ds_id, prior = future_map[future]
                     report_fields: Optional[Dict[str, Dict[str, Any]]] = None
                     try:
                         result = future.result()
@@ -259,7 +296,7 @@ def build_field_usage_index(
                             continue
 
                     with lock:
-                        _merge_report_fields(rid, rname, wid, wname, mod_key, report_fields)
+                        _merge_report_fields(rid, rname, wid, wname, mod_key, ds_id, report_fields)
                     completed += 1
                     _maybe_checkpoint(completed)
             except BaseException:
@@ -269,7 +306,8 @@ def build_field_usage_index(
                 _maybe_checkpoint(checkpoint_every if checkpoint_every > 0 else 1)
                 raise
 
-    final_index = _assemble_index(fields_map, per_report_cache, processed, skipped, failed)
+    dataset_schemas = _build_dataset_schemas(catalog, referenced_dataset_ids)
+    final_index = _assemble_index(fields_map, per_report_cache, processed, skipped, failed, dataset_schemas)
     if on_checkpoint:
         try:
             on_checkpoint(final_index)

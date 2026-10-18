@@ -46,6 +46,14 @@ const state = {
   fieldDrawerReports: [],
   fieldsLoaded: false,
   fieldIndexMeta: null,
+  // Unused columns & measures tab (weekly --fresh index: Level 1, tenant-wide)
+  unusedRows: [],
+  unusedFiltered: [],
+  unusedSortKey: "workspaceName",
+  unusedSortDir: "asc",
+  unusedPage: 1,
+  unusedLoaded: false,
+  unusedIndexMeta: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -914,6 +922,45 @@ async function openReportSourcesDrawer(reportId) {
       `<div class="error-state" style="margin:8px"><strong>Failed to load sources</strong>
        <div class="small" style="margin-top:6px">${escapeHtml(e.message || String(e))}</div></div>`;
   }
+  loadReportColumnUsage(reportId);
+}
+
+async function loadReportColumnUsage(reportId) {
+  const el = $("#reportColumnUsageBody");
+  if (!el) return;
+  el.innerHTML = `<div class="muted small" style="padding:12px">Loading column usage… (first load can take a while while the catalog loads)</div>`;
+  try {
+    const res = await fetchJsonNoCache(
+      `/api/catalog/impact/report-column-usage?report_id=${encodeURIComponent(reportId)}`,
+      { timeoutMs: 180000 }
+    );
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.success) {
+      if (res.status === 404) {
+        el.innerHTML = `<div class="muted small" style="padding:12px">No column usage data for this report yet — built during the next weekly catalog refresh.</div>`;
+        return;
+      }
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    const data = body.data || {};
+    const tables = data.tables || [];
+    if (!tables.length) {
+      el.innerHTML = `<div class="muted small" style="padding:12px">No table/column data available.</div>`;
+      return;
+    }
+    el.innerHTML = tables.map((t) => `
+      <div class="drawer-list-item">
+        <div><strong>${escapeHtml(t.table || "")}</strong></div>
+        <div class="muted small">
+          ${fmt(t.usedFieldCount)} used / ${fmt(t.totalFieldCount)} total
+          ${t.unusedFieldCount ? `· <span>${fmt(t.unusedFieldCount)} unused in this report</span>` : ""}
+        </div>
+      </div>`
+    ).join("");
+  } catch (e) {
+    el.innerHTML = `<div class="error-state" style="margin:8px"><strong>Failed to load column usage</strong>
+       <div class="small" style="margin-top:6px">${escapeHtml(e.message || String(e))}</div></div>`;
+  }
 }
 
 function renderReportDrawerSources() {
@@ -1208,6 +1255,126 @@ function closeFieldDrawer() {
     $("#drawerBackdrop")?.classList.add("hidden");
     document.body.classList.remove("drawer-open");
   }
+}
+
+/* ----------------------------- Unused columns & measures (Level 1) -------- */
+
+const UNUSED_CACHE_KEY = "pbi_cc_impact_unused_v1";
+
+function readUnusedSessionCache() {
+  try {
+    const raw = sessionStorage.getItem(UNUSED_CACHE_KEY);
+    if (!raw) return null;
+    const pack = JSON.parse(raw);
+    if (!pack || !Array.isArray(pack.rows)) return null;
+    if (Date.now() - (pack.ts || 0) > 10 * 60 * 1000) return null;
+    return pack;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeUnusedSessionCache(payload) {
+  try {
+    sessionStorage.setItem(
+      UNUSED_CACHE_KEY,
+      JSON.stringify({ ts: Date.now(), ...payload })
+    );
+  } catch (_) { /* ignore */ }
+}
+
+async function ensureUnusedRows(forceRefresh = false) {
+  if (state.unusedLoaded && !forceRefresh && state.unusedRows.length) {
+    return state.unusedRows;
+  }
+  if (forceRefresh) {
+    try { sessionStorage.removeItem(UNUSED_CACHE_KEY); } catch (_) { /* ignore */ }
+  }
+  if (!forceRefresh) {
+    const cached = readUnusedSessionCache();
+    if (cached) {
+      state.unusedRows = cached.rows || [];
+      state.unusedIndexMeta = cached;
+      state.unusedLoaded = true;
+      return state.unusedRows;
+    }
+  }
+  const res = await fetchJsonNoCache("/api/catalog/impact/unused-fields", {
+    refresh: forceRefresh,
+    timeoutMs: 180000,
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `impact/unused-fields HTTP ${res.status}`);
+  }
+  const pack = await res.json();
+  if (!pack.success) throw new Error(pack.error || "impact/unused-fields failed");
+  writeUnusedSessionCache(pack);
+  state.unusedRows = pack.rows || [];
+  state.unusedIndexMeta = pack;
+  state.unusedLoaded = true;
+  return state.unusedRows;
+}
+
+function applyUnusedFilters() {
+  const q = ($("#unusedSearchInput")?.value || "").trim().toLowerCase();
+  const type = $("#unusedTypeFilter")?.value || "";
+  state.unusedFiltered = state.unusedRows.filter((r) => {
+    if (type && r.type !== type) return false;
+    if (q && !(r.searchText || "").includes(q)) return false;
+    return true;
+  });
+  state.unusedPage = 1;
+  sortUnusedFiltered();
+  renderUnusedTable();
+  const el = $("#unusedIndexMeta");
+  if (el) {
+    const meta = state.unusedIndexMeta;
+    if (!meta || !meta.generatedAt) {
+      el.textContent = state.unusedLoaded
+        ? "No unused fields index yet — built during the next weekly catalog refresh."
+        : "";
+    } else {
+      el.textContent = `As of ${new Date(meta.generatedAt).toLocaleString()} · ${fmt(meta.totalColumns)} columns, ${fmt(meta.totalMeasures)} measures scanned`;
+    }
+  }
+}
+
+function sortUnusedFiltered() {
+  const k = state.unusedSortKey;
+  const dir = state.unusedSortDir === "asc" ? 1 : -1;
+  state.unusedFiltered.sort((a, b) => {
+    const av = (a[k] || "").toString().toLowerCase();
+    const bv = (b[k] || "").toString().toLowerCase();
+    if (av < bv) return -1 * dir;
+    if (av > bv) return 1 * dir;
+    return 0;
+  });
+}
+
+function renderUnusedTable() {
+  const tb = $("#unusedFieldsTable tbody");
+  if (!tb) return;
+  const total = state.unusedFiltered.length;
+  const pages = Math.max(1, Math.ceil(total / state.pageSize));
+  if (state.unusedPage > pages) state.unusedPage = pages;
+  const start = (state.unusedPage - 1) * state.pageSize;
+  const slice = state.unusedFiltered.slice(start, start + state.pageSize);
+  if ($("#unusedResultCount")) {
+    $("#unusedResultCount").textContent = `${fmt(total)} unused fields · page ${state.unusedPage}/${pages}`;
+  }
+  if ($("#unusedPageInfo")) {
+    $("#unusedPageInfo").textContent = `Page ${state.unusedPage} of ${pages}`;
+  }
+  tb.innerHTML = slice.map((r) =>
+    `<tr>
+      <td>${escapeHtml(r.field || "")}${r.isHidden ? ' <span class="muted small">(hidden)</span>' : ""}</td>
+      <td>${escapeHtml(r.table || "")}</td>
+      <td>${r.type === "measure" ? "Measure" : "Column"}</td>
+      <td>${escapeHtml(r.datasetName || "")}</td>
+      <td>${escapeHtml(r.workspaceName || "")}</td>
+    </tr>`
+  ).join("") || `<tr><td colspan="5" class="muted">No unused fields match filters${state.unusedLoaded ? "" : " (index not built yet)"}.</td></tr>`;
 }
 
 function closeReportDrawer() {
@@ -2958,7 +3125,7 @@ async function runLineageMap() {
 
 function setView(name, opts) {
   // Table impact | Report sources | Impact lookup | Lineage map
-  const allowed = new Set(["tables", "reports", "fields", "lookup", "lineage"]);
+  const allowed = new Set(["tables", "reports", "fields", "unused", "lookup", "lineage"]);
   if (!allowed.has(name)) name = "tables";
 
   document.querySelectorAll(".nav-item, .section-tab").forEach((b) => {
@@ -2973,6 +3140,7 @@ function setView(name, opts) {
     tables: ["Table impact", "Search every source table → reports / datasets / workspaces"],
     reports: ["Report sources", "Pick a report → every SQL / Excel / file / model table it uses"],
     fields: ["Field usage", "Search a column / measure → which reports already use it (avoid duplicates)"],
+    unused: ["Unused columns & measures", "Tenant-wide fields not used anywhere — candidates to review for removal"],
     lookup: ["Impact lookup", "If we change table X, which reports are affected?"],
     lineage: ["Lineage map", "Service-style path: source → semantic model → report → workspace"],
   };
@@ -2983,7 +3151,7 @@ function setView(name, opts) {
   if ($("#viewSubtitle")) $("#viewSubtitle").textContent = pair[1];
 
   // Export applies to the active grid (Lineage export has no separate "filtered" set)
-  const exportMode = name === "tables" || name === "reports" || name === "fields" || name === "lineage";
+  const exportMode = name === "tables" || name === "reports" || name === "fields" || name === "unused" || name === "lineage";
   if ($("#exportCsvBtn")) $("#exportCsvBtn").style.display = exportMode ? "" : "none";
   if ($("#exportFilteredBtn")) $("#exportFilteredBtn").style.display = (exportMode && name !== "lineage") ? "" : "none";
 
@@ -2995,6 +3163,16 @@ function setView(name, opts) {
         const tb = $("#reportSourcesTable tbody");
         if (tb) {
           tb.innerHTML = `<tr><td colspan="6" class="muted">Failed to load reports: ${escapeHtml(e.message || String(e))}</td></tr>`;
+        }
+      });
+  }
+  if (name === "unused") {
+    ensureUnusedRows(false)
+      .then(() => applyUnusedFilters())
+      .catch((e) => {
+        const tb = $("#unusedFieldsTable tbody");
+        if (tb) {
+          tb.innerHTML = `<tr><td colspan="5" class="muted">Failed to load unused fields: ${escapeHtml(e.message || String(e))}</td></tr>`;
         }
       });
   }
@@ -3156,6 +3334,32 @@ function wire() {
     sortFieldFiltered();
     renderFieldTable();
   });
+  ["unusedSearchInput", "unusedTypeFilter"].forEach((id) => {
+    const el = $(`#${id}`);
+    if (!el) return;
+    const evt = el.tagName === "SELECT" ? "change" : "input";
+    el.addEventListener(evt, applyUnusedFilters);
+  });
+  $("#clearUnusedFilters")?.addEventListener("click", () => {
+    if ($("#unusedSearchInput")) $("#unusedSearchInput").value = "";
+    if ($("#unusedTypeFilter")) $("#unusedTypeFilter").value = "";
+    applyUnusedFilters();
+  });
+  $("#unusedPrevPage")?.addEventListener("click", () => { state.unusedPage--; renderUnusedTable(); });
+  $("#unusedNextPage")?.addEventListener("click", () => { state.unusedPage++; renderUnusedTable(); });
+  $("#unusedFieldsTable thead")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th[data-usort]");
+    if (!th) return;
+    const key = th.dataset.usort;
+    if (state.unusedSortKey === key) {
+      state.unusedSortDir = state.unusedSortDir === "asc" ? "desc" : "asc";
+    } else {
+      state.unusedSortKey = key;
+      state.unusedSortDir = "asc";
+    }
+    sortUnusedFiltered();
+    renderUnusedTable();
+  });
   $("#fieldDrawerReportFilter")?.addEventListener("input", renderFieldDrawerReports);
   $("#copyFieldReportsBtn")?.addEventListener("click", async () => {
     const names = (state.fieldDrawerReports || []).map((r) => r.reportName).filter(Boolean).join("\n");
@@ -3211,9 +3415,16 @@ function wire() {
   $("#exportCsvBtn")?.addEventListener("click", () => {
     const onReports = $("#view-reports") && !$("#view-reports").classList.contains("hidden");
     const onFields = $("#view-fields") && !$("#view-fields").classList.contains("hidden");
+    const onUnused = $("#view-unused") && !$("#view-unused").classList.contains("hidden");
     const onLineage = $("#view-lineage") && !$("#view-lineage").classList.contains("hidden");
     if (onLineage) {
       exportLineageCsv();
+    } else if (onUnused) {
+      exportCsv(
+        state.unusedRows,
+        "impact_all_unused_fields.csv",
+        ["field", "table", "type", "datasetName", "workspaceName", "isHidden"]
+      );
     } else if (onFields) {
       exportCsv(
         state.fieldRows,
@@ -3233,7 +3444,14 @@ function wire() {
   $("#exportFilteredBtn")?.addEventListener("click", () => {
     const onReports = $("#view-reports") && !$("#view-reports").classList.contains("hidden");
     const onFields = $("#view-fields") && !$("#view-fields").classList.contains("hidden");
-    if (onFields) {
+    const onUnused = $("#view-unused") && !$("#view-unused").classList.contains("hidden");
+    if (onUnused) {
+      exportCsv(
+        state.unusedFiltered,
+        "impact_filtered_unused_fields.csv",
+        ["field", "table", "type", "datasetName", "workspaceName", "isHidden"]
+      );
+    } else if (onFields) {
       exportCsv(
         state.fieldFiltered,
         "impact_filtered_fields.csv",
@@ -3249,7 +3467,7 @@ function wire() {
       exportCsv(state.filtered, "impact_filtered_tables.csv");
     }
   });
-  $("#reloadBtn")?.addEventListener("click", () => loadData(true));
+  $("#reloadBtn")?.addEventListener("click", forceFullRefresh);
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if ($("#modelModal") && !$("#modelModal").classList.contains("hidden")) {
@@ -3257,6 +3475,28 @@ function wire() {
       return;
     }
     closeAllDrawers();
+  });
+}
+
+/**
+ * Force a fresh pull for every tab's cache, not just the Table impact view —
+ * Field usage / Unused columns & measures have their own sessionStorage
+ * cache + backend thin pack and are NOT touched by loadData()'s refresh alone.
+ * Callable from the (hidden) in-frame reloadBtn or from the host page's
+ * visible Refresh button via postMessage.
+ */
+function forceFullRefresh() {
+  try { sessionStorage.removeItem(FIELDS_CACHE_KEY); } catch (_) { /* ignore */ }
+  try { sessionStorage.removeItem(UNUSED_CACHE_KEY); } catch (_) { /* ignore */ }
+  state.fieldsLoaded = false;
+  state.unusedLoaded = false;
+  return loadData(true).then(() => {
+    const activeTab = document.querySelector(".nav-item.active")?.dataset.view;
+    if (activeTab === "fields") {
+      ensureFieldRows(true).then(applyFieldFilters).catch(() => {});
+    } else if (activeTab === "unused") {
+      ensureUnusedRows(true).then(applyUnusedFilters).catch(() => {});
+    }
   });
 }
 

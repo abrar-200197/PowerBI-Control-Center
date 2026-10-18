@@ -537,6 +537,52 @@ def build_ui_report_directory(catalog: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def build_ui_unused_fields_index(unused_index: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Thin grid pack for the Impact Explorer "Unused Columns & Measures" tab
+    (Level 1 — tenant-wide, safe-to-review-for-removal list).
+
+    Flat searchable rows; no drawer/details map needed since each row already
+    carries its full identity (workspace/dataset/table/field).
+    """
+    rows: List[Dict[str, Any]] = []
+    for item in unused_index.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append({
+            "workspaceId": item.get("workspaceId") or "",
+            "workspaceName": item.get("workspaceName") or "",
+            "datasetId": item.get("datasetId") or "",
+            "datasetName": item.get("datasetName") or "",
+            "table": item.get("table") or "",
+            "field": item.get("field") or "",
+            "type": item.get("type") or "column",
+            "isHidden": bool(item.get("isHidden")),
+            "searchText": " ".join([
+                str(item.get("field") or ""), str(item.get("table") or ""),
+                str(item.get("datasetName") or ""), str(item.get("workspaceName") or ""),
+            ]).lower(),
+        })
+    rows.sort(key=lambda r: (
+        (r.get("workspaceName") or "").lower(),
+        (r.get("datasetName") or "").lower(),
+        (r.get("table") or "").lower(),
+        (r.get("field") or "").lower(),
+    ))
+    return {
+        "generatedAt": unused_index.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
+        "schemaVersion": "1.0",
+        "caveat": unused_index.get("caveat") or "",
+        "totalColumns": unused_index.get("totalColumns") or 0,
+        "totalMeasures": unused_index.get("totalMeasures") or 0,
+        "unusedCount": len(rows),
+        "excludedViaReportUsage": unused_index.get("excludedViaReportUsage") or 0,
+        "excludedViaDaxOrMExpression": unused_index.get("excludedViaDaxOrMExpression") or 0,
+        "excludedViaRelationshipKey": unused_index.get("excludedViaRelationshipKey") or 0,
+        "rows": rows,
+    }
+
+
 def write_thin_packs(latest_dir: Path) -> Dict[str, Path]:
     """Build ui_*.json into latest_dir from full artifacts. Returns paths written."""
     latest_dir = Path(latest_dir)
@@ -591,4 +637,18 @@ def write_thin_packs(latest_dir: Path) -> Dict[str, Path]:
             )
         except Exception as exc:
             logger.warning("field usage thin pack build skipped: %s", exc)
+    unused_path = latest_dir / "unused_fields_index.json"
+    if unused_path.is_file():
+        try:
+            unused = json.loads(unused_path.read_text(encoding="utf-8"))
+            unused_pack = build_ui_unused_fields_index(unused)
+            p = latest_dir / "ui_unused_fields_index.json"
+            p.write_text(json.dumps(unused_pack, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            out["ui_unused_fields_index"] = p
+            logger.info(
+                "Wrote %s (%.1f KB, %s unused fields)",
+                p.name, p.stat().st_size / 1024, unused_pack.get("unusedCount") or 0,
+            )
+        except Exception as exc:
+            logger.warning("unused fields thin pack build skipped: %s", exc)
     return out

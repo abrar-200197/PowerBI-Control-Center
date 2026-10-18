@@ -51,6 +51,63 @@ import asyncio
 # Load environment variables BEFORE catalog import (catalog_config reads env at import time)
 load_dotenv(override=True)
 
+
+def get_fabric_token():
+    """Alias for get_user_fabric_token() — kept for older folder-filtering
+    code paths that reference this shorter name."""
+    return get_user_fabric_token()
+
+
+def _fetch_workspace_folders_list(workspace_id):
+    """
+    Fetch the full Fabric folder hierarchy for a workspace.
+
+    Returns a list of {'id', 'name', 'parentFolderId'} dicts (empty list on
+    any failure — callers already treat an empty/missing list as "no folder
+    names available" and fall back to raw IDs).
+    """
+    try:
+        fabric_token = get_user_fabric_token()
+        url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/folders?recursive=true"
+        headers = {
+            'Authorization': f'Bearer {fabric_token}',
+            'Content-Type': 'application/json',
+        }
+        response = requests.get(url, headers=headers, timeout=30)
+        if response.status_code != 200:
+            print(f"   ⚠️ _fetch_workspace_folders_list: Fabric API returned {response.status_code}")
+            return []
+        folders_data = response.json().get('value', [])
+        return [
+            {
+                'id': f.get('id'),
+                'name': f.get('displayName') or f.get('id'),
+                'parentFolderId': f.get('parentFolderId'),
+            }
+            for f in folders_data
+            if f.get('id')
+        ]
+    except Exception as e:
+        print(f"   ⚠️ _fetch_workspace_folders_list failed: {e}")
+        return []
+
+
+def get_all_child_folders_recursive(folder_id, folder_map):
+    """
+    Return a set of folder IDs containing `folder_id` plus every descendant
+    folder found in `folder_map` (a dict keyed by folder id, where each value
+    has a 'parentFolderId' key — works with folder_map/folder_names_map/
+    folders_map shapes used across the app).
+    """
+    children = {folder_id}
+    for fid, finfo in (folder_map or {}).items():
+        if fid in children:
+            continue
+        if (finfo or {}).get('parentFolderId') == folder_id:
+            children.add(fid)
+            children.update(get_all_child_folders_recursive(fid, folder_map))
+    return children
+
 # Precomputed tenant catalog (SharePoint / local) — fast path; live APIs remain fallback
 try:
     from catalog_service import catalog_service
@@ -2485,16 +2542,8 @@ def deep_content_search(workspace_id):
                                 'parentFolderId': folder.get('parentFolderId')
                             }
 
-                    # Helper to get all child folder IDs recursively
-                    def get_child_folders(parent_id, hierarchy):
-                        children = {parent_id}
-                        for fid, finfo in hierarchy.items():
-                            if finfo.get('parentFolderId') == parent_id:
-                                children.add(fid)
-                                children.update(get_child_folders(fid, hierarchy))
-                        return children
-
-                    all_folder_ids = get_child_folders(folder_id, folder_hierarchy)
+                    # Get all child folder IDs recursively (shared module-level helper)
+                    all_folder_ids = get_all_child_folders_recursive(folder_id, folder_hierarchy)
                     print(f"   📁 Including {len(all_folder_ids)} folder(s) (selected + nested subfolders)")
 
                     # Filter reports by folder hierarchy (Scanner API uses 'folderId')

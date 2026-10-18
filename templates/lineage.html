@@ -480,6 +480,10 @@
         left: 50%;
         transform: translate(-50%, -50%);
         background: white;
+        color: #1A202C; /* Force dark text — modal content uses hardcoded
+                            light-theme colors, so it must not inherit the
+                            page's dark-mode light text color on this
+                            always-white surface. */
         border-radius: 8px;
         box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
         z-index: 9999;
@@ -1295,7 +1299,6 @@
                     <option value="dataset-lineage" class="dataset-view" style="display: none;">Semantic model lineage</option>
                 </select>
             </div>
-            <button class="btn btn-secondary" onclick="refreshPage()" type="button">Refresh</button>
         </div>
     </div>
 

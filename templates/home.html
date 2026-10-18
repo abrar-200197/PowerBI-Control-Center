@@ -891,6 +891,7 @@
 {% endif %}
 
 <div class="home-wrap">
+    <div id="alertContainer"></div>
     <!-- KPI cards act as tabs for the detail panel below -->
     <div class="kpi-strip" role="tablist" aria-label="Home metrics">
         <button type="button" class="kpi is-active" role="tab" data-metric="workspaces" aria-selected="true" id="kpi-workspaces" title="Workspaces you can access">
@@ -960,6 +961,10 @@
                     <span class="dot"></span>
                     <span id="catalog-freshness-text">Loading…</span>
                 </span>
+                <button type="button" class="btn btn-secondary" id="homeRefreshBtn"
+                        title="Re-sync all data from SharePoint (reports, lineage, field usage, unused fields)">
+                    Refresh
+                </button>
                 <select class="sort-select" id="sortSelect" aria-label="Sort list">
                     <option value="name">Sort: Name</option>
                     <option value="reports-desc">Sort: Reports high → low</option>
@@ -1336,6 +1341,77 @@
             console.warn('home-summary failed', e);
             return false;
         }
+    }
+
+    async function refreshHomeData() {
+        const btn = document.getElementById('homeRefreshBtn');
+        const originalText = btn ? btn.innerHTML : 'Refresh';
+        try {
+            if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Syncing…'; }
+
+            // 1) Force server to re-download catalog + all thin UI packs
+            //    (field usage, unused fields, impact tables, reports) from SharePoint.
+            let catalogMsg = '';
+            try {
+                const catRes = await fetch('/api/catalog/refresh', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                });
+                const catBody = await catRes.json().catch(() => ({}));
+                if (catRes.ok && catBody.success) {
+                    const ops = catBody.opsEnrichedAt || catBody.generatedAt || '';
+                    catalogMsg = ops
+                        ? `Catalog synced (ops ${new Date(ops).toLocaleString()}). `
+                        : 'Catalog synced from SharePoint. ';
+                } else {
+                    catalogMsg = `Catalog sync skipped (${catBody.error || catRes.status}). `;
+                }
+            } catch (e) {
+                catalogMsg = 'Catalog sync failed; clearing local cache only. ';
+                console.warn('catalog/refresh failed', e);
+            }
+
+            // 2) Clear per-user /api/reports response cache
+            try {
+                const response = await fetch('/api/clear-cache', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                });
+                await response.json().catch(() => ({}));
+            } catch (e) {
+                console.warn('clear-cache failed', e);
+            }
+
+            // 3) Clear sessionStorage caches used by Impact Explorer / other pages
+            //    so they re-fetch fresh data on next visit instead of serving stale
+            //    cached packs.
+            try {
+                Object.keys(sessionStorage)
+                    .filter((k) => k.startsWith('pbi_cc_'))
+                    .forEach((k) => sessionStorage.removeItem(k));
+            } catch (e) { /* ignore */ }
+
+            // 4) Reload this page's own dashboard data
+            detailCache && Object.keys(detailCache).forEach((k) => delete detailCache[k]);
+            await loadDashboard();
+            setActiveMetric(activeMetric, { resetFilters: false });
+
+            showHomeAlert('success', `${catalogMsg}Latest SharePoint data loaded.`);
+        } catch (error) {
+            showHomeAlert('error', 'Error refreshing: ' + error.message);
+        } finally {
+            if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
+        }
+    }
+
+    function showHomeAlert(type, message) {
+        if (typeof showAlert === 'function') {
+            showAlert(type, message);
+            return;
+        }
+        console.log(`[${type}] ${message}`);
     }
 
     async function loadWorkspaces() {
@@ -2026,6 +2102,8 @@
         if (sort) sort.addEventListener('change', () => applyFilterAndSort());
         const clearBtn = document.getElementById('homeClearAllFilters');
         if (clearBtn) clearBtn.addEventListener('click', clearAllHomeFilters);
+        const refreshBtn = document.getElementById('homeRefreshBtn');
+        if (refreshBtn) refreshBtn.addEventListener('click', refreshHomeData);
     });
 </script>
 {% endblock %}
