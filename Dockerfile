@@ -92,8 +92,20 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/health || curl -fsS http://127.0.0.1:8000/ || exit 1
 
 # 15m timeout for long export/lineage work.
-# 2 sync workers (not 4): each accidental full-catalog parse is multi‑hundred MB;
-# 4 workers + warm full catalog caused: Worker was sent SIGKILL! Perhaps out of memory?
-# Override at deploy with: gunicorn --workers ${WEB_CONCURRENCY:-2} ...
-CMD ["gunicorn", "--bind=0.0.0.0:8000", "--timeout", "900", "--workers", "2", "--threads", "4", "--worker-class", "gthread", "--max-requests", "500", "--max-requests-jitter", "50", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
+# Single worker process (not 2+): the OAuth login flow writes the CSRF "state"
+# to a filesystem session file (under /home/data/flask_sessions, an Azure
+# Files-backed network mount), then /getAToken reads it back seconds later.
+# When 2+ separate gunicorn WORKER PROCESSES served /login vs /getAToken, the
+# write from worker A was not always visible yet to worker B over the network
+# mount (eventual-consistency race) -> "Sign-in session lost (OAuth state
+# mismatch)" needing 2-3 retries, and occasional mid-session logout right
+# after a successful sign-in (e.g. clicking Impact Explorer) if that next
+# request landed on the other worker before its session cache caught up.
+# One worker process means every request's session reads/writes go through
+# the SAME process, eliminating the cross-worker race; concurrency is instead
+# provided by threads (shared memory, no filesystem race). This also roughly
+# halves steady-state memory (only one in-memory catalog copy instead of two)
+# vs. the previous 2-worker/4-thread setup. Override at deploy with:
+# gunicorn --workers ${WEB_CONCURRENCY:-1} ...
+CMD ["gunicorn", "--bind=0.0.0.0:8000", "--timeout", "900", "--workers", "1", "--threads", "8", "--worker-class", "gthread", "--max-requests", "500", "--max-requests-jitter", "50", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
 
