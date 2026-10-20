@@ -1331,6 +1331,9 @@ function applyUnusedFilters() {
   });
   state.unusedPage = 1;
   state.unusedGroupPage = {};
+  // Once the search box is cleared, go back to the fully collapsed default
+  // view instead of leaving whatever workspaces the search had auto-expanded.
+  if (!q) state.unusedExpanded.clear();
   sortUnusedFiltered();
   renderUnusedTable();
   const el = $("#unusedIndexMeta");
@@ -1368,31 +1371,51 @@ function renderUnusedTable() {
     $("#unusedResultCount").textContent = `${fmt(total)} unused fields`;
   }
 
-  // Group by workspace
-  const by = {};
-  let order = [];
-  rows.forEach((r) => {
-    const wn = r.workspaceName || "Unknown workspace";
-    if (!by[wn]) { by[wn] = []; order.push(wn); }
-    by[wn].push(r);
-  });
+  // Group by workspace — this is O(n) over all filtered rows, so cache the
+  // result keyed on the `rows` array reference. applyUnusedFilters() always
+  // creates a brand-new filtered array, so the cache is naturally invalidated
+  // whenever the filter/search criteria change, but stays valid across
+  // pagination clicks, expand/collapse toggles, and group-page navigation
+  // (which previously re-did this full grouping/sorting on every click).
+  let by, order;
+  if (state._unusedGroupCacheRows === rows) {
+    by = state._unusedGroupCacheBy;
+    order = state._unusedGroupCacheOrder.slice();
+  } else {
+    by = {};
+    order = [];
+    rows.forEach((r) => {
+      const wn = r.workspaceName || "Unknown workspace";
+      if (!by[wn]) { by[wn] = []; order.push(wn); }
+      by[wn].push(r);
+    });
 
-  // Sort fields within each group by name for stable, readable order
-  order.forEach((wn) => {
-    by[wn].sort((a, b) => String(a.field || "").localeCompare(String(b.field || ""), undefined, { sensitivity: "base" }));
-  });
+    // NOTE: per-group field sort is intentionally deferred (done lazily below,
+    // only for groups that are actually expanded/rendered). Sorting every
+    // group's field list up front — even collapsed ones the user never opens —
+    // is wasted work when there are thousands of workspace groups, and
+    // localeCompare is expensive per comparison.
+    state._unusedGroupCacheRows = rows;
+    state._unusedGroupCacheBy = by;
+    state._unusedGroupCacheOrder = order.slice();
+    state._unusedGroupSorted = new Set();
+  }
 
   // Group order: by field count desc (default) or alphabetical (toggle via "Workspace" header)
+  // (cheap: only sorts the list of workspace names, not the underlying rows)
+  // Using a plain lowercase string comparison instead of localeCompare here —
+  // localeCompare invokes the ICU collator per call and is 10-50x slower,
+  // which is very noticeable once there are hundreds/thousands of workspaces
+  // to order on every keystroke while searching.
   if (state.unusedGroupSortAlpha) {
     const dir = state.unusedSortDir === "asc" ? 1 : -1;
-    order.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }) * dir);
+    order.sort((a, b) => {
+      const al = a.toLowerCase(), bl = b.toLowerCase();
+      return (al < bl ? -1 : al > bl ? 1 : 0) * dir;
+    });
   } else {
     order.sort((a, b) => by[b].length - by[a].length);
   }
-
-  // Auto-expand groups while a search is active so matches are visible
-  const qActive = !!(($("#unusedSearchInput")?.value || "").trim());
-  if (qActive) order.forEach((wn) => state.unusedExpanded.add(wn));
 
   // Drop expansion/page state for workspaces no longer in view
   const visible = new Set(order);
@@ -1406,6 +1429,14 @@ function renderUnusedTable() {
   if (state.unusedPage < 1) state.unusedPage = 1;
   const wsStart = (state.unusedPage - 1) * UNUSED_WS_PAGE_SIZE;
   const pageOrder = order.slice(wsStart, wsStart + UNUSED_WS_PAGE_SIZE);
+
+  // Auto-expand groups while a search is active so matches are visible.
+  // Only expand workspaces on the CURRENT page — expanding every matching
+  // workspace across the whole result set (potentially thousands) was
+  // needlessly inflating the expanded-set bookkeeping and forcing lazy
+  // per-group sorts for groups the user can't even see yet.
+  const qActive = !!(($("#unusedSearchInput")?.value || "").trim());
+  if (qActive) pageOrder.forEach((wn) => state.unusedExpanded.add(wn));
 
   if ($("#unusedPageInfo")) {
     $("#unusedPageInfo").textContent = `Page ${state.unusedPage} of ${wsPages} (${fmt(totalWs)} workspaces)`;
@@ -1448,6 +1479,17 @@ function renderUnusedTable() {
       </td>
     </tr>`;
     if (!isOpen) return;
+
+    // Lazily sort this group's fields by name only once, the first time it's
+    // actually expanded/rendered (not for every collapsed group up front).
+    if (!state._unusedGroupSorted.has(wn)) {
+      list.sort((a, b) => {
+        const al = String(a.field || "").toLowerCase();
+        const bl = String(b.field || "").toLowerCase();
+        return al < bl ? -1 : al > bl ? 1 : 0;
+      });
+      state._unusedGroupSorted.add(wn);
+    }
 
     const groupPages = Math.max(1, Math.ceil(list.length / UNUSED_GROUP_PAGE_SIZE));
     let groupPage = state.unusedGroupPage[wn] || 1;
@@ -3465,8 +3507,17 @@ function wire() {
   ["unusedSearchInput", "unusedTypeFilter"].forEach((id) => {
     const el = $(`#${id}`);
     if (!el) return;
-    const evt = el.tagName === "SELECT" ? "change" : "input";
-    el.addEventListener(evt, applyUnusedFilters);
+    if (el.tagName === "SELECT") {
+      el.addEventListener("change", applyUnusedFilters);
+    } else {
+      // Debounce free-text search: filtering runs over the full (potentially
+      // ~240K row) unused-fields dataset, so re-running it on every keystroke
+      // causes visible typing lag. Wait for a short pause before filtering.
+      el.addEventListener("input", () => {
+        clearTimeout(state._unusedSearchDebounce);
+        state._unusedSearchDebounce = setTimeout(applyUnusedFilters, 220);
+      });
+    }
   });
   $("#clearUnusedFilters")?.addEventListener("click", () => {
     if ($("#unusedSearchInput")) $("#unusedSearchInput").value = "";
