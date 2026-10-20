@@ -392,6 +392,26 @@ a.source-link:hover { color: var(--primary-2); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Collapsible workspace groups (Unused columns & measures tab) */
+.ws-toggle-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn-ws-toggle {
+  height: 28px; padding: 0 10px; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-soft); color: var(--text);
+  cursor: pointer; white-space: nowrap;
+}
+.btn-ws-toggle:hover { filter: brightness(1.08); }
+tr.ws-head td { background: rgba(91,140,255,.08); font-weight: 600; padding: 0; }
+.ws-head-btn {
+  width: 100%; display: flex; align-items: center; gap: 8px; justify-content: space-between;
+  padding: 10px 12px; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 600;
+  cursor: pointer; text-align: left;
+}
+.ws-head-left { display: flex; align-items: center; gap: 8px; }
+.ws-chevron { font-size: 11px; color: var(--muted); }
+.ws-count { color: var(--muted); font-size: 12px; font-weight: 500; }
+tr.ws-row td { background: var(--bg-elev); }
+
 /* Workspaces browser */
 .coverage-banner {
   margin-bottom: 14px;

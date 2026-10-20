@@ -54,7 +54,12 @@ const state = {
   unusedPage: 1,
   unusedLoaded: false,
   unusedIndexMeta: null,
+  unusedExpanded: new Set(),
+  unusedGroupSortAlpha: false, // false = sort workspaces by field count desc (default), true = alphabetical
+  unusedGroupPage: {}, // workspaceName -> current page (within an expanded group)
 };
+const UNUSED_GROUP_PAGE_SIZE = 100;
+const UNUSED_WS_PAGE_SIZE = 20; // workspace groups shown per outer page
 
 const $ = (sel) => document.querySelector(sel);
 const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString());
@@ -1325,6 +1330,7 @@ function applyUnusedFilters() {
     return true;
   });
   state.unusedPage = 1;
+  state.unusedGroupPage = {};
   sortUnusedFiltered();
   renderUnusedTable();
   const el = $("#unusedIndexMeta");
@@ -1354,27 +1360,147 @@ function sortUnusedFiltered() {
 
 function renderUnusedTable() {
   const tb = $("#unusedFieldsTable tbody");
+  const thead = $("#unusedFieldsTable thead");
   if (!tb) return;
-  const total = state.unusedFiltered.length;
-  const pages = Math.max(1, Math.ceil(total / state.pageSize));
-  if (state.unusedPage > pages) state.unusedPage = pages;
-  const start = (state.unusedPage - 1) * state.pageSize;
-  const slice = state.unusedFiltered.slice(start, start + state.pageSize);
+  const rows = state.unusedFiltered;
+  const total = rows.length;
   if ($("#unusedResultCount")) {
-    $("#unusedResultCount").textContent = `${fmt(total)} unused fields · page ${state.unusedPage}/${pages}`;
+    $("#unusedResultCount").textContent = `${fmt(total)} unused fields`;
   }
+
+  // Group by workspace
+  const by = {};
+  let order = [];
+  rows.forEach((r) => {
+    const wn = r.workspaceName || "Unknown workspace";
+    if (!by[wn]) { by[wn] = []; order.push(wn); }
+    by[wn].push(r);
+  });
+
+  // Sort fields within each group by name for stable, readable order
+  order.forEach((wn) => {
+    by[wn].sort((a, b) => String(a.field || "").localeCompare(String(b.field || ""), undefined, { sensitivity: "base" }));
+  });
+
+  // Group order: by field count desc (default) or alphabetical (toggle via "Workspace" header)
+  if (state.unusedGroupSortAlpha) {
+    const dir = state.unusedSortDir === "asc" ? 1 : -1;
+    order.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }) * dir);
+  } else {
+    order.sort((a, b) => by[b].length - by[a].length);
+  }
+
+  // Auto-expand groups while a search is active so matches are visible
+  const qActive = !!(($("#unusedSearchInput")?.value || "").trim());
+  if (qActive) order.forEach((wn) => state.unusedExpanded.add(wn));
+
+  // Drop expansion/page state for workspaces no longer in view
+  const visible = new Set(order);
+  [...state.unusedExpanded].forEach((k) => { if (!visible.has(k)) state.unusedExpanded.delete(k); });
+  Object.keys(state.unusedGroupPage).forEach((k) => { if (!visible.has(k)) delete state.unusedGroupPage[k]; });
+
+  // Outer pagination: only render a page of workspace groups at a time
+  const totalWs = order.length;
+  const wsPages = Math.max(1, Math.ceil(totalWs / UNUSED_WS_PAGE_SIZE));
+  if (state.unusedPage > wsPages) state.unusedPage = wsPages;
+  if (state.unusedPage < 1) state.unusedPage = 1;
+  const wsStart = (state.unusedPage - 1) * UNUSED_WS_PAGE_SIZE;
+  const pageOrder = order.slice(wsStart, wsStart + UNUSED_WS_PAGE_SIZE);
+
   if ($("#unusedPageInfo")) {
-    $("#unusedPageInfo").textContent = `Page ${state.unusedPage} of ${pages}`;
+    $("#unusedPageInfo").textContent = `Page ${state.unusedPage} of ${wsPages} (${fmt(totalWs)} workspaces)`;
   }
-  tb.innerHTML = slice.map((r) =>
-    `<tr>
-      <td>${escapeHtml(r.field || "")}${r.isHidden ? ' <span class="muted small">(hidden)</span>' : ""}</td>
-      <td>${escapeHtml(r.table || "")}</td>
-      <td>${r.type === "measure" ? "Measure" : "Column"}</td>
-      <td>${escapeHtml(r.datasetName || "")}</td>
-      <td>${escapeHtml(r.workspaceName || "")}</td>
-    </tr>`
-  ).join("") || `<tr><td colspan="5" class="muted">No unused fields match filters${state.unusedLoaded ? "" : " (index not built yet)"}.</td></tr>`;
+  if ($("#unusedPrevPage")) $("#unusedPrevPage").disabled = state.unusedPage <= 1;
+  if ($("#unusedNextPage")) $("#unusedNextPage").disabled = state.unusedPage >= wsPages;
+
+  const anyOpen = pageOrder.some((wn) => state.unusedExpanded.has(wn));
+  if (thead) {
+    thead.innerHTML = anyOpen
+      ? `<tr>
+          <th data-usort="field">Field / metric</th>
+          <th data-usort="table">Table</th>
+          <th data-usort="type">Type</th>
+          <th data-usort="datasetName">Dataset</th>
+        </tr>`
+      : `<tr><th style="width:36px"></th><th data-usort="workspaceName">Workspace</th><th style="width:140px">Fields</th></tr>`;
+  }
+
+  if (!total) {
+    tb.innerHTML = `<tr><td colspan="4" class="muted">No unused fields match filters${state.unusedLoaded ? "" : " (index not built yet)"}.</td></tr>`;
+    return;
+  }
+
+  let html = "";
+  pageOrder.forEach((wn) => {
+    const list = by[wn];
+    const isOpen = state.unusedExpanded.has(wn);
+    const chev = isOpen ? "▼" : "▶";
+    const colSpan = anyOpen ? 4 : 3;
+    html += `<tr class="ws-head${isOpen ? " open" : ""}">
+      <td colspan="${colSpan}">
+        <button type="button" class="ws-head-btn" aria-expanded="${isOpen ? "true" : "false"}" data-ugid-toggle="${escapeAttr(wn)}">
+          <span class="ws-head-left">
+            <span class="ws-chevron" aria-hidden="true">${chev}</span>
+            <span>${escapeHtml(wn)}</span>
+          </span>
+          <span class="ws-count">${fmt(list.length)} field${list.length === 1 ? "" : "s"}</span>
+        </button>
+      </td>
+    </tr>`;
+    if (!isOpen) return;
+
+    const groupPages = Math.max(1, Math.ceil(list.length / UNUSED_GROUP_PAGE_SIZE));
+    let groupPage = state.unusedGroupPage[wn] || 1;
+    if (groupPage > groupPages) groupPage = groupPages;
+    state.unusedGroupPage[wn] = groupPage;
+    const start = (groupPage - 1) * UNUSED_GROUP_PAGE_SIZE;
+    const slice = list.slice(start, start + UNUSED_GROUP_PAGE_SIZE);
+
+    slice.forEach((r) => {
+      html += `<tr class="ws-row">
+        <td>${escapeHtml(r.field || "")}${r.isHidden ? ' <span class="muted small">(hidden)</span>' : ""}</td>
+        <td>${escapeHtml(r.table || "")}</td>
+        <td>${r.type === "measure" ? "Measure" : "Column"}</td>
+        <td>${escapeHtml(r.datasetName || "")}</td>
+      </tr>`;
+    });
+
+    if (groupPages > 1) {
+      html += `<tr class="ws-row ws-group-pager">
+        <td colspan="${colSpan}">
+          <div class="pager" style="justify-content:flex-start">
+            <button type="button" class="btn ghost sm" data-ugid-prev="${escapeAttr(wn)}" ${groupPage <= 1 ? "disabled" : ""}>Previous</button>
+            <span class="muted small">Page ${groupPage} of ${groupPages} (${fmt(list.length)} fields)</span>
+            <button type="button" class="btn ghost sm" data-ugid-next="${escapeAttr(wn)}" ${groupPage >= groupPages ? "disabled" : ""}>Next</button>
+          </div>
+        </td>
+      </tr>`;
+    }
+  });
+  tb.innerHTML = html;
+
+  tb.querySelectorAll("[data-ugid-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const wn = btn.getAttribute("data-ugid-toggle");
+      if (state.unusedExpanded.has(wn)) state.unusedExpanded.delete(wn);
+      else state.unusedExpanded.add(wn);
+      renderUnusedTable();
+    });
+  });
+  tb.querySelectorAll("[data-ugid-prev]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const wn = btn.getAttribute("data-ugid-prev");
+      state.unusedGroupPage[wn] = Math.max(1, (state.unusedGroupPage[wn] || 1) - 1);
+      renderUnusedTable();
+    });
+  });
+  tb.querySelectorAll("[data-ugid-next]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const wn = btn.getAttribute("data-ugid-next");
+      state.unusedGroupPage[wn] = (state.unusedGroupPage[wn] || 1) + 1;
+      renderUnusedTable();
+    });
+  });
 }
 
 function closeReportDrawer() {
@@ -3167,6 +3293,7 @@ function setView(name, opts) {
       });
   }
   if (name === "unused") {
+    if (!state.unusedLoaded) showTableLoadingRow("#unusedFieldsTable tbody", 5, "Loading unused columns & measures…");
     ensureUnusedRows(false)
       .then(() => applyUnusedFilters())
       .catch((e) => {
@@ -3177,6 +3304,7 @@ function setView(name, opts) {
       });
   }
   if (name === "fields") {
+    if (!state.fieldsLoaded) showTableLoadingRow("#fieldUsageTable tbody", 6, "Loading field usage…");
     ensureFieldRows(false)
       .then(() => applyFieldFilters())
       .catch((e) => {
@@ -3351,6 +3479,19 @@ function wire() {
     const th = e.target.closest("th[data-usort]");
     if (!th) return;
     const key = th.dataset.usort;
+    if (key === "workspaceName") {
+      // Toggle workspace GROUP ordering: field-count desc (default) <-> alphabetical asc/desc
+      if (!state.unusedGroupSortAlpha) {
+        state.unusedGroupSortAlpha = true;
+        state.unusedSortDir = "asc";
+      } else if (state.unusedSortDir === "asc") {
+        state.unusedSortDir = "desc";
+      } else {
+        state.unusedGroupSortAlpha = false;
+      }
+      renderUnusedTable();
+      return;
+    }
     if (state.unusedSortKey === key) {
       state.unusedSortDir = state.unusedSortDir === "asc" ? "desc" : "asc";
     } else {
@@ -3490,14 +3631,25 @@ function forceFullRefresh() {
   try { sessionStorage.removeItem(UNUSED_CACHE_KEY); } catch (_) { /* ignore */ }
   state.fieldsLoaded = false;
   state.unusedLoaded = false;
+  const activeTab = document.querySelector(".nav-item.active")?.dataset.view;
+  if (activeTab === "fields") showTableLoadingRow("#fieldUsageTable tbody", 6, "Loading field usage…");
+  if (activeTab === "unused") showTableLoadingRow("#unusedFieldsTable tbody", 5, "Loading unused columns & measures…");
   return loadData(true).then(() => {
-    const activeTab = document.querySelector(".nav-item.active")?.dataset.view;
     if (activeTab === "fields") {
       ensureFieldRows(true).then(applyFieldFilters).catch(() => {});
     } else if (activeTab === "unused") {
       ensureUnusedRows(true).then(applyUnusedFilters).catch(() => {});
     }
   });
+}
+
+/** Shows a centered spinner row inside a table body while its data pack loads. */
+function showTableLoadingRow(tbodySelector, colspan, label) {
+  const tb = $(tbodySelector);
+  if (!tb) return;
+  tb.innerHTML = `<tr><td colspan="${colspan}" class="muted" style="text-align:center;padding:40px 16px">
+    <div class="spinner" style="margin:0 auto 12px"></div>${escapeHtml(label || "Loading…")}
+  </td></tr>`;
 }
 
 /** Sync theme from Control Center host (or localStorage). */

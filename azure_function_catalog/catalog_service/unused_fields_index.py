@@ -17,9 +17,16 @@ Inputs (both already produced by the existing pipeline — no new API calls):
 
 Exclusion rules (a field is NOT flagged unused if any apply):
   1. Bound to a visual in >=1 report (field_usage_index "fields" map).
-  2. Column: referenced inside any DAX measure expression or M/Power-Query
-     expression in its own table (already computed at normalize time as
-     column.usedIn containing "DAX Measure" / "M Expression").
+  2. Column: referenced as `TableName[ColumnName]` (quoted or unquoted table
+     name) inside ANY measure's or calculated column's DAX expression,
+     ANYWHERE in the dataset — not just within its own table. (Bug fixed
+     2026-10: previously this only trusted the per-column `usedIn` tag,
+     which is only populated for same-table references; a column used only
+     by a measure/calculated-column defined in a *different* table was
+     incorrectly flagged "unused" and unsafe to delete.)
+  2b. Column: tagged with "M Expression" in its own `usedIn` (Power Query M
+     expressions aren't DAX text and aren't scanned above, so this tag is
+     still the only signal available for M-level usage).
   3. Column: used as a relationship key (fromColumn/toColumn) anywhere in
      its dataset's relationships[].
   4. Measure: referenced by name inside another measure's DAX expression,
@@ -103,7 +110,25 @@ def build_unused_fields_index(catalog: Dict[str, Any], field_usage_index: Dict[s
                 if _used_by_reports(key):
                     excluded_via_reports += 1
                     continue
-                if any(u in ("DAX Measure", "M Expression") for u in used_in):
+                # M/Power-Query usage isn't DAX text, so it can't be found by
+                # the tenant-wide scan below — the normalize-time tag is the
+                # only signal for it.
+                if any(u == "M Expression" for u in used_in):
+                    excluded_via_dax += 1
+                    continue
+                # Tenant-wide DAX reference scan: does ANY measure or
+                # calculated-column expression in this dataset (own table OR
+                # any other table) reference `TableName[ColumnName]`? This
+                # mirrors the measure check below and fixes the cross-table
+                # blind spot the old same-table-only `usedIn` tag had.
+                needle_plain = f"{table_name}[{col_name}]".lower()
+                needle_quoted = f"'{table_name}'[{col_name}]".lower()
+                referenced_in_dax = any(
+                    (needle_plain in expr_text or needle_quoted in expr_text)
+                    for owner_table, owner_name, expr_text in all_expressions
+                    if not (owner_table == table_name and owner_name == col_name)
+                )
+                if referenced_in_dax:
                     excluded_via_dax += 1
                     continue
                 if key in rel_keys:
