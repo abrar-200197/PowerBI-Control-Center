@@ -532,6 +532,28 @@ class VisualMetadataExtractor:
                                             })
                                             field_names_seen.add(column_name)
 
+                                # Extract HierarchyLevel fields (e.g. a column dragged in
+                                # via a Date hierarchy or a custom hierarchy level, such
+                                # as "item_number" under an "Item" hierarchy). Without
+                                # this, such columns are silently skipped even though
+                                # they're genuinely used in the visual.
+                                elif 'HierarchyLevel' in field_info:
+                                    hl = field_info['HierarchyLevel']
+                                    hierarchy_expr = hl.get('Expression', {}).get('Hierarchy', {})
+                                    source_ref = hierarchy_expr.get('Expression', {}).get('SourceRef', {})
+                                    table_name = source_ref.get('Entity', '')
+                                    column_name = hl.get('Level', '')
+
+                                    if column_name and column_name not in field_names_seen:
+                                        fields.append({
+                                            'name': column_name,
+                                            'displayName': native_ref or column_name,
+                                            'table': table_name,
+                                            'type': 'Column',
+                                            'role': role_name
+                                        })
+                                        field_names_seen.add(column_name)
+
                     # ============================================================
                     # METHOD 2: Extract from legacy "projections" format
                     # For older PBIR-Legacy format
@@ -1466,8 +1488,19 @@ class VisualMetadataExtractor:
                                                                         fieldName = field.measure || '';
                                                                         tableName = field.table || '';
                                                                         fieldType = 'Measure';
+                                                                    }} else if (field.$schema && field.$schema.includes('#hierarchyLevel')) {{
+                                                                        // Hierarchy LEVEL (e.g. a column dragged in via a hierarchy,
+                                                                        // like a Date hierarchy's Year/Month, or a custom hierarchy
+                                                                        // level). The actual column/level name is in
+                                                                        // `hierarchyLevel`, NOT `hierarchy` (which is just the
+                                                                        // container hierarchy's name) — using the wrong one here
+                                                                        // caused real columns used only via a hierarchy level to
+                                                                        // be missed entirely (reported as unused).
+                                                                        fieldName = field.hierarchyLevel || field.hierarchy || '';
+                                                                        tableName = field.table || '';
+                                                                        fieldType = 'Column';
                                                                     }} else if (field.$schema && field.$schema.includes('#hierarchy')) {{
-                                                                        // Hierarchy
+                                                                        // Whole hierarchy reference (rare in data wells)
                                                                         fieldName = field.hierarchy || '';
                                                                         tableName = field.table || '';
                                                                         fieldType = 'Hierarchy';
