@@ -134,6 +134,35 @@ def _is_refresh_failed(report: Dict[str, Any], ds: Optional[Dict[str, Any]] = No
     return status in ("failed", "failure") or status.startswith("fail")
 
 
+def _is_refresh_completed(report: Dict[str, Any], ds: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    True only when last refresh status indicates a successful completion
+    (e.g. Completed / Success / Succeeded). Excludes Failed, Error,
+    Unverified, No History, Access Denied, Not Refreshable, etc.
+    """
+    ds = ds or {}
+    status = str(
+        report.get("last_refresh_status")
+        or ds.get("last_refresh_status")
+        or ""
+    ).strip().lower()
+    return status in ("completed", "success", "succeeded")
+
+
+def _long_running_duration(report: Dict[str, Any], ds: Dict[str, Any]) -> Optional[float]:
+    """Dataset-level refresh duration (seconds), preferring report-level value."""
+    dur = report.get("refresh_duration_seconds")
+    if dur is None:
+        dur = ds.get("refresh_duration_seconds")
+    if dur is None:
+        return None
+    try:
+        dur = float(dur)
+    except Exception:
+        return None
+    return dur if dur >= 0 else None
+
+
 def _detail_row(
     r: Dict[str, Any],
     wid: str,
@@ -167,6 +196,7 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
     orphaned_rows: List[Dict[str, Any]] = []
     zero_views_rows: List[Dict[str, Any]] = []
     failed_refresh_rows: List[Dict[str, Any]] = []
+    long_running_by_dataset: Dict[str, Dict[str, Any]] = {}
     total_r = total_i = total_o = total_a = total_zv = total_fr = 0
     for ws in catalog.get("workspaces") or []:
         wid = ws.get("id")
@@ -208,6 +238,19 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
                     "refreshStatus": r.get("last_refresh_status") or ds.get("last_refresh_status") or "Failed",
                     "refreshNote": r.get("refresh_note") or ds.get("refresh_note") or "",
                 }))
+            ds_id = r.get("datasetId") or ""
+            if ds_id and not _is_live(r, ds) and _is_refresh_completed(r, ds):
+                dur = _long_running_duration(r, ds)
+                if dur is not None:
+                    existing = long_running_by_dataset.get(ds_id)
+                    if existing is None or dur > (existing.get("durationSeconds") or 0):
+                        long_running_by_dataset[ds_id] = _detail_row(r, wid, wname, {
+                            "durationSeconds": dur,
+                            "lastRefreshed": r.get("last_refreshed") or ds.get("last_refreshed"),
+                            "refreshStartTime": r.get("refresh_start_time") or ds.get("refresh_start_time"),
+                            "refreshEndTime": r.get("refresh_end_time") or ds.get("refresh_end_time"),
+                            "refreshStatus": r.get("last_refresh_status") or ds.get("last_refresh_status"),
+                        })
         ac = max(0, rc - ic)
         total_r += rc
         total_i += ic
@@ -244,6 +287,20 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
         rows.sort(key=key)
         return rows
 
+    # Cap at top 100 *per workspace* (not top 100 overall) so the Home UI can
+    # offer a workspace filter: "no workspace selected" shows the combined
+    # top 100 (which can never draw more than 100 rows from any one
+    # workspace anyway), while "workspace selected" shows that workspace's
+    # own top 100 — both cases are satisfied by this same flattened list.
+    _long_running_by_ws: Dict[str, List[Dict[str, Any]]] = {}
+    for row in long_running_by_dataset.values():
+        _long_running_by_ws.setdefault(row.get("workspaceId") or "", []).append(row)
+    long_running_rows: List[Dict[str, Any]] = []
+    for _ws_rows in _long_running_by_ws.values():
+        _ws_rows.sort(key=lambda r: -(r.get("durationSeconds") or 0))
+        long_running_rows.extend(_ws_rows[:100])
+    long_running_rows.sort(key=lambda r: -(r.get("durationSeconds") or 0))
+
     return {
         "generatedAt": catalog.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
         "opsEnrichedAt": catalog.get("opsEnrichedAt"),
@@ -264,6 +321,7 @@ def build_ui_home_index(catalog: Dict[str, Any], inactive_days: int = 30) -> Dic
             "orphaned": _sort_ws_name(orphaned_rows),
             "zero_views": _sort_ws_name(zero_views_rows),
             "failed_refresh": _sort_ws_name(failed_refresh_rows),
+            "long_running": long_running_rows,
         },
     }
 

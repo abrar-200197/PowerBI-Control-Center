@@ -557,15 +557,18 @@ class CatalogService:
         the full ~300MB catalog on each tab click (App Service timeout → HTML).
 
         metric:
-          workspaces | reports | inactive | orphaned | zero_views | failed_refresh
+          workspaces | reports | inactive | orphaned | zero_views | failed_refresh | long_running
         """
         metric = (metric or "workspaces").strip().lower().replace("-", "_")
         if metric in ("zeroviews", "zero_view", "views"):
             metric = "zero_views"
         if metric in ("failed", "refresh_failed", "failedrefresh", "refresh_fail"):
             metric = "failed_refresh"
+        if metric in ("longrunning", "long_running_reports", "long_run"):
+            metric = "long_running"
         if metric not in (
             "workspaces", "reports", "inactive", "orphaned", "zero_views", "failed_refresh",
+            "long_running",
         ):
             return {
                 "success": False,
@@ -619,7 +622,7 @@ class CatalogService:
             )
 
         # Thin pack missing/older (no detailLists or missing this metric) — rebuild once
-        if thin is not None or metric in ("failed_refresh", "zero_views"):
+        if thin is not None or metric in ("failed_refresh", "zero_views", "long_running"):
             try:
                 cat = self.get_workspace_catalog()
                 if cat:
@@ -634,9 +637,30 @@ class CatalogService:
                 logger.warning("home details thin rebuild failed: %s", exc)
 
         # Last resort: scan full catalog (slow; may timeout on cold App Service)
-        return self._home_details_from_full_catalog(
+        full = self._home_details_from_full_catalog(
             metric, allowed_workspace_ids, inactive_days, limit, USAGE_LOOKBACK_DAYS
         )
+        if full is not None:
+            return full
+
+        # Full catalog unavailable (thin-only fast path) and thin pack predates
+        # this metric — degrade to an empty-but-successful result instead of a
+        # hard error, so the UI shows "no rows" rather than "failed to load".
+        if thin is not None:
+            return {
+                "success": True,
+                "metric": metric,
+                "count": 0,
+                "capped": False,
+                "limit": max(1, int(limit)),
+                "rows": [],
+                "inactiveDaysThreshold": int(thin.get("inactiveDaysThreshold") or inactive_days),
+                "usageLookbackDays": int(thin.get("usageLookbackDays") or USAGE_LOOKBACK_DAYS or 60),
+                "opsEnrichedAt": thin.get("opsEnrichedAt"),
+                "generatedAt": thin.get("generatedAt"),
+                "source": "ui_home_index_stale",
+            }
+        return None
 
     def _home_details_from_thin(
         self,
@@ -736,6 +760,60 @@ class CatalogService:
         rows: List[Dict[str, Any]] = []
         capped = False
         lim = max(1, int(limit))
+
+        if metric == "long_running":
+            from catalog_service.thin_packs import (
+                _is_live,
+                _long_running_duration,
+                is_excluded_report_name,
+            )
+            by_dataset: Dict[str, Dict[str, Any]] = {}
+            for ws in cat.get("workspaces") or []:
+                wid = ws.get("id")
+                if not wid:
+                    continue
+                if allowed_workspace_ids is not None and wid not in allowed_workspace_ids:
+                    continue
+                wname = ws.get("name") or ""
+                for r in ws.get("reports") or []:
+                    if is_excluded_report_name(r.get("name")):
+                        continue
+                    ds_id = r.get("datasetId") or ""
+                    if not ds_id:
+                        continue
+                    ds = datasets_map.get(ds_id) or {}
+                    if _is_live(r, ds):
+                        continue
+                    dur = _long_running_duration(r, ds)
+                    if dur is None:
+                        continue
+                    existing = by_dataset.get(ds_id)
+                    if existing is None or dur > (existing.get("durationSeconds") or 0):
+                        by_dataset[ds_id] = {
+                            "reportId": r.get("id"),
+                            "reportName": r.get("name") or "",
+                            "workspaceId": wid,
+                            "workspaceName": wname,
+                            "datasetId": ds_id,
+                            "durationSeconds": dur,
+                            "lastRefreshed": r.get("last_refreshed") or ds.get("last_refreshed"),
+                            "refreshStartTime": r.get("refresh_start_time") or ds.get("refresh_start_time"),
+                            "refreshEndTime": r.get("refresh_end_time") or ds.get("refresh_end_time"),
+                        }
+            rows = sorted(by_dataset.values(), key=lambda r: -(r.get("durationSeconds") or 0))[:lim]
+            return {
+                "success": True,
+                "metric": metric,
+                "count": len(rows),
+                "capped": len(by_dataset) > lim,
+                "limit": lim,
+                "rows": rows,
+                "inactiveDaysThreshold": inactive_days,
+                "usageLookbackDays": int(usage_lookback_days or 60),
+                "opsEnrichedAt": cat.get("opsEnrichedAt"),
+                "generatedAt": cat.get("generatedAt"),
+                "source": "catalog",
+            }
 
         for ws in cat.get("workspaces") or []:
             wid = ws.get("id")

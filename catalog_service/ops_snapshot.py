@@ -992,6 +992,9 @@ def enrich_workspace_catalog(
             ds["days_since_refresh"] = _days_since(info.get("last_refreshed"), as_of)
             ds["is_refreshable"] = info.get("is_refreshable")
             ds["dataset_owner"] = info.get("dataset_owner")
+            ds["refresh_start_time"] = info.get("refresh_start_time")
+            ds["refresh_end_time"] = info.get("refresh_end_time")
+            ds["refresh_duration_seconds"] = info.get("refresh_duration_seconds")
 
     # Enrich reports under each workspace
     for ws in catalog.get("workspaces") or []:
@@ -1009,6 +1012,9 @@ def enrich_workspace_catalog(
             r["days_since_refresh"] = _days_since(info.get("last_refreshed"), as_of)
             r["dataset_owner"] = info.get("dataset_owner")
             r["dataset_workspace_id"] = info.get("dataset_workspace_id")
+            r["refresh_start_time"] = info.get("refresh_start_time")
+            r["refresh_end_time"] = info.get("refresh_end_time")
+            r["refresh_duration_seconds"] = info.get("refresh_duration_seconds")
             if ds_id and ds_id in datasets:
                 r["datasetName"] = r.get("datasetName") or datasets[ds_id].get("name")
                 if not r.get("dataset_workspace_id"):

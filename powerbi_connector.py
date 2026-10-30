@@ -349,6 +349,12 @@ def _empty_refresh_info(**overrides):
         'refresh_source': None,
         # Scheduled history type from API when present (Scheduled/OnDemand/ViaApi/...)
         'history_refresh_type': None,
+        # Raw start/end of the picked history entry + computed duration (seconds).
+        # Only populated for TRUE history sources (scheduled/ondemand/viaapi/admin);
+        # content-modified fallbacks never have a duration.
+        'refresh_start_time': None,
+        'refresh_end_time': None,
+        'refresh_duration_seconds': None,
     }
     info.update(overrides)
     return info
@@ -418,6 +424,9 @@ def pick_best_refresh_from_history(refreshes):
         'source_index': None,
         'refresh_source': None,
         'history_refresh_type': None,
+        'refresh_start_time': None,
+        'refresh_end_time': None,
+        'refresh_duration_seconds': None,
     }
     if not refreshes:
         return empty
@@ -429,6 +438,18 @@ def pick_best_refresh_from_history(refreshes):
     latest_status = _normalize_refresh_status(latest_status_raw)
     latest_type = latest.get('refreshType') or latest.get('type')
 
+    def _duration_seconds(entry):
+        """Compute completed-refresh duration from startTime/endTime, if both present."""
+        start = (entry or {}).get('startTime')
+        end = (entry or {}).get('endTime')
+        if not start or not end:
+            return None
+        sd = parse_refresh_timestamp(start)
+        ed = parse_refresh_timestamp(end)
+        if not sd or not ed or ed < sd:
+            return None
+        return (ed - sd).total_seconds()
+
     def _pack(entry, idx, status, note, ts_key='endTime'):
         src = _history_refresh_source_label(entry)
         return {
@@ -438,6 +459,9 @@ def pick_best_refresh_from_history(refreshes):
             'source_index': idx,
             'refresh_source': src,
             'history_refresh_type': (entry or {}).get('refreshType') or (entry or {}).get('type'),
+            'refresh_start_time': (entry or {}).get('startTime'),
+            'refresh_end_time': (entry or {}).get('endTime'),
+            'refresh_duration_seconds': _duration_seconds(entry),
         }
 
     # Ideal case: newest entry already finished
@@ -491,6 +515,9 @@ def pick_best_refresh_from_history(refreshes):
         'source_index': 0,
         'refresh_source': _history_refresh_source_label(latest),
         'history_refresh_type': latest_type,
+        'refresh_start_time': None,
+        'refresh_end_time': None,
+        'refresh_duration_seconds': None,
     }
 
 
@@ -708,6 +735,11 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
             base['refresh_source'] = best.get('refresh_source')
         if best.get('history_refresh_type'):
             base['history_refresh_type'] = best.get('history_refresh_type')
+        # Duration only travels with the winning TRUE-history source — never
+        # inherited from a content fallback (those have no start/end times).
+        base['refresh_start_time'] = best.get('refresh_start_time')
+        base['refresh_end_time'] = best.get('refresh_end_time')
+        base['refresh_duration_seconds'] = best.get('refresh_duration_seconds')
 
         note_bits = []
         if best.get('refresh_note'):
@@ -799,6 +831,9 @@ def refresh_info_from_admin_last_refresh(last_refresh, *, dataset_workspace_id=N
         history_refresh_type=picked.get('history_refresh_type') or last_refresh.get('refreshType'),
         refresh_note=picked.get('refresh_note') or 'From admin refreshables lastRefresh',
         dataset_workspace_id=dataset_workspace_id,
+        refresh_start_time=picked.get('refresh_start_time'),
+        refresh_end_time=picked.get('refresh_end_time'),
+        refresh_duration_seconds=picked.get('refresh_duration_seconds'),
     )
 
 
@@ -1038,6 +1073,9 @@ def resolve_dataset_refresh_info(
                 'refresh_note': picked.get('refresh_note'),
                 'refresh_source': picked.get('refresh_source') or 'scheduled',
                 'history_refresh_type': picked.get('history_refresh_type'),
+                'refresh_start_time': picked.get('refresh_start_time'),
+                'refresh_end_time': picked.get('refresh_end_time'),
+                'refresh_duration_seconds': picked.get('refresh_duration_seconds'),
             }
             if picked.get('last_refreshed'):
                 print(

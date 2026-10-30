@@ -258,7 +258,7 @@
     /* KPI strip — fluid grid; never squeeze 6 tiny cards on laptop */
     .kpi-strip {
         display: grid;
-        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-columns: repeat(7, minmax(0, 1fr));
         gap: 12px;
         width: 100%;
     }
@@ -379,6 +379,14 @@
         /* x-circle */
         -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M15 9l-6 6M9 9l6 6'/%3E%3C/svg%3E");
         mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M15 9l-6 6M9 9l6 6'/%3E%3C/svg%3E");
+    }
+    .kpi-icon.lr {
+        background: #EBF8FF; color: #2C5282;
+    }
+    .kpi-icon.lr::before {
+        /* refresh-cw */
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='23 4 23 10 17 10'/%3E%3Cpolyline points='1 20 1 14 7 14'/%3E%3Cpath d='M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15'/%3E%3C/svg%3E");
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='23 4 23 10 17 10'/%3E%3Cpolyline points='1 20 1 14 7 14'/%3E%3Cpath d='M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15'/%3E%3C/svg%3E");
     }
 
     .kpi-body {
@@ -650,6 +658,7 @@
     html[data-theme="dark"] .kpi-icon.in { background: #3d2e12; color: #f6ad55; }
     html[data-theme="dark"] .kpi-icon.or { background: #2a1f4a; color: #b794f4; }
     html[data-theme="dark"] .kpi-icon.zv { background: #1a3a3a; color: #4fd1c5; }
+    html[data-theme="dark"] .kpi-icon.lr { background: #0c2a43; color: #63b3ed; }
     html[data-theme="dark"] .home-filter-reset button {
         background: #0c2a43; color: #90cdf4; border-color: #2b6cb0;
     }
@@ -732,6 +741,7 @@
     html[data-theme="dark"] .kpi-icon.in { background: #3D2E1C; color: #F6AD55; }
     html[data-theme="dark"] .kpi-icon.or { background: #2D1F45; color: #D6BCFA; }
     html[data-theme="dark"] .kpi-icon.zv { background: #234E52; color: #81E6D9; }
+    html[data-theme="dark"] .kpi-icon.lr { background: #1E3A5F; color: #90CDF4; }
     html[data-theme="dark"] .kpi-value .spinner,
     html[data-theme="dark"] .loading-spinner {
         border-color: var(--border);
@@ -820,7 +830,7 @@
 
     /* Wide desktop: 6 across */
     @media (min-width: 1400px) {
-        .kpi-strip { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; }
+        .kpi-strip { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 14px; }
         .kpi { padding: 16px 16px 14px; min-height: 92px; }
         .kpi-hint { font-size: 12px; -webkit-line-clamp: 2; line-clamp: 2; }
     }
@@ -940,6 +950,13 @@
                 <div class="kpi-label">Refresh failed</div>
                 <div class="kpi-value" id="failed-refresh-reports"><span class="spinner"></span></div>
                 <div class="kpi-hint">Last refresh failed</div>
+            </div>
+        </button>
+        <button type="button" class="kpi" role="tab" data-metric="long_running" aria-selected="false" id="kpi-long-running" title="Top 100 longest refresh durations">
+            <div class="kpi-icon lr" aria-hidden="true"></div>
+            <div class="kpi-body">
+                <div class="kpi-label">Long running reports</div>
+                <div class="kpi-hint">Top 100 by refresh duration</div>
             </div>
         </button>
     </div>
@@ -1084,7 +1101,27 @@
                 { v: 'name', t: 'Sort: Report name' },
             ],
         },
+        long_running: {
+            title: 'Long running reports (top 100)',
+            searchPh: 'Filter long-running reports…',
+            empty: 'No long-running reports found',
+            sorts: [
+                { v: 'duration-desc', t: 'Sort: Duration high → low' },
+                { v: 'name', t: 'Sort: Report name' },
+                { v: 'workspace', t: 'Sort: Workspace' },
+            ],
+        },
     };
+
+    function formatDurationHm(seconds) {
+        const s = Number(seconds);
+        if (!Number.isFinite(s) || s < 0) return '—';
+        const totalMin = Math.round(s / 60);
+        const h = Math.floor(totalMin / 60);
+        const m = totalMin % 60;
+        if (h <= 0) return `${m}m`;
+        return `${h}h ${m}m`;
+    }
 
     function setZeroViewsHint(days) {
         const el = document.getElementById('zero-views-hint');
@@ -1478,6 +1515,12 @@
         const q = (document.getElementById('workspaceSearch')?.value || '').trim().toLowerCase();
         const sort = document.getElementById('sortSelect')?.value || defaultSortForMetric(metric);
         let list = pack.rows.slice();
+        if (metric === 'long_running') {
+            // Baseline is always "top 100 by duration" combined across all
+            // workspaces — search/sort below then refine within that set.
+            list.sort((a, b) => (Number(b.durationSeconds) || 0) - (Number(a.durationSeconds) || 0));
+            list = list.slice(0, 100);
+        }
         if (q) {
             list = list.filter((r) =>
                 (r.reportName || '').toLowerCase().includes(q) ||
@@ -1494,6 +1537,13 @@
             if (sort === 'days-desc') {
                 const da = Number(a.daysSinceRefresh);
                 const db = Number(b.daysSinceRefresh);
+                const na = Number.isFinite(da) ? da : -1;
+                const nb = Number.isFinite(db) ? db : -1;
+                return nb - na || (a.reportName || '').localeCompare(b.reportName || '');
+            }
+            if (sort === 'duration-desc') {
+                const da = Number(a.durationSeconds);
+                const db = Number(b.durationSeconds);
                 const na = Number.isFinite(da) ? da : -1;
                 const nb = Number.isFinite(db) ? db : -1;
                 return nb - na || (a.reportName || '').localeCompare(b.reportName || '');
@@ -1571,6 +1621,15 @@
             </tr>`;
             return;
         }
+        if (metric === 'long_running') {
+            head.innerHTML = `<tr>
+                <th>Report</th>
+                <th>Workspace</th>
+                <th class="col-num">Duration</th>
+                <th class="col-action"></th>
+            </tr>`;
+            return;
+        }
         head.innerHTML = `<tr>
             <th>Report</th>
             <th>Workspace</th>
@@ -1604,10 +1663,17 @@
         }
         const list = getFilteredSortedDetailRows(metric);
         renderReportDetailTable(metric, list, pack);
-        const total = pack.count != null ? pack.count : (pack.rows || []).length;
-        const shown = list.length;
-        let label = shown === total ? `${total} report${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
-        if (pack.capped) label += ' (capped)';
+        let total = pack.count != null ? pack.count : (pack.rows || []).length;
+        let label;
+        if (metric === 'long_running') {
+            total = Math.min((pack.rows || []).length, 100);
+            const shown = list.length;
+            label = shown === total ? `${total} report${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
+        } else {
+            const shown = list.length;
+            label = shown === total ? `${total} report${total === 1 ? '' : 's'}` : `${shown} of ${total}`;
+            if (pack.capped) label += ' (capped)';
+        }
         document.getElementById('workspace-count-label').textContent = label;
         updateHomeFilterReset();
     }
@@ -1932,7 +1998,7 @@
         const tbody = document.getElementById('workspace-list');
         if (!tbody) return;
         const emptyMsg = METRIC_META[metric]?.empty || 'No rows match your filter';
-        const colSpan = (metric === 'inactive' || metric === 'failed_refresh') ? 4 : 3;
+        const colSpan = (metric === 'inactive' || metric === 'failed_refresh' || metric === 'long_running') ? 4 : 3;
         if (!list || list.length === 0) {
             tbody.innerHTML = `<tr><td colspan="${colSpan}" class="empty-state">
                 <div class="empty-state-icon"></div>
@@ -1984,6 +2050,20 @@
                     </td>
                     <td><div class="ws-name" style="font-weight:500">${escapeHtml(wname)}</div></td>
                     <td><span class="pill pill-failed">${escapeHtml(String(status))}</span></td>
+                    <td class="col-action"><a class="open-link" href="${escapeHtml(href)}">Open</a></td>
+                </tr>`;
+            }
+            if (metric === 'long_running') {
+                const durLabel = formatDurationHm(row.durationSeconds);
+                const lr = row.lastRefreshed
+                    ? (() => { try { return new Date(row.lastRefreshed).toLocaleString(); } catch (e) { return String(row.lastRefreshed); } })()
+                    : '';
+                return `<tr data-href="${escapeHtml(href)}" title="${escapeHtml(rname)}">
+                    <td><div class="ws-name">${escapeHtml(rname)}</div>
+                        ${lr ? `<div class="ws-id">Last refresh: ${escapeHtml(lr)}</div>` : ''}
+                    </td>
+                    <td><div class="ws-name" style="font-weight:500">${escapeHtml(wname)}</div></td>
+                    <td class="col-num"><span class="pill pill-inactive">${escapeHtml(durLabel)}</span></td>
                     <td class="col-action"><a class="open-link" href="${escapeHtml(href)}">Open</a></td>
                 </tr>`;
             }

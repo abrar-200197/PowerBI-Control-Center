@@ -817,7 +817,7 @@ def api_home_summary():
 def api_home_summary_details():
     """
     Row lists for Home KPI tabs.
-    ?metric=workspaces|reports|inactive|orphaned|zero_views
+    ?metric=workspaces|reports|inactive|orphaned|zero_views|failed_refresh|long_running
     """
     catalog_service = _get_catalog_service()
     try:
