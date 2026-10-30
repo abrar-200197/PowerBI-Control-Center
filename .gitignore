@@ -33,6 +33,7 @@ logs/
 # Local tooling junk
 temp_*/
 _*.py
+!__init__.py
 _*.txt
 *.mmd
 doc_index.json
