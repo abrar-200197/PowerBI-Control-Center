@@ -935,6 +935,11 @@ app.register_blueprint(similarity_bp)
 from routes.catalog import catalog_bp, _user_allowed_workspace_ids  # noqa: E402
 app.register_blueprint(catalog_bp)
 
+# Report Differences blueprint — compares two uploaded PBIP project zips.
+# Standalone ad-hoc utility; does not depend on the catalog service.
+from routes.report_diff import report_diff_bp  # noqa: E402
+app.register_blueprint(report_diff_bp)
+
 
 def get_user_fabric_token():
     """

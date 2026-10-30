@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+
+{% block title %}Report Differences - Power BI Control Center{% endblock %}
+{% block page_heading %}Report Differences{% endblock %}
+{% block page_subtitle %}Compare two PBIP Files{% endblock %}
+
+{% block extra_css %}
+<style>
+    .page-shell { display:flex; flex-direction:column; gap:16px; }
+    .upload-card {
+        background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px;
+        padding: 20px; box-shadow: var(--shadow-sm); color: var(--text);
+    }
+    .upload-grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+    .upload-slot { border: 2px dashed var(--border); border-radius: 8px; padding: 16px; text-align:center; }
+    .upload-slot label { display:block; font-weight:600; margin-bottom:8px; }
+    .upload-slot input[type=file] {
+        position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+        overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
+    }
+    .file-upload-btn {
+        display:inline-block; padding:8px 16px; border:1px solid var(--border);
+        border-radius:6px; cursor:pointer; background: var(--bg-surface); color: var(--text); font-size:13px;
+    }
+    .upload-slot .file-name { margin-top:8px; font-size:12px; color: var(--text-muted, #666); word-break: break-all; }
+    .compare-actions { margin-top:16px; display:flex; flex-direction:column; align-items:center; gap:12px; }
+    .status-msg { font-size:13px; }
+    .status-msg.error { color:#991B1B; }
+    .status-msg.ok { color:#166534; }
+
+    .tabs { display:flex; gap:4px; border-bottom: 1px solid var(--border); margin-top: 12px; }
+    .tab-btn {
+        padding:8px 16px; cursor:pointer; border:none; background:none; font-size:13px;
+        color: var(--text); border-bottom: 2px solid transparent;
+    }
+    .tab-btn.active { border-bottom-color: var(--accent); font-weight:600; }
+    .tab-panel { display:none; padding: 16px 0; }
+    .tab-panel.active { display:block; }
+
+    .diff-section { margin-bottom: 20px; }
+    .diff-section h4 { margin: 0 0 8px; font-size:14px; }
+    .diff-item { background: var(--bg-surface); border: 1px solid var(--border); border-radius:6px; padding:10px 14px; margin-bottom:8px; }
+    .diff-item.added { border-left: 4px solid #16A34A; }
+    .diff-item.removed { border-left: 4px solid #DC2626; }
+    .diff-item.modified { border-left: 4px solid #D97706; }
+    .diff-item .key { font-weight:600; font-size:13px; }
+    .diff-item pre { background:#1e1e1e; color:#d4d4d4; padding:10px; border-radius:4px; overflow-x:auto; font-size:12px; margin:6px 0 0; }
+    .diff-line-add { color:#4ade80; }
+    .diff-line-del { color:#f87171; }
+    .empty-note { font-size:13px; color: var(--text-muted, #666); }
+
+    .pq-diff-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:8px; }
+    .pq-diff-col h5 { margin:0 0 4px; font-size:12px; font-weight:600; color: var(--text-muted, #666); text-transform:uppercase; letter-spacing:.03em; }
+    .pq-diff-col pre {
+        background:#1e1e1e; color:#d4d4d4; padding:10px; border-radius:4px; overflow-x:auto;
+        font-size:12px; margin:0; line-height:1.5; white-space:pre-wrap; word-break:break-word;
+    }
+    .pq-diff-col pre .diff-row { display:block; padding:1px 6px; border-radius:2px; }
+    .pq-diff-col pre .diff-row.diff-line-del { background:rgba(248,113,113,0.18); color:#f87171; }
+    .pq-diff-col pre .diff-row.diff-line-add { background:rgba(74,222,128,0.18); color:#4ade80; }
+    .pq-diff-col pre .diff-row.diff-line-ctx { color:#d4d4d4; }
+
+    .word-diff-pre {
+        background:#1e1e1e; color:#d4d4d4; padding:10px; border-radius:4px; overflow-x:auto;
+        font-size:12px; margin:0; line-height:1.6; white-space:pre-wrap; word-break:break-word;
+    }
+    .word-del { background:rgba(248,113,113,0.28); color:#f87171; text-decoration:line-through; border-radius:2px; }
+    .word-add { background:rgba(74,222,128,0.28); color:#4ade80; border-radius:2px; }
+    .value-missing { color:#f87171; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-shell">
+    <div class="upload-card">
+        <div class="upload-grid">
+            <div class="upload-slot">
+                <label for="versionA">Version 1 (.pbip zipped file)</label>
+                <input type="file" id="versionA" accept=".zip">
+                <label for="versionA" class="file-upload-btn">Choose File</label>
+                <div class="file-name" id="versionAName">No file selected</div>
+            </div>
+            <div class="upload-slot">
+                <label for="versionB">Version 2 (.pbip zipped file)</label>
+                <input type="file" id="versionB" accept=".zip">
+                <label for="versionB" class="file-upload-btn">Choose File</label>
+                <div class="file-name" id="versionBName">No file selected</div>
+            </div>
+        </div>
+        <div class="compare-actions">
+            <button class="btn btn-primary" id="compareBtn" onclick="runComparison()">Compare</button>
+            <span class="status-msg" id="statusMsg"></span>
+        </div>
+    </div>
+
+    <div id="resultsCard" style="display:none;">
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="measures" onclick="switchTab('measures')">Measures</button>
+            <button class="tab-btn" data-tab="powerQuery" onclick="switchTab('powerQuery')">Power Query</button>
+            <button class="tab-btn" data-tab="relationships" onclick="switchTab('relationships')">Relationships</button>
+            <button class="tab-btn" data-tab="visuals" onclick="switchTab('visuals')">Visuals</button>
+        </div>
+        <div class="tab-panel active" id="panel-measures"></div>
+        <div class="tab-panel" id="panel-powerQuery"></div>
+        <div class="tab-panel" id="panel-relationships"></div>
+        <div class="tab-panel" id="panel-visuals"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('versionA').addEventListener('change', (e) => {
+    document.getElementById('versionAName').textContent = e.target.files[0] ? e.target.files[0].name : 'No file selected';
+});
+document.getElementById('versionB').addEventListener('change', (e) => {
+    document.getElementById('versionBName').textContent = e.target.files[0] ? e.target.files[0].name : 'No file selected';
+});
+
+function switchTab(name) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `panel-${name}`));
+}
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderBucket(title, items, renderItem) {
+    if (!items || !items.length) return '';
+    return `<div class="diff-section"><h4>${title} (${items.length})</h4>${items.map(renderItem).join('')}</div>`;
+}
+
+function renderBeforeAfter(before, after) {
+    const isV1Missing = before === null || before === undefined || before === '';
+    const isV2Missing = after === null || after === undefined || after === '';
+    const v1 = isV1Missing ? '<span class="value-missing">Missing</span>' : escapeHtml(before);
+    const v2 = isV2Missing ? '<span class="value-missing">Missing</span>' : escapeHtml(after);
+    return `<pre>Version 1:\n${v1}\n\nVersion 2:\n${v2}</pre>`;
+}
+
+// Side-by-side Version 1 / Version 2 panel showing plain (non word-diffed)
+// text — used when one side is entirely absent, so there's nothing
+// meaningful to token-diff against.
+function renderSideBySidePlain(before, after) {
+    const isV1Missing = before === null || before === undefined || before === '';
+    const isV2Missing = after === null || after === undefined || after === '';
+    const v1 = isV1Missing ? '<span class="value-missing">Missing</span>' : escapeHtml(before);
+    const v2 = isV2Missing ? '<span class="value-missing">Missing</span>' : escapeHtml(after);
+    return `<div class="pq-diff-grid">
+        <div class="pq-diff-col"><h5>Version 1</h5><pre class="word-diff-pre">${v1}</pre></div>
+        <div class="pq-diff-col"><h5>Version 2</h5><pre class="word-diff-pre">${v2}</pre></div>
+    </div>`;
+}
+
+// Combines "only in version 1" and "only in version 2" items into a single
+// neutral comparison list, avoiding "added"/"removed" wording that wrongly
+// implies which version is the source of truth.
+function renderOnlyInOneVersion(onlyInV1, onlyInV2, keyOf, formatter) {
+    const items = [
+        ...(onlyInV1 || []).map(item => ({ key: keyOf(item), before: formatter(item), after: null })),
+        ...(onlyInV2 || []).map(item => ({ key: keyOf(item), before: null, after: formatter(item) })),
+    ];
+    if (!items.length) return '';
+    return `<div class="diff-section"><h4>Only in one version (${items.length})</h4>${items.map(it =>
+        `<div class="diff-item modified"><div class="key"><strong>${escapeHtml(it.key)}</strong></div>${renderSideBySidePlain(it.before, it.after)}</div>`
+    ).join('')}</div>`;
+}
+
+// Tokenizes DAX text into words + whitespace/punctuation, keeping all
+// pieces so they can be rejoined exactly. Splitting on token boundaries
+// (not just whitespace) means a single changed word/operator inside a
+// longer expression is highlighted on its own, not the whole line.
+function _tokenize(text) {
+    return (text || '').match(/[A-Za-z0-9_]+|\s+|./g) || [];
+}
+
+// Longest Common Subsequence based word/token diff. Returns two HTML
+// strings: left (Version 1, with removed/changed tokens struck through in
+// red) and right (Version 2, with added/changed tokens highlighted green).
+function wordDiffHtml(aText, bText) {
+    const a = _tokenize(aText);
+    const b = _tokenize(bText);
+    const n = a.length, m = b.length;
+    const lcs = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+            lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+        }
+    }
+    let i = 0, j = 0;
+    const left = [], right = [];
+    while (i < n && j < m) {
+        if (a[i] === b[j]) {
+            left.push(escapeHtml(a[i]));
+            right.push(escapeHtml(b[j]));
+            i++; j++;
+        } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+            left.push(`<span class="word-del">${escapeHtml(a[i])}</span>`);
+            i++;
+        } else {
+            right.push(`<span class="word-add">${escapeHtml(b[j])}</span>`);
+            j++;
+        }
+    }
+    while (i < n) { left.push(`<span class="word-del">${escapeHtml(a[i])}</span>`); i++; }
+    while (j < m) { right.push(`<span class="word-add">${escapeHtml(b[j])}</span>`); j++; }
+    return { leftHtml: left.join('') || '(blank)', rightHtml: right.join('') || '(blank)' };
+}
+
+function renderWordDiff(aText, bText) {
+    const { leftHtml, rightHtml } = wordDiffHtml(aText, bText);
+    return `<div class="pq-diff-grid">
+        <div class="pq-diff-col"><h5>Version 1</h5><pre class="word-diff-pre">${leftHtml}</pre></div>
+        <div class="pq-diff-col"><h5>Version 2</h5><pre class="word-diff-pre">${rightHtml}</pre></div>
+    </div>`;
+}
+
+function renderMeasures(d) {
+    const onlyOne = renderOnlyInOneVersion(d.removed, d.added, m => m.name, m => m.expression);
+    const modified = renderBucket('Modified', d.modified, m => `<div class="diff-item modified"><div class="key"><strong>${escapeHtml(m.name)}</strong></div>${renderWordDiff(m.before.expression, m.after.expression)}</div>`);
+    document.getElementById('panel-measures').innerHTML = (onlyOne + modified) || '<p class="empty-note">No measure differences found.</p>';
+}
+
+function renderDiffLines(lines) {
+    return (lines || []).map(l => {
+        const cls = l.startsWith('+') ? 'diff-line-add' : (l.startsWith('-') ? 'diff-line-del' : '');
+        return `<span class="${cls}">${escapeHtml(l)}</span>`;
+    }).join('\n');
+}
+
+// Splits a unified diff (list of +/-/context lines) into two separate,
+// clearly-labeled code panels: one showing Version 1 (with removed/changed
+// lines highlighted red) and one showing Version 2 (with added/changed
+// lines highlighted green). Hunk headers ("@@ ... @@") are rendered as a
+// faint separator so readers can tell where in the file a change block is.
+function renderSideBySideDiff(lines) {
+    const left = [];
+    const right = [];
+    (lines || []).forEach(l => {
+        if (l.startsWith('@@')) {
+            left.push(`<span class="diff-row" style="color:#6b7280;">${escapeHtml(l)}</span>`);
+            right.push(`<span class="diff-row" style="color:#6b7280;">${escapeHtml(l)}</span>`);
+            return;
+        }
+        if (l.startsWith('---') || l.startsWith('+++')) return;
+        if (l.startsWith('-')) {
+            left.push(`<span class="diff-row diff-line-del">${escapeHtml(l.slice(1))}</span>`);
+        } else if (l.startsWith('+')) {
+            right.push(`<span class="diff-row diff-line-add">${escapeHtml(l.slice(1))}</span>`);
+        } else {
+            const text = l.startsWith(' ') ? l.slice(1) : l;
+            left.push(`<span class="diff-row diff-line-ctx">${escapeHtml(text)}</span>`);
+            right.push(`<span class="diff-row diff-line-ctx">${escapeHtml(text)}</span>`);
+        }
+    });
+    return `<div class="pq-diff-grid">
+        <div class="pq-diff-col"><h5>Version 1</h5><pre>${left.join('\n') || '<span class="diff-row diff-line-ctx">(no lines)</span>'}</pre></div>
+        <div class="pq-diff-col"><h5>Version 2</h5><pre>${right.join('\n') || '<span class="diff-row diff-line-ctx">(no lines)</span>'}</pre></div>
+    </div>`;
+}
+
+function renderPowerQuery(d) {
+    const onlyOne = renderOnlyInOneVersion(d.removed, d.added, q => q.key, q => q.code);
+    const modified = renderBucket('Modified', d.modified, q => `<div class="diff-item modified"><div class="key"><strong>${escapeHtml(q.key)}</strong></div>${renderSideBySideDiff(q.diff)}</div>`);
+    document.getElementById('panel-powerQuery').innerHTML = (onlyOne + modified) || '<p class="empty-note">No Power Query differences found.</p>';
+}
+
+function renderRelationships(d) {
+    const line = r => `${r.fromColumn} -> ${r.toColumn} (active: ${r.isActive}, cross-filter: ${r.crossFilteringBehavior})`;
+    const relKey = r => `${r.fromColumn} -> ${r.toColumn}`;
+    const onlyOne = renderOnlyInOneVersion(d.removed, d.added, relKey, line);
+    const modified = renderBucket('Modified', d.modified, r => `<div class="diff-item modified"><div class="key"><strong>${escapeHtml(r.key)}</strong></div>${renderWordDiff(line(r.before), line(r.after))}</div>`);
+    document.getElementById('panel-relationships').innerHTML = (onlyOne + modified) || '<p class="empty-note">No relationship differences found.</p>';
+}
+
+function renderFieldsChange(fields) {
+    if (!fields) return '';
+    const onlyV2 = (fields.added || []).map(f => `${f.table}.${f.name}`).join(', ');
+    const onlyV1 = (fields.removed || []).map(f => `${f.table}.${f.name}`).join(', ');
+    return `<div>Fields${renderWordDiff(onlyV1, onlyV2)}</div>`;
+}
+
+function renderVisuals(d) {
+    const visLine = v => `${v.title || '(no title)'} — ${v.type}`;
+    const titleOf = v => `${v.title || '(no title)'} (${v.type})`;
+
+    // Build a flat list of { page, html } entries from all three buckets,
+    // then group them by page so the UI can show one section per page.
+    const entries = [];
+    (d.removed || []).forEach(v => entries.push({
+        page: v.page || '(unknown page)',
+        html: `<div class="diff-item modified"><div class="key"><strong>${escapeHtml(titleOf(v))}</strong></div>${renderSideBySidePlain(visLine(v), null)}</div>`,
+    }));
+    (d.added || []).forEach(v => entries.push({
+        page: v.page || '(unknown page)',
+        html: `<div class="diff-item modified"><div class="key"><strong>${escapeHtml(titleOf(v))}</strong></div>${renderSideBySidePlain(null, visLine(v))}</div>`,
+    }));
+    (d.modified || []).forEach(v => {
+        let body = '';
+        if (v.changes.title) body += `<div>Title${renderWordDiff(v.changes.title.before, v.changes.title.after)}</div>`;
+        if (v.changes.type) body += `<div>Type${renderWordDiff(v.changes.type.before, v.changes.type.after)}</div>`;
+        if (v.changes.fields) body += renderFieldsChange(v.changes.fields);
+        if (v.changes.columnSwaps) body += v.changes.columnSwaps.map(cs =>
+            `<div>Field "${escapeHtml(cs.displayName)}"${cs.role ? ' (' + escapeHtml(cs.role) + ')' : ''} underlying column changed${renderWordDiff(cs.before, cs.after)}</div>`
+        ).join('');
+        entries.push({
+            page: v.page || '(unknown page)',
+            html: `<div class="diff-item modified"><div class="key"><strong>${escapeHtml(v.title || v.key)}</strong></div>${body}</div>`,
+        });
+    });
+
+    if (!entries.length) {
+        document.getElementById('panel-visuals').innerHTML = '<p class="empty-note">No visual differences found.</p>';
+        return;
+    }
+
+    const byPage = new Map();
+    entries.forEach(e => {
+        if (!byPage.has(e.page)) byPage.set(e.page, []);
+        byPage.get(e.page).push(e.html);
+    });
+
+    const html = [...byPage.entries()].map(([page, items]) =>
+        `<div class="diff-section"><h4>Page: ${escapeHtml(page)}</h4>${items.join('')}</div>`
+    ).join('');
+    document.getElementById('panel-visuals').innerHTML = html;
+}
+
+async function runComparison() {
+    const fileA = document.getElementById('versionA').files[0];
+    const fileB = document.getElementById('versionB').files[0];
+    const statusEl = document.getElementById('statusMsg');
+    const btn = document.getElementById('compareBtn');
+    if (!fileA || !fileB) {
+        statusEl.textContent = 'Please select both zip files.';
+        statusEl.className = 'status-msg error';
+        return;
+    }
+    statusEl.textContent = 'Comparing… this may take a while for large files.';
+    statusEl.className = 'status-msg';
+    btn.disabled = true;
+    document.getElementById('resultsCard').style.display = 'none';
+
+    const form = new FormData();
+    form.append('version_a', fileA);
+    form.append('version_b', fileB);
+
+    try {
+        const resp = await fetch('/api/report-differences/compare', { method: 'POST', body: form });
+        const body = await resp.json();
+        if (!resp.ok || !body.success) {
+            throw new Error(body.error || `Request failed (${resp.status})`);
+        }
+        renderMeasures(body.diff.measures);
+        renderPowerQuery(body.diff.powerQuery);
+        renderRelationships(body.diff.relationships);
+        renderVisuals(body.diff.visuals);
+        document.getElementById('resultsCard').style.display = 'block';
+        statusEl.textContent = 'Comparison complete.';
+        statusEl.className = 'status-msg ok';
+    } catch (e) {
+        statusEl.textContent = `Error: ${e.message}`;
+        statusEl.className = 'status-msg error';
+    } finally {
+        btn.disabled = false;
+    }
+}
+</script>
+{% endblock %}
