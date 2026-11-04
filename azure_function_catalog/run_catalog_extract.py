@@ -328,6 +328,74 @@ def build_unused_fields_index_step(latest: Path) -> None:
         print(f"WARNING: unused fields index build failed (non-fatal): {exc}")
 
 
+def _validate_json_file(path: Path, *, min_size: int = 2) -> dict:
+    """Load+parse a JSON file, raising RuntimeError with a clear message on any problem."""
+    if not path.is_file():
+        raise RuntimeError(
+            f"Validation failed: {path.name} missing from extract output "
+            f"({path}) — refusing to publish to SharePoint."
+        )
+    size = path.stat().st_size
+    if size < min_size:
+        raise RuntimeError(
+            f"Validation failed: {path.name} suspiciously small "
+            f"({size} bytes) — refusing to publish to SharePoint."
+        )
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Validation failed: {path.name} is not valid JSON: {exc}"
+        ) from exc
+
+
+def _validate_extract_output(latest: Path, *, is_fresh: bool = False) -> None:
+    """
+    Sanity-check the freshly built temp output before it's allowed to replace
+    SharePoint latest/ (the "source of truth"). Raising here aborts the run
+    before any SharePoint data is touched, so a crashed/garbage extract can
+    never wipe or overwrite good existing data.
+
+    is_fresh=True means this came from a full Scanner extract (--fresh / full
+    extract), which is expected to also produce impact_index.json and the thin
+    UI packs derived from it. ops-only runs never produce impact_index.json
+    (they only refresh/usage-enrich the existing catalog), so those checks are
+    skipped in that mode — their overlay-only publish can't delete the
+    existing impact pack on SharePoint anyway.
+    """
+    cat_path = latest / "workspace_catalog.json"
+    data = _validate_json_file(cat_path, min_size=1024)
+    workspaces = data.get("workspaces") if isinstance(data, dict) else None
+    if not workspaces:
+        raise RuntimeError(
+            "Validation failed: workspace_catalog.json has no workspaces "
+            "(empty/corrupt extract) — refusing to publish to SharePoint."
+        )
+    print(f"Validation OK: workspace_catalog.json has {len(workspaces)} workspace(s), {cat_path.stat().st_size} bytes.")
+
+    # Thin UI packs: always built by write_thin_packs() from workspace_catalog.json,
+    # so they should exist regardless of fresh/ops-only mode.
+    for name in ("ui_home_index.json", "ui_report_directory.json"):
+        p = latest / name
+        if p.is_file():
+            _validate_json_file(p)
+            print(f"Validation OK: {name} present ({p.stat().st_size} bytes).")
+
+    if is_fresh:
+        imp_path = latest / "impact_index.json"
+        imp = _validate_json_file(imp_path, min_size=1024)
+        if isinstance(imp, dict) and not imp:
+            raise RuntimeError(
+                "Validation failed: impact_index.json is empty — refusing to publish to SharePoint."
+            )
+        print(f"Validation OK: impact_index.json present ({imp_path.stat().st_size} bytes).")
+
+        for name in ("ui_impact_tables.json", "ui_impact_reports.json"):
+            p = latest / name
+            _validate_json_file(p)
+            print(f"Validation OK: {name} present ({p.stat().st_size} bytes).")
+
+
 def publish_temp_latest(
     latest_dir: Path,
     *,
@@ -596,8 +664,14 @@ def main(argv=None) -> int:
             print("=== FRESH RUN ===")
             print("Seeding field usage index cache from prior SharePoint latest/ (if any)")
             prior_field_index = load_prior_field_usage_index()
-            print("Clearing SharePoint latest before rebuild")
-            clean_sharepoint_latest()
+            # NOTE: SharePoint latest/ is intentionally NOT cleared here. Clearing
+            # upfront (before extraction even starts) used to leave a multi-hour
+            # window where latest/ was empty on SharePoint — if the extraction
+            # failed anywhere after that point, the app had zero catalog data to
+            # serve. The clear now happens atomically with the upload, immediately
+            # before publish, and only after the new data has been validated (see
+            # _validate_extract_output below and clean_first=True in the publish
+            # call), so old data is only ever replaced once new data is ready.
             latest = run_full_extract(temp_root, args)
             build_field_usage_index_step(latest, prior_field_index)
             build_unused_fields_index_step(latest)
@@ -632,6 +706,11 @@ def main(argv=None) -> int:
                 upload_semantic_models_index(sem_path)
         except Exception as exc:
             print(f"WARNING: semantic_models_index build/upload failed (non-fatal): {exc}")
+
+        # Guard rail: never let a failed/garbage extract overwrite good data on
+        # SharePoint. If this raises, we fall into the except block below and
+        # SharePoint latest/ is left completely untouched.
+        _validate_extract_output(latest, is_fresh=bool(args.fresh))
 
         # Fresh: wipe then replace. Ops-only: overlay produced files only so a
         # partial ops run cannot delete workspace_catalog / impact packs.
