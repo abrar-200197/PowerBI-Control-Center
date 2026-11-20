@@ -177,15 +177,17 @@ reverse impact analysis, field usage, unused fields, model details.
   part of the offline pytest set).
 - The `mcp` package lives in `requirements-dev.txt`, never in the deployed
   `requirements.txt`.
-- **Default in every session (team-scoped)**: the project `opencode.jsonc`
-  only applies to sessions opened inside this repo. To have the server in the
-  MCP list everywhere — like `ashley-standards`/`jira`, which live in each
-  user's global config — run once per machine:
+- **Default in every session (team-scoped)**: `scripts/setup-mcp.ps1` installs
+  a self-contained copy of the server to `~\.ashleycode\mcp\pbi-control-center`
+  (jira-style — no repo needed at runtime) and registers it in the user's
+  global config. One run per machine:
   `powershell -ExecutionPolicy Bypass -File scripts\setup-mcp.ps1`
-  It registers the server in the user's global config with their local repo
-  path. Only people who run it get it (nothing org-wide is touched). Server
-  code updates still arrive via `git pull`; the MCP list entry itself does not
-  depend on git state.
+  (add `-Dev` to register the repo checkout instead — for live-edit
+  development). The script verifies Python and dependencies (offers pip
+  install), copies the bundle, seeds `.env` from `.env.example` when the repo
+  has none, and validates the install by importing it. Updates: `git pull`
+  in the repo, then re-run the script. Only people who run it get it —
+  nothing org-wide is touched.
 - **Team sharing (in-repo sessions)**: `opencode.jsonc` in the repo root
   registers the server at project level, so colleagues get it automatically
   when they open the repo
