@@ -52,8 +52,14 @@ if ($LASTEXITCODE -ne 0) { throw "python not found on PATH - install Python 3.11
 if ($mode -eq "feed") {
     # Zero-git: the wheel + its dependencies come from the private feed;
     # everything else (mcp/msal/...) resolves from PyPI via the extra index.
+    # EAP=Continue: stderr from a python.bat shim (pyenv-win) would otherwise
+    # abort the script under EAP=Stop even though stderr is redirected.
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     & python -c "import keyrings.artifacts" 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    $keyringOk = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $eap
+    if (-not $keyringOk) {
         Write-Host "Installing artifacts keyring (enables one-time browser sign-in for the private feed)..."
         & python -m pip install --quiet keyrings.artifacts
         if ($LASTEXITCODE -ne 0) { throw "keyrings.artifacts install failed." }
@@ -65,8 +71,14 @@ if ($mode -eq "feed") {
     if (-not (Test-Path $repoServer)) {
         throw "Server not found at $repoServer - is the repo complete?"
     }
+    # EAP=Continue: stderr from a python.bat shim (pyenv-win) would otherwise
+    # abort the script under EAP=Stop even though stderr is redirected.
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     & python -c "import mcp, msal, dotenv, requests" 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    $depsOk = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $eap
+    if (-not $depsOk) {
         Write-Warning "Required Python packages are missing (mcp / msal / python-dotenv / requests)."
         $answer = Read-Host "Install them now with pip? (y/N)"
         if ($answer -match '^[Yy]') {
