@@ -170,8 +170,14 @@ reverse impact analysis, field usage, unused fields, model details.
   `get_workspace_reports`, `get_home_summary`, `top_impact_tables`,
   `lookup_table_impact`, `get_table_impact_detail`, `get_report_sources`,
   `get_model_details`, `get_unused_fields`, `get_field_usage`.
-- SECURITY: no per-user ACL filtering — tools serve tenant-wide data. Keep it
-  on stdio/local; do not expose over HTTP without adding auth + ACL.
+- SECURITY: no per-user ACL — the MCP serves the tenant-wide precomputed
+  catalog with the .env service identity (a local stdio server has no
+  logged-in user). Scope a machine by setting `MCP_ALLOWED_WORKSPACE_IDS`
+  (comma-separated workspace GUIDs in `.env`): workspace/report/field tools
+  then filter to that list; impact-analysis tools (`top_impact_tables`,
+  `lookup_table_impact`, `get_table_impact_detail`, `get_model_details`,
+  `get_home_summary`) are tenant-wide by design and ignore it. Keep it on
+  stdio/local; do not expose over HTTP without adding auth + real per-user ACL.
 - Smoke test: `python tests/test_mcp_server.py` (spawns the server over
   stdio; may hit SharePoint when the disk mirror needs revalidation — not
   part of the offline pytest set).

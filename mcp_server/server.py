@@ -30,9 +30,10 @@ Data freshness follows the catalog batch job: workspace/impact data refresh
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -80,6 +81,26 @@ def _svc():
     return _svc_singleton
 
 
+def _allowed_workspace_ids() -> Optional[Set[str]]:
+    """ACL scope applied to every tool call that supports it.
+
+    Set MCP_ALLOWED_WORKSPACE_IDS in .env to a comma-separated list of
+    workspace GUIDs to restrict workspace/report/field tools to that list
+    (the catalog service filters lists and details accordingly). Unset,
+    'all' or '*' keeps the tenant-wide default.
+
+    IMPORTANT: this is a static allow-list, not per-user AD-driven filtering
+    - a local stdio MCP server has no logged-in user. Impact-analysis tools
+    (top_impact_tables, lookup_table_impact, get_table_impact_detail,
+    get_model_details, get_home_summary) are tenant-wide by design and are
+    not affected.
+    """
+    raw = (os.getenv("MCP_ALLOWED_WORKSPACE_IDS") or "").strip()
+    if not raw or raw.lower() in ("all", "*"):
+        return None
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
 def _not_found(what: str) -> Dict[str, Any]:
     return {"success": False, "error": f"{what} not found (or catalog unavailable)"}
 
@@ -116,8 +137,10 @@ def list_workspaces() -> Dict[str, Any]:
 
     Use to find a workspace_id before calling other tools."""
     try:
-        rows = _svc().list_workspaces_for_user(None)
-        return {"success": True, "count": len(rows), "workspaces": rows}
+        allowed = _allowed_workspace_ids()
+        rows = _svc().list_workspaces_for_user(allowed)
+        return {"success": True, "count": len(rows),
+                "aclFiltered": allowed is not None, "workspaces": rows}
     except Exception as exc:
         return _error(exc)
 
@@ -129,7 +152,7 @@ def search_reports(query: str, limit: int = 20) -> Dict[str, Any]:
     Returns reportId, reportName, workspaceId, workspaceName rows.
     Provide a non-empty query — an empty query intentionally returns nothing."""
     try:
-        out = _svc().search_reports(query=query, allowed_workspace_ids=None, limit=limit)
+        out = _svc().search_reports(query=query, allowed_workspace_ids=_allowed_workspace_ids(), limit=limit)
         return {"success": True, "data": out}
     except Exception as exc:
         return _error(exc)
@@ -140,7 +163,7 @@ def get_workspace_reports(workspace_id: str) -> Dict[str, Any]:
     """All reports in one workspace, with dataset binding, last refresh
     status/time, refresh schedule and report type per report."""
     try:
-        out = _svc().get_workspace_reports(workspace_id, None)
+        out = _svc().get_workspace_reports(workspace_id, _allowed_workspace_ids())
         if out is None:
             return _not_found(f"Workspace {workspace_id}")
         return {"success": True, "data": out}
@@ -151,7 +174,8 @@ def get_workspace_reports(workspace_id: str) -> Dict[str, Any]:
 @mcp.tool()
 def get_home_summary() -> Dict[str, Any]:
     """Tenant-wide KPI summary from the latest ops run (summary.json):
-    workspace/report counts, refresh and usage statistics."""
+    workspace/report counts, refresh and usage statistics.
+    Aggregate KPIs - not filtered by MCP_ALLOWED_WORKSPACE_IDS."""
     try:
         out = _svc().get_summary()
         if out is None:
@@ -167,7 +191,8 @@ def get_home_summary() -> Dict[str, Any]:
 @mcp.tool()
 def top_impact_tables(n: int = 15) -> Dict[str, Any]:
     """The n physical source tables with the biggest blast radius
-    (most dependent datasets/reports/workspaces), sorted by reportCount."""
+    (most dependent datasets/reports/workspaces), sorted by reportCount.
+    Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
     try:
         rows = _svc().top_impact_tables(n=max(1, min(int(n), 100)))
         return {"success": True, "count": len(rows), "tables": rows}
@@ -180,7 +205,8 @@ def lookup_table_impact(table_name: str) -> Dict[str, Any]:
     """Reverse impact lookup by physical table (or model table) name,
     case-insensitive: which datasets/reports/workspaces consume it.
 
-    Ideal for "what breaks if we change/drop table X" questions."""
+    Ideal for "what breaks if we change/drop table X" questions.
+    Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
     try:
         rows = _svc().lookup_table(table_name)
         if not rows:
@@ -193,7 +219,8 @@ def lookup_table_impact(table_name: str) -> Dict[str, Any]:
 @mcp.tool()
 def get_table_impact_detail(table_key: str) -> Dict[str, Any]:
     """Full impact entry for one source table (by tableKey or table name):
-    model table names, dependent datasets with their reports, impact summary."""
+    model table names, dependent datasets with their reports, impact summary.
+    Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
     try:
         out = _svc().impact_table_detail(table_key)
         if out is None:
@@ -209,7 +236,7 @@ def get_report_sources(report_id: str) -> Dict[str, Any]:
     SharePoint files, model tables) plus report metadata. Accepts a report
     GUID; use search_reports first if you only have a report name."""
     try:
-        out = _svc().impact_report_detail(report_id, None)
+        out = _svc().impact_report_detail(report_id, _allowed_workspace_ids())
         if out is None:
             return _not_found(f"Report {report_id}")
         return {"success": True, "data": out}
@@ -222,7 +249,8 @@ def get_model_details(
     dataset_id: str, workspace_id: str = ""
 ) -> Dict[str, Any]:
     """Thin model view of one semantic model/dataset: tables, columns,
-    measures, relationships. Optionally pass workspace_id to disambiguate."""
+    measures, relationships. Optionally pass workspace_id to disambiguate.
+    Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
     try:
         out = _svc().impact_model_details(
             dataset_id=dataset_id, workspace_id=workspace_id
@@ -244,7 +272,7 @@ def get_unused_fields(limit: int = 50) -> Dict[str, Any]:
     DAX-referenced, M-expression-tagged, relationship keys, or referenced by
     another measure. Note the returned 'caveat' (RLS/sort-by undetectable)."""
     try:
-        out = _svc().unused_fields_rows(None)
+        out = _svc().unused_fields_rows(_allowed_workspace_ids())
         rows = list(out.get("rows") or [])
         out["rows"] = rows[: max(1, min(int(limit), 500))]
         out["rowsShown"] = len(out["rows"])
@@ -260,7 +288,7 @@ def get_field_usage(field_key: str) -> Dict[str, Any]:
     (format 'table.column' or 'table.measure' — see the fieldKey values in
     get_unused_fields or the Impact Explorer). Weekly-built index."""
     try:
-        out = _svc().field_usage_detail(field_key, None)
+        out = _svc().field_usage_detail(field_key, _allowed_workspace_ids())
         if out is None:
             return _not_found(f"Field {field_key!r}")
         return {"success": True, "data": out}

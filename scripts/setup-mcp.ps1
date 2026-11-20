@@ -65,7 +65,7 @@ if ($mode -eq "feed") {
         if ($LASTEXITCODE -ne 0) { throw "keyrings.artifacts install failed." }
     }
     Write-Host "Installing pbi-control-center-mcp from the feed (browser sign-in may pop up once)..."
-    & python -m pip install pbi-control-center-mcp --index-url $FromFeed --extra-index-url https://pypi.org/simple
+    & python -m pip install --upgrade pbi-control-center-mcp --index-url $FromFeed --extra-index-url https://pypi.org/simple
     if ($LASTEXITCODE -ne 0) { throw "Feed install failed - check the feed URL and your sign-in." }
 } else {
     if (-not (Test-Path $repoServer)) {
@@ -122,6 +122,11 @@ SHAREPOINT_SITE_HOSTNAME=
 SHAREPOINT_SITE_PATH=
 SHAREPOINT_DRIVE_NAME=
 SHAREPOINT_FOLDER_PATH=
+
+# --- MCP server ACL (optional) ---
+# Restrict the MCP to specific workspaces (comma-separated GUIDs).
+# Unset = tenant-wide. Impact-analysis tools stay tenant-wide by design.
+MCP_ALLOWED_WORKSPACE_IDS=
 '@ | Set-Content -Path $installEnv -Encoding UTF8
     Write-Warning "Seeded $installEnv - EDIT IT with your credentials or every tool returns 'catalog unavailable'."
 } else {
