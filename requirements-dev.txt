@@ -1,0 +1,4 @@
+# Development / test-only dependencies — NOT deployed with the app.
+# Runtime dependencies live in requirements.txt.
+pytest>=8.0
+mcp>=1.2.0

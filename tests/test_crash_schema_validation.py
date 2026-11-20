@@ -1,4 +1,17 @@
 """Unit tests for Crash Test schema field-binding validation."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# UTF-8 stdout/stderr so emoji prints in the code under test never crash on
+# Windows cp1252 consoles (same reconfigure app.py performs at startup).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass
+
 from crash_test_analyzer import CrashTestAnalyzer
 
 

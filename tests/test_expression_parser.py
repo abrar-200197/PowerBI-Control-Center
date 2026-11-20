@@ -4,9 +4,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from metadata_extractor.expression_parser import extract_expression, parse_m_expression
-from metadata_extractor.impact_builder import build_impact_index
-from metadata_extractor.normalizer import normalize_workspaces
+from catalog_service.metadata_lib.expression_parser import extract_expression, parse_m_expression
+from catalog_service.metadata_lib.impact_builder import build_impact_index
+from catalog_service.metadata_lib.normalizer import normalize_workspaces
 
 
 def test_sql_database_with_schema_item():

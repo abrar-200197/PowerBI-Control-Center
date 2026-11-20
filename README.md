@@ -38,13 +38,11 @@ A comprehensive web application for generating documentation, performing health 
 
 ## 📚 Documentation
 
-All project documentation is organized in the **[`docs/`](./docs/)** directory.
-
-### Quick Links:
-- **[Documentation Index](./docs/INDEX.md)** - Master index of all documentation
-- **[Crash Test Feature](./docs/CRASH_TEST_FEATURE.md)** - Crash test implementation guide
-- **[Latest Update: Granular Breakdown](./docs/CRASH_TEST_GRANULAR_BREAKDOWN_UPDATE.md)** - Visual-level error reporting (June 2026)
-- **[Developer Quick Reference](./docs/DEVELOPER_QUICK_REFERENCE.md)** - Common development tasks
+- **[AGENTS.md](./AGENTS.md)** — engineering guide: commands, architecture map, conventions, gotchas
+- **[.opencode/context/system-overview.md](./.opencode/context/system-overview.md)** — architecture & API surface
+- **[.opencode/context/domain-model.md](./.opencode/context/domain-model.md)** — entities, business rules, glossary
+- **[azure_function_catalog/README.md](./azure_function_catalog/README.md)** — scheduled catalog extract deployment
+- **[mcp_server/](./mcp_server/)** — MCP server exposing the catalog to AI agents (connection + tool list in [AGENTS.md](./AGENTS.md))
 
 ---
 
@@ -61,7 +59,7 @@ All project documentation is organized in the **[`docs/`](./docs/)** directory.
 1. **Clone the repository:**
    ```bash
    git clone <repository-url>
-   cd PowerBI_AI_Docs
+   cd PowerBI_Control_Center
    ```
 
 2. **Install Python dependencies:**
@@ -115,30 +113,30 @@ The application uses a **Combined Approach** to gather comprehensive metadata:
 2. **REST API:** Report metadata, refresh status, configuration
 3. **JavaScript SDK + Playwright:** Visual-level metadata and error detection
 
-See [COMBINED_APPROACH_GUIDE.md](./docs/COMBINED_APPROACH_GUIDE.md) for detailed architecture documentation.
+See [.opencode/context/system-overview.md](./.opencode/context/system-overview.md) for detailed architecture documentation.
 
 ---
 
 ## 🧪 Testing
 
-### Run Crash Test (Standalone):
+### Run the offline unit tests (pytest-style; each file also runs standalone):
 ```bash
-python test_deep_crash_test.py
+pip install -r requirements-dev.txt
+pytest tests/test_expression_parser.py tests/test_pbir_field_walk.py tests/test_crash_schema_validation.py test_crash_test_render_scan.py
 ```
 
-### Run Specific Report Test:
+### Run a single test file without pytest:
 ```bash
-python run_crash_test.py
+python tests/test_expression_parser.py
 ```
 
 ---
 
 ## 📝 Contributing
 
-1. All documentation must be saved in the `docs/` directory
-2. Follow naming conventions in [docs/INDEX.md](./docs/INDEX.md)
-3. Update the documentation index when adding new docs
-4. Include change summaries for all major updates
+1. Engineering guidance lives in [AGENTS.md](./AGENTS.md); agent context in `.opencode/`
+2. Keep the offline unit tests passing (see Testing above)
+3. Include change summaries for all major updates
 
 ---
 
@@ -154,6 +152,6 @@ For issues, questions, or feature requests, contact the Power BI Control Center 
 
 ---
 
-**Last Updated:** June 8, 2026
+**Last Updated:** November 20, 2026
 **Version:** 2.0.0
 **Status:** ✅ Production Ready

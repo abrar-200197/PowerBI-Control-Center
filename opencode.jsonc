@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Project-level OpenCode/AshleyCode config.
+  //
+  // Registers the Power BI Control Center catalog MCP server for anyone who
+  // opens this repo — no manual `opencode mcp add` needed. Per-machine
+  // prerequisites:
+  //   1. Python deps:  pip install -r requirements.txt -r requirements-dev.txt
+  //   2. A local `.env` with Power BI / SharePoint credentials (gitignored —
+  //      copy from a teammate or fill from .env.example; without it the
+  //      catalog mode is "off" and tools return "catalog unavailable").
+  //
+  // The server is read-only and serves tenant-wide catalog data with no
+  // per-user ACL — keep it on stdio/local; do not expose it over HTTP.
+  "mcp": {
+    "servers": {
+      "powerbi-control-center": {
+        "type": "local",
+        "command": ["python", "mcp_server/server.py"],
+        "enabled": true
+      }
+    }
+  }
+}
