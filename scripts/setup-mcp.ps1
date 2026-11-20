@@ -41,6 +41,26 @@ $globalConfigCandidates = @(
 if ($Dev -and $FromFeed) { throw "Use either -Dev or -FromFeed, not both." }
 $mode = if ($FromFeed) { "feed" } elseif ($Dev) { "dev" } else { "standalone" }
 
+# --- Paste-artifact hardening -------------------------------------------
+# Chat clients sometimes wrap URLs as [https://...](context:other?url=...)
+# and append invisible zero-width characters to tokens. Clean before use.
+function Clean-FeedUrl([string]$Url, [string]$ExpectedSuffix) {
+    $u = $Url.Trim()
+    if ($u -match '^\[?(https?://[^\]\s\)]+)') { $u = $Matches[1] }
+    $u = (($u -replace '[^\x21-\x7E]', '')).Trim()
+    if ($u -notmatch '^https://[^\s]+$') {
+        throw "Feed URL is not an https URL after cleaning: '$Url'. Expected e.g. https://pkgs.dev.azure.com/<org>/<project>/_packaging/<feed>/pypi/simple/"
+    }
+    if (-not $u.EndsWith($ExpectedSuffix)) {
+        Write-Warning "Feed URL should normally end with $ExpectedSuffix (got: $u)"
+    }
+    return $u
+}
+
+if ($FromFeed) {
+    $FromFeed = Clean-FeedUrl $FromFeed "/pypi/simple/"
+}
+
 if ($mode -ne "feed") {
     Write-Host "Repo root : $repoRoot"
 }

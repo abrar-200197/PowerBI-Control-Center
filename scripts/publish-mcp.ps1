@@ -29,6 +29,27 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 
+# --- Paste-artifact hardening -------------------------------------------
+# Chat clients sometimes wrap URLs as [https://...](context:other?url=...)
+# and append invisible zero-width characters to tokens. Clean both before
+# use, and fail with a helpful message if the result is still not a URL.
+function Clean-FeedUrl([string]$Url, [string]$ExpectedSuffix) {
+    $u = $Url.Trim()
+    if ($u -match '^\[?(https?://[^\]\s\)]+)') { $u = $Matches[1] }
+    $u = (($u -replace '[^\x21-\x7E]', '')).Trim()
+    if ($u -notmatch '^https://[^\s]+$') {
+        throw "FeedUploadUrl is not an https URL after cleaning: '$Url'. Expected e.g. https://pkgs.dev.azure.com/<org>/<project>/_packaging/<feed>/pypi/upload/"
+    }
+    if (-not $u.EndsWith($ExpectedSuffix)) {
+        Write-Warning "Feed URL should normally end with $ExpectedSuffix (got: $u)"
+    }
+    return $u
+}
+
+$FeedUploadUrl = Clean-FeedUrl $FeedUploadUrl "/pypi/upload/"
+$Pat = (($Pat -replace '[^\x21-\x7E]', '')).Trim()
+if (-not $Pat) { throw "Pat is empty after cleaning." }
+
 # 1. Build the wheel (version comes from pyproject.toml).
 python -m pip wheel --no-deps --no-build-isolation -w dist .
 if ($LASTEXITCODE -ne 0) { throw "wheel build failed." }
