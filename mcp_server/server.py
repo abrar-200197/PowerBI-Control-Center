@@ -40,10 +40,18 @@ if str(REPO_ROOT) not in sys.path:
 
 # Load .env BEFORE the catalog import: catalog_config binds ~35 constants from
 # os.getenv at import time (same ordering constraint as app.py — AGENTS.md
-# gotcha #1). Explicit path so the server works from any working directory.
+# gotcha #1). Search order: standalone-install config dir, repo checkout, CWD —
+# so the same code runs from a pip install or a repo checkout.
 from dotenv import load_dotenv
 
-load_dotenv(REPO_ROOT / ".env", override=True)
+for _env_candidate in (
+    Path.home() / ".ashleycode" / "mcp" / "pbi-control-center" / ".env",
+    REPO_ROOT / ".env",
+    Path.cwd() / ".env",
+):
+    if _env_candidate.is_file():
+        load_dotenv(_env_candidate, override=True)
+        break
 
 try:
     from catalog_service import catalog_service as _svc_singleton

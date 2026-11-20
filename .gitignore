@@ -54,6 +54,8 @@ test_*.docx
 .pytest_cache/
 .coverage
 htmlcov/
+dist/
+build/
 
 # OneDrive / Office noise
 ~$*

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pbi-control-center-mcp"
+version = "1.0.0"
+description = "MCP server exposing the Power BI Control Center catalog (impact analysis, field usage, unused fields) to AI agents"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2.0,<2",
+    "msal>=1.24",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+pbi-cc-mcp = "mcp_server.server:main"
+
+[tool.setuptools]
+# The MCP server, the catalog layer it serves, and the refresh-info helpers
+# ops_snapshot imports. Deliberately excludes the Flask app, features/,
+# azure_function_catalog/ and tests - the wheel is agent tooling only.
+packages = ["mcp_server", "catalog_service", "catalog_service.metadata_lib"]
+py-modules = ["powerbi_connector"]
