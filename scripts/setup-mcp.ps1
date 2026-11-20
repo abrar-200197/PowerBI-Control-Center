@@ -48,6 +48,20 @@ try {
 } catch {
     throw "python not found on PATH - install Python 3.11+ and retry."
 }
+
+# 2. Python dependencies (app deps + the mcp SDK).
+& python -c "import mcp, msal, dotenv, requests" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Required Python packages are missing (mcp / msal / python-dotenv / requests)."
+    $answer = Read-Host "Install them now with pip? (y/N)"
+    if ($answer -match '^[Yy]') {
+        & pip install -r (Join-Path $repoRoot "requirements.txt") -r (Join-Path $repoRoot "requirements-dev.txt")
+        if ($LASTEXITCODE -ne 0) { throw "pip install failed - install the requirements manually and re-run." }
+    } else {
+        throw "Dependencies missing. In the repo root run: pip install -r requirements.txt -r requirements-dev.txt  then re-run this script."
+    }
+}
+
 if (-not (Test-Path (Join-Path $repoRoot ".env"))) {
     Write-Warning ".env not found in the repo root - the server will connect, but every tool will return 'catalog unavailable' until credentials are added (see .env.example)."
 }
