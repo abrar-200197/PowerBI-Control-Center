@@ -181,17 +181,23 @@ reverse impact analysis, field usage, unused fields, model details.
 - Smoke test: `python tests/test_mcp_server.py` (spawns the server over
   stdio; may hit SharePoint when the disk mirror needs revalidation — not
   part of the offline pytest set).
-- **Zero-git onboarding (pip package)**: `pyproject.toml` builds the
-  `pbi-control-center-mcp` wheel (server + `catalog_service` + refresh-info
-  helpers only; the Flask app stays out of the wheel). Publish with
+- **Zero-git onboarding (pip package)**: colleagues need exactly two
+  commands in any terminal — no repo, no script file:
+  ```
+  python -m pip install --upgrade keyrings.artifacts pbi-control-center-mcp --extra-index-url "https://pkgs.dev.azure.com/ashleyfurniture/Super%20Troopers/_packaging/PbiControlCenter/pypi/simple/"
+  pbi-cc-setup
+  ```
+  pip pulls the wheel from the private feed (one-time browser sign-in via
+  `keyrings.artifacts`); `pbi-cc-setup` (shipped in the wheel) seeds the
+  credentials template at `~\.ashleycode\mcp\pbi-control-center\.env` and
+  registers the server globally. `setup-mcp.ps1 -FromFeed <url>` remains an
+  alternative but requires the repo checkout (the script lives in
+  `scripts/`). Publish updates with
   `scripts/publish-mcp.ps1 -FeedUploadUrl <feed>/pypi/upload/ -Pat <PAT>`
-  after bumping the version in `pyproject.toml`; colleagues then install
-  without git: `setup-mcp.ps1 -FromFeed "<feed>/pypi/simple/"` — pip pulls
-  the wheel from the private feed (one-time browser sign-in via
-  `keyrings.artifacts`; no PAT for installers, no repo on disk). The server
-  finds credentials at `~\.ashleycode\mcp\pbi-control-center\.env` first,
-  then repo/CWD `.env`. `mcp` is pinned `>=1.2.0,<2` (2.x renamed FastMCP →
-  MCPServer; this repo targets the 1.x API).
+  after bumping the version. The server finds credentials at
+  `~\.ashleycode\mcp\pbi-control-center\.env` first, then repo/CWD `.env`.
+  `mcp` is pinned `>=1.2.0,<2` (2.x renamed FastMCP → MCPServer; this repo
+  targets the 1.x API).
 - The `mcp` package lives in `requirements-dev.txt`, never in the deployed
   `requirements.txt`.
 - **Default in every session (team-scoped)**: `scripts/setup-mcp.ps1` installs

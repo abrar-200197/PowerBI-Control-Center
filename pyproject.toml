@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pbi-control-center-mcp"
-version = "1.1.0"
+version = "1.2.0"
 description = "MCP server exposing the Power BI Control Center catalog (impact analysis, field usage, unused fields) to AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 pbi-cc-mcp = "mcp_server.server:main"
+pbi-cc-setup = "mcp_server.setup:main"
 
 [tool.setuptools]
 # The MCP server, the catalog layer it serves, and the refresh-info helpers
