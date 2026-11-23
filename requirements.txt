@@ -1,5 +1,12 @@
 openai==1.54.3
-httpx==0.27.0
+# httpx 0.27.2 (not 0.27.0): mcp >=1.13 requires httpx>=0.27.1. With 0.27.0 pip
+# backtracked to mcp 1.12, whose func_metadata hard-imports
+# pydantic._internal._typing_extra.eval_type_backport — removed in pydantic
+# 2.11+ — so the MCP sidecar crashed with ImportError at every container start
+# (2026-11-23 outage of /mcp). 0.27.2 satisfies mcp 1.30 and stays within
+# 0.27.x (openai==1.54.3 breaks on httpx 0.28). Verify resolution with
+# scripts/check-deps-resolution.py before changing pins.
+httpx==0.27.2
 requests==2.31.0
 python-dotenv>=1.1.1
 msal==1.24.0

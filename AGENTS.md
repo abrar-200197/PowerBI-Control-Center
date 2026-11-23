@@ -140,9 +140,27 @@ app registration, and a populated `.env` (gitignored — never commit it).
     Never "roll back" to an image tag you have not verified exists in ACR —
     ACR data-plane is not listable from this subscription, a wrong tag gives
     `ImageNotFoundFailure`, the site stays STOPPED (503) and cold-start
-    blocked. Verified-good tags as of 2026-11-23: `:593434` (serving +
-    `/mcp` 401 guard live), `:593433` DOES NOT EXIST in ACR. Check
-    `LogFiles/..._docker.log` via Kudu (`/api/vfs/LogFiles/`) for boot truth.
+    blocked. Verified-good tags as of 2026-11-23: `:593434` (webapp serving;
+    its `/mcp` 401 was the PROXY pre-auth check, not proof of sidecar health
+    — see #18), `:593433` DOES NOT EXIST in ACR. Container stdout lives in
+    `StartupLogs/.sources/*_containerStream.log`; `docker.log` files hold
+    orchestrator events only; app boot output including sidecar tracebacks
+    is in `StartupLogs/*_success.log`. `/mcp` is only meaningfully probeable
+    with a VALID bearer — without one you get the proxy's 401 regardless of
+    sidecar health.
+18. **The dev env masks pip conflicts — verify resolution before pin
+    changes.** `httpx==0.27.0` (needed by openai==1.54.3, which breaks on
+    httpx 0.28) made pip backtrack the sidecar's `mcp>=1.2,<2` to mcp 1.12,
+    whose func_metadata hard-imports
+    `pydantic._internal._typing_extra.eval_type_backport` — removed in
+    pydantic 2.11+ (unpinned → 2.12+ in the container). Result: ImportError
+    at every container start, webapp fine, `/mcp` → 503 "sidecar
+    unreachable". Dev machines never saw it (no openai+httpx clash locally).
+    Fix: `httpx==0.27.2` (satisfies mcp 1.30, stays inside 0.27.x). Before
+    ANY requirements.txt change run
+    `python scripts/check-deps-resolution.py` (clean-venv install + sidecar
+    import); after deploy confirm the container stream shows
+    "Uvicorn running on http://127.0.0.1:8001" and "MCP warm-up".
 
 ## Testing notes
 
