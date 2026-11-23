@@ -197,7 +197,14 @@ def search_reports(query: str, limit: int = 20, acl_workspace_ids: Optional[List
     Returns reportId, reportName, workspaceId, workspaceName rows.
     Provide a non-empty query — an empty query intentionally returns nothing."""
     try:
-        out = _svc().search_reports(query=query, allowed_workspace_ids=_effective_ids(acl_workspace_ids), limit=limit)
+        out = _svc().search_reports(
+            query=query,
+            allowed_workspace_ids=_effective_ids(acl_workspace_ids),
+            limit=limit,
+            # Sidecar never rebuilds the directory from the heavy catalog
+            # (same rule as get_workspace_reports; memory fix 2026-11-23).
+            allow_catalog_fallback=False,
+        )
         return {"success": True, "data": out}
     except Exception as exc:
         return _error(exc)

@@ -72,6 +72,17 @@ class _ThinStub:
     def impact_model_details(self, dataset_id="", workspace_id=""):
         return {"datasetId": dataset_id, "tables": []}
 
+    def search_reports(self, query="", allowed_workspace_ids=None, limit=50,
+                       allow_catalog_fallback=True):
+        self.directory_fallback_flags.append(allow_catalog_fallback)
+        if not (query or "").strip():
+            return {"success": True, "query": query, "count": 0, "total": 0, "rows": []}
+        rows = [r for r in _ROWS if query.lower() in (r.get("reportName") or "").lower()]
+        if allowed_workspace_ids is not None:
+            rows = [r for r in rows if r.get("workspaceId") in allowed_workspace_ids]
+        return {"success": True, "query": query, "count": len(rows),
+                "total": len(rows), "rows": rows[: max(1, limit)]}
+
 
 _ORIG_SVC = server._svc_singleton
 _ORIG_ENV = os.environ.get("MCP_ALLOWED_WORKSPACE_IDS")
@@ -171,6 +182,18 @@ def test_workspace_reports_never_falls_back_to_catalog():
     )
 
 
+def test_search_reports_never_falls_back_to_catalog():
+    """P1 re-review 2026-11-23: search_reports had the same heavy-rebuild
+    hole as get_workspace_reports; the MCP tool must pass False too."""
+    out = server.search_reports("alpha")
+    assert out["success"] is True and out["data"]["count"] == 1, out
+    stub = server._svc_singleton
+    assert stub.directory_fallback_flags, "expected at least one recorded flag"
+    assert all(f is False for f in stub.directory_fallback_flags), (
+        stub.directory_fallback_flags
+    )
+
+
 if __name__ == "__main__":
     _setup()
     try:
@@ -181,6 +204,7 @@ if __name__ == "__main__":
         test_heavy_gate_serializes()
         test_heavy_gate_gates_impact_and_model_tools()
         test_workspace_reports_never_falls_back_to_catalog()
+        test_search_reports_never_falls_back_to_catalog()
     finally:
         _teardown()
     print("All tests passed.")

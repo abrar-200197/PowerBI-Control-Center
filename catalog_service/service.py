@@ -144,11 +144,20 @@ class CatalogService:
                 if name in _THIN_UI_PACKS:
                     disk_data = self._read_disk_json(name)
                     if disk_data is not None:
-                        _memory[name] = {
-                            "data": disk_data,
-                            "loaded_at": time.time(),
-                            "source": "disk-mirror-fast",
-                        }
+                        # Heavy-listed thin packs (ui_unused_fields_index ~104 MB,
+                        # ui_field_index ~34 MB, ui_impact_reports ~33 MB) are
+                        # served straight from the local mirror WITHOUT the
+                        # long-lived memory cache — same retention rule as the
+                        # SP load path below. The unconditional cache here
+                        # previously defeated the heavy-drop rule.
+                        if (not heavy) or keep_heavy:
+                            _memory[name] = {
+                                "data": disk_data,
+                                "loaded_at": time.time(),
+                                "source": "disk-mirror-fast",
+                            }
+                        else:
+                            _memory.pop(name, None)
                         return disk_data
             data, source = self._load_catalog_file(name, force_refresh=force_refresh)
             if data is not None:
@@ -430,14 +439,22 @@ class CatalogService:
         query: str = "",
         allowed_workspace_ids: Optional[Set[str]] = None,
         limit: int = 50,
+        allow_catalog_fallback: bool = True,
     ) -> Dict[str, Any]:
         """
         Reverse lookup: report name/id → matching rows (with workspace).
         Empty query returns nothing (client should not dump full estate).
+
+        allow_catalog_fallback=False (MCP sidecar mode): never rebuild the
+        report directory from the heavy ~284 MB workspace_catalog when the
+        thin pack is missing — serve from the thin pack or return empty.
         """
         q = (query or "").strip().lower()
         lim = max(1, min(int(limit or 50), 200))
-        rows = self.get_report_directory_rows(allowed_workspace_ids=allowed_workspace_ids)
+        rows = self.get_report_directory_rows(
+            allowed_workspace_ids=allowed_workspace_ids,
+            allow_catalog_fallback=allow_catalog_fallback,
+        )
         if not q:
             return {
                 "success": True,

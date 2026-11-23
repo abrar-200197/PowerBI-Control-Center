@@ -179,9 +179,16 @@ app registration, and a populated `.env` (gitignored — never commit it).
     query is running" when busy. Sidecar: `_HEAVY_GATE` in
     mcp_server/server.py — six tools gated (see the MCP MEMORY note). Any
     NEW endpoint/tool that can parse a multi-hundred-MB index MUST enter
-    its process's gate; `field_usage_index.json` and
-    `unused_fields_index.json` are in HEAVY_CATALOG_FILES (both root and
-    azure_function_catalog copies) so they are never retained in RAM.
+    its process's gate. HEAVY_CATALOG_FILES (both root and
+    azure_function_catalog copies) holds the never-retain-in-RAM list —
+    including the serving-time `ui_unused_fields_index.json` (~104 MB),
+    `ui_field_index.json` (~34 MB), `ui_impact_reports.json` (~33 MB) and
+    the raw `field_usage_index.json` / `unused_fields_index.json`. Note
+    get_json's disk-mirror fast path obeys the same rule (heavy thin packs
+    are served from disk WITHOUT memory retention). The sidecar passes
+    `allow_catalog_fallback=False` for BOTH get_workspace_reports and
+    search_reports — a missing thin pack must never trigger a
+    workspace_catalog rebuild there.
 21. **Scanner calls have timeouts and a run deadline (P0).** All four
     `requests` calls in scanner_connector.py carry explicit timeouts, the
     scanStatus poll loop enforces `SCANNER_RUN_TIMEOUT_SEC` (default 900s,
@@ -256,7 +263,8 @@ reverse impact analysis, field usage, unused fields, model details.
   one-at-a-time `_heavy_call` gate with a friendly busy response:
   `get_unused_fields` / `get_field_usage` (~102/~54 MB) plus (P0 batch)
   `lookup_table_impact`, `get_table_impact_detail`, `get_report_sources`,
-  `get_model_details`. Guard:
+  `get_model_details`. `search_reports` and `get_workspace_reports` both
+  pass `allow_catalog_fallback=False` (P1 re-review). Guard:
   `tests/test_mcp_thin_workspace_reports.py` (stub fails on any heavy-blob
   access; asserts the fallback flag and gate-busy for all six). Keep new
   tools thin-pack-backed or gate them.
