@@ -198,6 +198,14 @@ reverse impact analysis, field usage, unused fields, model details.
   `~\.ashleycode\mcp\pbi-control-center\.env` first, then repo/CWD `.env`.
   `mcp` is pinned `>=1.2.0,<2` (2.x renamed FastMCP → MCPServer; this repo
   targets the 1.x API).
+- **Hosted / remote mode (path to webapp-like access)**:
+  `mcp_server/http_entry.py` serves the same tools over streamable-HTTP at
+  `/mcp` behind a bearer-token guard (`MCP_HTTP_TOKEN` app setting; uvicorn
+  via the `[http]` extra). Deploy as a second App Service/container;
+  colleagues connect with
+  `opencode mcp add powerbi-control-center --global --url "https://<app>.azurewebsites.net/mcp" --header "Authorization=Bearer <token>"`.
+  Per-user workspace filtering (on-behalf-of Power BI access) is the planned
+  next phase.
 - The `mcp` package lives in `requirements-dev.txt`, never in the deployed
   `requirements.txt`.
 - **Default in every session (team-scoped)**: `scripts/setup-mcp.ps1` installs
