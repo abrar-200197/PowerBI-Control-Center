@@ -133,6 +133,13 @@ class CatalogService:
             return None
         heavy = name in getattr(cfg, "HEAVY_CATALOG_FILES", ())
         keep_heavy = bool(getattr(cfg, "CATALOG_KEEP_HEAVY_IN_MEMORY", False))
+        # Fast paths under the lock: memory hit + local disk mirror. NEVER
+        # hold the lock across SharePoint I/O (P1): one slow download used to
+        # block every catalog read on the worker for the download's full
+        # duration. Slow-path loads run WITHOUT the lock; concurrent callers
+        # may load the same file twice (acceptable — heavy files are already
+        # serialized by the webapp/MCP gates, SharePoint tolerates parallel
+        # GETs) and the last writer wins on the memory entry.
         with _lock:
             if not force_refresh:
                 mem = _memory.get(name)
@@ -159,8 +166,9 @@ class CatalogService:
                         else:
                             _memory.pop(name, None)
                         return disk_data
-            data, source = self._load_catalog_file(name, force_refresh=force_refresh)
-            if data is not None:
+        data, source = self._load_catalog_file(name, force_refresh=force_refresh)
+        if data is not None:
+            with _lock:
                 # Thin packs always memory-cached. Heavy blobs only if explicitly enabled
                 # (default off — 360MB × N workers = App Service SIGKILL).
                 if (not heavy) or keep_heavy:
@@ -176,9 +184,10 @@ class CatalogService:
                         "Catalog %s served without long-lived memory cache (source=%s)",
                         name, source,
                     )
-            elif force_refresh:
+        elif force_refresh:
+            with _lock:
                 _memory.pop(name, None)
-            return data
+        return data
 
     def drop_heavy_memory(self) -> None:
         """Explicitly free heavy catalog blobs from this worker's RAM."""

@@ -21,7 +21,9 @@ A Flask web application for Power BI governance:
 - **Automated documentation** — Azure OpenAI GPT-4o section drafts + python-docx Word output
 - **Crash Test** — report health diagnostics scored 0–100 (dataset refresh, schema, visual render, DAX)
 - **Catalog & Impact Explorer** — precomputed tenant metadata served from SharePoint, reverse impact indexes
-- **Usage tracking** — Admin Activity Events (`ViewReport`), 30-day lookback
+- **Usage tracking** — Admin Activity Events (`ViewReport`), lookback from
+  `USAGE_LOOKBACK_DAYS` (code default 60 in both `catalog_config.py` and the
+  live Activity-Events fallback; `.env` may override)
 - **Similarity, PBIP diff, lineage, decommission archiving** to SharePoint
 
 Data sources: Power BI REST API, Admin Scanner API, Fabric API, Microsoft Graph
@@ -172,7 +174,10 @@ app registration, and a populated `.env` (gitignored — never commit it).
     NOT reintroduce `len(allowed) > 0` fail-open guards — an empty set must
     filter everything, not skip filtering. Known exceptions documented as
     tenant-wide-for-authenticated-users: semantic_models, decommission
-    blueprint, report_diff (enforce later, deliberately).
+    blueprint, report_diff (enforce later, deliberately). Residual edge in
+    impact model-details: when neither the request nor the catalog can
+    resolve a workspace id for the dataset, no ACL applies (accepted for
+    now — deny would 403 legitimately unknown datasets).
 20. **Heavy parses are serialized by two independent gates (P0).**
     Webapp: `_HEAVY_ROUTE_GATE` in routes/catalog.py — unused-fields,
     report-column-usage and model-details return 503 "Another heavy catalog

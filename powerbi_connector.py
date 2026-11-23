@@ -1,6 +1,7 @@
 # powerbi_connector.py - Corrected for Client Credentials Flow
 import requests
 import json
+import threading
 from config import Config
 
 class PowerBIConnector:
@@ -15,13 +16,36 @@ class PowerBIConnector:
                                        instead of service principal authentication.
         """
         self.access_token = None
-        self.user_token = user_token  # User-delegated token (takes priority)
+        self._user_token = user_token  # instance default (service-principal mode unless set)
+        self._tls = threading.local()  # per-thread user-token override — see set_user_token
         self.base_url = "https://api.powerbi.com/v1.0/myorg"
 
     def set_user_token(self, token):
-        """Set user-delegated access token for API calls"""
-        self.user_token = token
-        print("🔑 Using user-delegated access token")
+        """Set user-delegated access token for API calls.
+
+        P1: THREAD-SCOPED. The old code mutated shared instance state, so one
+        user's delegated token leaked into concurrent requests and into calls
+        meant for the service principal (gunicorn reuses its 8 worker
+        threads). Request handlers must call clear_user_token() when done.
+        """
+        self._tls.user_token = token
+        print("🔑 Using user-delegated access token (thread-scoped)")
+
+    def clear_user_token(self):
+        """Drop the calling thread's user-delegated override — subsequent
+        calls on this thread fall back to the instance default / service
+        principal."""
+        self._tls.user_token = None
+
+    @property
+    def user_token(self):
+        """Effective user token: the calling thread's override, else the
+        instance default set at construction."""
+        return getattr(self._tls, "user_token", None) or self._user_token
+
+    @user_token.setter
+    def user_token(self, value):
+        self._user_token = value
 
     def authenticate(self):
         """Authenticate with Azure AD using client credentials (application permissions)"""

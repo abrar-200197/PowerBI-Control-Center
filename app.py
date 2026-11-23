@@ -3708,6 +3708,15 @@ def get_reports():
                 'error': 'workspace_id is required'
             }), 400
 
+        # ACL: fail-closed gate for BOTH the catalog fast path and the live
+        # fallback below (P0) — deliberately placed BEFORE the per-user cache
+        # read so a denial applies even when cached data exists.
+        # _user_allowed_workspace_ids() returns set() on failure (never None in
+        # practice), so an auth/backend failure denies instead of leaking.
+        allowed_ws = _user_allowed_workspace_ids()
+        if allowed_ws is not None and workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
         # Get user info for cache key (include folder_id in cache key)
         user_id = session.get('user', {}).get('oid', 'unknown')
         cache_key = f"{workspace_id}_{user_id}_{folder_id or 'all'}"
@@ -3742,15 +3751,6 @@ def get_reports():
         # Active/inactive filter needs refresh timestamps
         if status_filter in ('active', 'inactive'):
             include_refresh = True
-
-        # ACL: fail-closed gate for BOTH the catalog fast path and the live
-        # fallback below (P0). The live path runs on the service principal and
-        # would otherwise serve tenant-wide data for any workspace id.
-        # _user_allowed_workspace_ids() returns set() on failure (never None in
-        # practice), so an auth/backend failure denies instead of leaking.
-        allowed_ws = _user_allowed_workspace_ids()
-        if allowed_ws is not None and workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
         if (
             not force_live
@@ -7271,7 +7271,8 @@ def get_report_details(report_id):
         print(f"\n🔍 Fetching report details for report {report_id} in workspace {workspace_id}")
         print(f"   Dataset ID: {dataset_id}")
 
-        # ✅ FIX: Use user-delegated token instead of service principal
+        # ✅ Use user-delegated token for the duration of this request only —
+        # the override is thread-scoped (P1) and dropped in the finally below.
         user_token = session.get('access_token')
         if user_token:
             powerbi.set_user_token(user_token)
@@ -7345,6 +7346,11 @@ def get_report_details(report_id):
             'success': False,
             'error': str(e)
         }), 500
+    finally:
+        # P1: drop this thread's user-delegated override — gunicorn reuses
+        # worker threads, and a stale token here would leak this user's
+        # identity into the next request served by the same thread.
+        powerbi.clear_user_token()
 
 
 def scan_report_visual_columns(workspace_id, report_id, access_token, fabric_token=None):
