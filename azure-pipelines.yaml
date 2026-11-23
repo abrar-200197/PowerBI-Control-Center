@@ -140,3 +140,22 @@ stages:
                       echo "App Status: $STATUS"
                       echo "Current Image: $CURRENT_IMAGE"
                       echo "Expected: DOCKER|$(containerRegistry)/$(imageRepository):$(tag)"
+
+                      echo "Post-start smoke: waiting for /health to return 200..."
+                      SMOKE_OK=0
+                      for i in $(seq 1 20); do
+                        sleep 15
+                        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                          https://afi-powerbi-documentation-prod-app.azurewebsites.net/health || true)
+                        echo "  attempt ${i}: HTTP ${HTTP_CODE}"
+                        if [ "$HTTP_CODE" = "200" ]; then
+                          SMOKE_OK=1
+                          break
+                        fi
+                      done
+                      if [ "$SMOKE_OK" = "1" ]; then
+                        echo "Post-start smoke PASSED (/health 200)"
+                      else
+                        echo "Post-start smoke FAILED - /health never returned 200 within 5 minutes"
+                        exit 1
+                      fi

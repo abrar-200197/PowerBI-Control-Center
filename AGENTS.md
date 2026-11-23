@@ -206,6 +206,17 @@ app registration, and a populated `.env` (gitignored — never commit it).
     `/api/generate/download/<job_id>` is `@login_required` + owner-checked.
     The cleanup thread pops both dicts. Do not "simplify" back to
     client-supplied job ids or an unauthenticated download route.
+23. **TWO REMOTES — deploys happen from Azure DevOps, not GitHub (P2,
+    2026-11-23).** `origin` is GitHub (`abrar-200197/PowerBI-Control-Center`);
+    `azure` is the Azure repo `Super Troopers/_git/Power BI Documentation`
+    that the "Power BI Documentation" pipeline builds and deploys. A push to
+    GitHub alone DOES NOT DEPLOY — a whole batch once sat undeployed this
+    way. Always `git push azure main` (or both) to ship. After every deploy
+    run `python scripts/verify-deploy.py` (token via MCP_HTTP_TOKEN env) —
+    it health-checks, proves the build marker is in the live tool
+    descriptions, and exercises the ACL/thin behaviors. The pipeline now
+    also smoke-checks /health after the swap and FAILS the run if the app
+    never comes up.
 
 ## Testing notes
 

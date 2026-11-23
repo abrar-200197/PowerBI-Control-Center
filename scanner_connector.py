@@ -229,13 +229,17 @@ class PowerBIScanner:
             print(f"❌ An unexpected error occurred during scan: {e}")
             return None
 
-    def get_dataset_model(self, dataset_id, admin_client=None, workspace_id=None):
+    def get_dataset_model(self, dataset_id, admin_client=None, workspace_id=None, scan_data=None):
         """Extract dataset model info - simplified version using admin_client if provided
 
         Args:
             dataset_id: The dataset ID to extract model for
             admin_client: Optional admin client (not currently used)
             workspace_id: Optional workspace ID to scan. If not provided, uses self.workspace_id from .env
+            scan_data: Optional pre-fetched run_scan() result. When provided,
+                NO new Admin scan is started — callers that already scanned the
+                workspace (e.g. the crash-test route) pass it here to avoid a
+                second multi-minute scan.
         """
         model = {
             "tables": [],
@@ -252,8 +256,9 @@ class PowerBIScanner:
             print(f"   ✅ Scanner model extraction initialized (awaiting data)")
             return model
 
-        # Otherwise try to run scan (for standalone use)
-        data = self.run_scan(workspace_id=workspace_id)
+        # P1 (double scan): honor a pre-fetched scan result before starting a
+        # new multi-minute Admin scan.
+        data = scan_data if scan_data is not None else self.run_scan(workspace_id=workspace_id)
         
         if not data or "workspaces" not in data:
             return model

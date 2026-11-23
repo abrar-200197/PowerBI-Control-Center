@@ -62,6 +62,7 @@ class CrashTestAnalyzer:
         self.report_metadata = {}
         self.visual_metadata = []  # NEW: Store visual metadata
         self._frontend_visual_bindings = None
+        self._prefetched_scan = None  # Optional pre-fetched Admin scan (see set_scan_result)
         self.visual_analysis_meta = {
             'performed': False,
             'method': None,
@@ -80,6 +81,16 @@ class CrashTestAnalyzer:
         print(f"   Report ID: {report_id}")
         print(f"   Dataset ID: {dataset_id}")
         print(f"{'='*80}\n")
+
+    def set_scan_result(self, scan_result):
+        """Optional pre-fetched Admin scan result.
+
+        P1 (double scan): the crash-test route already scans the workspace to
+        fetch report metadata. Passing that result here lets the schema
+        extraction reuse it instead of starting a SECOND multi-minute Admin
+        scan for the same workspace.
+        """
+        self._prefetched_scan = scan_result
 
     def set_visual_field_bindings(self, visual_field_bindings):
         """
@@ -377,6 +388,13 @@ class CrashTestAnalyzer:
                     print(f"   ⚠️  WARNING: {failures}/5 recent refreshes failed")
                 else:
                     print(f"   ✅ All recent refreshes successful")
+            elif response.status_code == 415:
+                # HTTP 415 = DirectQuery / Live dataset: the refreshes endpoint
+                # does not apply to these dataset types at all. This is a
+                # dataset-type fact, NOT a permissions problem — the old code
+                # warned "verify dataset permissions" on every DQ report and
+                # the warning deducted health-score points (P1 fix).
+                print("   ℹ️  HTTP 415 — DirectQuery/Live dataset: refresh history not applicable")
             else:
                 self.warnings.append({
                     'category': 'Dataset Health',
@@ -398,11 +416,18 @@ class CrashTestAnalyzer:
     def _analyze_dataset_schema(self):
         """Fetch and analyze dataset schema (tables, columns, measures)"""
         try:
-            # Try to get schema via Scanner API or dataset tables endpoint
+            # Try to get schema via Scanner API or dataset tables endpoint.
+            # P1 (double scan): reuse the pre-fetched scan result when the
+            # caller already scanned the workspace — get_dataset_model then
+            # parses it without starting a second multi-minute Admin scan.
             from scanner_connector import PowerBIScanner
 
             scanner = PowerBIScanner()
-            model = scanner.get_dataset_model(self.dataset_id, workspace_id=self.workspace_id)
+            model = scanner.get_dataset_model(
+                self.dataset_id,
+                workspace_id=self.workspace_id,
+                scan_data=getattr(self, '_prefetched_scan', None),
+            )
 
             if model:
                 # Extract schema
@@ -1270,10 +1295,20 @@ class CrashTestAnalyzer:
                     'is_broken': False
                 }
 
-                # Process each field
+                # Process each field. Key set aligned with
+                # _validate_visual_bindings_against_schema (P1 fix): frontend
+                # bindings can carry name/tableName/displayName variants — the
+                # old narrow key set silently dropped those fields from the
+                # lineage map and affected-tables.
                 for field in fields:
-                    field_name = field.get('field', field.get('column', ''))
-                    table_name = field.get('table', '')
+                    field_name = (
+                        field.get('name')
+                        or field.get('field')
+                        or field.get('column')
+                        or field.get('displayName')
+                        or ''
+                    )
+                    table_name = field.get('table') or field.get('tableName') or ''
 
                     if not field_name:
                         continue

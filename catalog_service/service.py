@@ -197,6 +197,20 @@ class CatalogService:
                 if name in heavy:
                     _memory.pop(name, None)
 
+    def _thin_pack_on_disk(self, name: str) -> bool:
+        """Cheap existence check for a thin-pack disk mirror (no parse).
+
+        Heavy-listed thin packs are no longer retained in memory (they are
+        dropped after every serving read), so memory presence alone is no
+        longer a reliable "already built" signal — a non-empty disk mirror
+        counts too.
+        """
+        try:
+            p = Path(cfg.CATALOG_CACHE_DIR) / Path(name).name
+            return p.is_file() and p.stat().st_size > 0
+        except Exception:
+            return False
+
     def get_workspace_catalog(self, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         cat = self.get_json("workspace_catalog.json", force_refresh=force_refresh)
         # Opportunistically materialize thin home pack for next Home hit
@@ -213,10 +227,24 @@ class CatalogService:
             "ui_impact_tables.json" not in _memory
             or "ui_impact_reports.json" not in _memory
         ):
-            try:
-                self._ensure_thin_impact_pack(idx)
-            except Exception as exc:
-                logger.warning("thin impact pack build skipped: %s", exc)
+            # Heavy-listed thin packs (ui_impact_reports.json) are dropped from
+            # memory after every serving read, so "not in _memory" no longer
+            # means "not built". Skip the rebuild when a non-empty disk mirror
+            # exists — otherwise every impact query would re-scan the full
+            # index just to rebuild packs that are already on disk.
+            tables_ok = (
+                "ui_impact_tables.json" in _memory
+                or self._thin_pack_on_disk("ui_impact_tables.json")
+            )
+            reports_ok = (
+                "ui_impact_reports.json" in _memory
+                or self._thin_pack_on_disk("ui_impact_reports.json")
+            )
+            if not (tables_ok and reports_ok):
+                try:
+                    self._ensure_thin_impact_pack(idx)
+                except Exception as exc:
+                    logger.warning("thin impact pack build skipped: %s", exc)
         return idx
 
     def _ensure_thin_home_pack(self, cat: Dict[str, Any]) -> None:
@@ -1348,6 +1376,11 @@ class CatalogService:
                 except Exception:
                     pass
             pack = (_memory.get("ui_impact_reports.json") or {}).get("data") or pack
+            # The freshly built pack is heavy-listed (~33 MB): it has also been
+            # written to the disk mirror, so drop the memory copy once consumed
+            # instead of retaining it until the next warm-up.
+            with _lock:
+                _memory.pop("ui_impact_reports.json", None)
 
         meta_row = None
         for r in (pack or {}).get("rows") or []:

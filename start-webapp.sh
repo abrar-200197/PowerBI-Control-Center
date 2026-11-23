@@ -8,9 +8,19 @@ set -e
 export MCP_HTTP_HOST="${MCP_HTTP_HOST:-127.0.0.1}"
 export MCP_HTTP_PORT="${MCP_HTTP_PORT:-8001}"
 
-# Sidecar in the background. If it dies the web app keeps serving and /mcp
-# fails closed (503) until the container restarts.
-python -m mcp_server.http_entry &
+# Sidecar supervision (P2): the old one-shot background start left /mcp
+# failing closed (503) until a full container restart whenever the sidecar
+# process died. A dedicated background subshell keeps restarting it; `exec
+# gunicorn` below replaces the parent shell, but the subshell survives as an
+# orphan and keeps supervising. `|| echo` stops set -e from killing the loop
+# when the sidecar exits non-zero.
+(
+  while true; do
+    python -m mcp_server.http_entry \
+      || echo "[sidecar-supervisor] sidecar exited; restarting in 5s..." >&2
+    sleep 5
+  done
+) &
 
 # Front door: unchanged gunicorn configuration - see the Dockerfile comment
 # for why the worker count must stay at 1 (OAuth session-file race).

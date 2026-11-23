@@ -7045,6 +7045,7 @@ def crash_test_report(report_id):
         print(f"   📋 Fetching report metadata from Scanner API...")
         from scanner_connector import PowerBIScanner
         report_metadata = {'modified_by': 'N/A', 'modified_date': None}
+        scan_result = None
 
         try:
             scanner = PowerBIScanner()
@@ -7102,6 +7103,12 @@ def crash_test_report(report_id):
         # Set report metadata on analyzer
         analyzer.report_metadata = report_metadata
         print(f"   ✅ Report metadata set: {report_metadata}")
+
+        # P1 (double scan): hand the analyzer the scan we already ran for the
+        # metadata above — its schema extraction reuses it instead of starting
+        # a SECOND multi-minute Admin scan of the same workspace.
+        if scan_result:
+            analyzer.set_scan_result(scan_result)
 
         # ⭐ NEW: Pass visual field bindings to analyzer if available
         if visual_field_bindings:
