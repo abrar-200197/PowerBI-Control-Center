@@ -47,6 +47,7 @@ _THIN_UI_PACKS = frozenset({
     "ui_report_directory.json",
     "ui_field_index.json",
     "ui_unused_fields_index.json",
+    "ui_decommission_candidates.json",
     "summary.json",
     "ops_summary.json",
 })

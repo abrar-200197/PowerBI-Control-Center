@@ -90,6 +90,7 @@ SHAREPOINT_PUBLISH_FILES = [
     "ui_impact_tables.json",
     "ui_impact_reports.json",
     "ui_report_directory.json",
+    "ui_decommission_candidates.json",
 ]
 
 # Report Catalog → Archive PBIX/RDL to SharePoint (decommission activity)
@@ -242,6 +243,7 @@ BROWSER_ALLOWED_CATALOG_FILES = frozenset({
     # Grid list only is safe; API strips detailsByReportId before browser use
     "ui_impact_reports.json",
     "ui_report_directory.json",
+    "ui_decommission_candidates.json",
 })
 
 

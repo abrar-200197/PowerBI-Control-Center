@@ -641,6 +641,153 @@ def build_ui_unused_fields_index(unused_index: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
+def _clean_person(*vals: Any) -> str:
+    for v in vals:
+        if v is None:
+            continue
+        if isinstance(v, dict):
+            v = v.get("userPrincipalName") or v.get("emailAddress") or v.get("displayName") or ""
+        s = str(v).strip()
+        if s and s.lower() not in {"unknown", "n/a", "none", "null", "-", "—"}:
+            return s
+    return ""
+
+
+def build_ui_decommission_candidates(
+    catalog: Dict[str, Any],
+    refresh_stale_days: int = 90,
+) -> Dict[str, Any]:
+    """
+    Tenant-wide precomputed Report Catalog "Decommission list" candidates.
+
+    Mirrors the live per-workspace rules in app.py
+    (export_inactive_reports / decommission_list_candidates):
+      1) days_since_refresh > refresh_stale_days
+      2) no import refresh history (not Live/DirectQuery)
+      3) 0 views in the usage lookback window
+      4) needs verification (unverified/estimated refresh status)
+
+    Folder path is intentionally omitted — it's resolved live per workspace
+    from Power BI folder metadata and isn't part of the batch catalog.
+    """
+    datasets_map = catalog.get("datasets") or {}
+    now = datetime.now(timezone.utc)
+    rows: List[Dict[str, Any]] = []
+    by_workspace: Dict[str, int] = {}
+
+    for ws in catalog.get("workspaces") or []:
+        wid = ws.get("id")
+        if not wid:
+            continue
+        wname = ws.get("name") or ""
+        for r in ws.get("reports") or []:
+            name = r.get("name") or "Unknown"
+            if is_excluded_report_name(name):
+                continue
+            ds = datasets_map.get(r.get("datasetId") or "") or {}
+            live_dq = _is_live(r, ds)
+
+            days = r.get("days_since_refresh")
+            if days is None:
+                days = ds.get("days_since_refresh")
+            last_ref = r.get("last_refreshed") or ds.get("last_refreshed")
+            if days is None and last_ref:
+                days = _parse_days(last_ref, now)
+            try:
+                days = int(days) if days is not None and days != "" else None
+            except Exception:
+                days = None
+
+            refresh_status = r.get("last_refresh_status") or ds.get("last_refresh_status") or ""
+
+            vc = r.get("view_count")
+            if vc is None:
+                vc = r.get("views")
+            views_known = vc is not None
+            try:
+                views = int(vc) if vc is not None else 0
+            except Exception:
+                views = 0
+
+            reasons: List[str] = []
+            if days is not None and days > refresh_stale_days:
+                reasons.append(f"Days since refresh > {refresh_stale_days} ({days}d)")
+
+            no_history = False
+            if not live_dq:
+                if (not last_ref) and (days is None):
+                    no_history = True
+                elif str(refresh_status).lower() in {"error", "failed"} and not last_ref:
+                    no_history = True
+            if no_history:
+                reasons.append("No refresh history")
+
+            zero_views = views_known and views == 0
+            if zero_views:
+                reasons.append(f"0 views in last {USAGE_LOOKBACK_DAYS} days")
+
+            refresh_src = str(
+                r.get("refresh_source") or ds.get("refresh_source") or ""
+            ).lower().replace("-", "_").replace(" ", "")
+            status_l = str(refresh_status or "").lower()
+            note_l = str(r.get("refresh_note") or ds.get("refresh_note") or "").lower()
+            needs_verify = (
+                status_l in {"unverified", "estimated"}
+                or refresh_src in {"content_modified", "content_created", "contentcreated", "created"}
+                or "verify in power bi" in note_l
+                or "verify in pbi" in note_l
+            )
+            if needs_verify and not live_dq:
+                reasons.append("Verify in PBI (unconfirmed refresh)")
+
+            if not reasons:
+                continue
+
+            owner = _clean_person(
+                ds.get("dataset_owner"),
+                r.get("configuredBy"),
+                r.get("createdBy"),
+                r.get("created_by"),
+                r.get("modifiedBy"),
+                r.get("modified_by"),
+            )
+            model_name = (r.get("datasetName") or r.get("dataset_name") or ds.get("name") or "").strip() or "NA"
+            last_ref_disp = str(last_ref)[:19].replace("T", " ") if last_ref else "NA"
+
+            rows.append({
+                "reportId": r.get("id"),
+                "reportName": name,
+                "workspaceId": wid,
+                "workspaceName": wname,
+                "datasetId": r.get("datasetId") or "",
+                "modelName": model_name,
+                "lastRefreshedOn": last_ref_disp,
+                "daysSinceRefresh": days if days is not None else None,
+                "contactOwner": owner or "NA",
+                "viewCount": views if views_known else None,
+                "reasons": reasons,
+                "zeroViews": zero_views,
+                "needsVerify": bool(needs_verify and not live_dq),
+            })
+            by_workspace[wid] = by_workspace.get(wid, 0) + 1
+
+    rows.sort(key=lambda r: (
+        (r.get("workspaceName") or "").lower(),
+        (r.get("reportName") or "").lower(),
+    ))
+
+    return {
+        "generatedAt": catalog.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
+        "opsEnrichedAt": catalog.get("opsEnrichedAt"),
+        "schemaVersion": "1.0",
+        "refreshStaleDaysThreshold": refresh_stale_days,
+        "usageLookbackDays": USAGE_LOOKBACK_DAYS,
+        "candidateCount": len(rows),
+        "workspaceCounts": by_workspace,
+        "rows": rows,
+    }
+
+
 def write_thin_packs(latest_dir: Path) -> Dict[str, Path]:
     """Build ui_*.json into latest_dir from full artifacts. Returns paths written."""
     latest_dir = Path(latest_dir)
@@ -663,6 +810,17 @@ def write_thin_packs(latest_dir: Path) -> Dict[str, Path]:
             p.stat().st_size / 1024,
             directory.get("reportCount") or 0,
         )
+        try:
+            decomm = build_ui_decommission_candidates(cat)
+            p = latest_dir / "ui_decommission_candidates.json"
+            p.write_text(json.dumps(decomm, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            out["ui_decommission_candidates"] = p
+            logger.info(
+                "Wrote %s (%.1f KB, %s candidates)",
+                p.name, p.stat().st_size / 1024, decomm.get("candidateCount") or 0,
+            )
+        except Exception as exc:
+            logger.warning("decommission candidates thin pack build skipped: %s", exc)
     imp_path = latest_dir / "impact_index.json"
     if imp_path.is_file():
         imp = json.loads(imp_path.read_text(encoding="utf-8"))
