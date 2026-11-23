@@ -214,6 +214,14 @@ reverse impact analysis, field usage, unused fields, model details.
   `lookup_table_impact`, `get_table_impact_detail`, `get_model_details`,
   `get_home_summary`) are tenant-wide by design and ignore it. Keep it on
   stdio/local; do not expose over HTTP without adding auth + real per-user ACL.
+- MEMORY (2026-11-23): the hosted sidecar must NEVER parse
+  `workspace_catalog.json` (~284 MB → OOM-killed the shared container when
+  concurrent with the webapp's own heavy loads). `get_workspace_reports` is
+  served from the thin report directory; `get_unused_fields` /
+  `get_field_usage` (~102/~54 MB indexes) serialize through a one-at-a-time
+  gate with a friendly busy response. Guard:
+  `tests/test_mcp_thin_workspace_reports.py` (stub fails on any heavy-blob
+  access). Keep new tools thin-pack-backed.
 - Smoke test: `python tests/test_mcp_server.py` (spawns the server over
   stdio; may hit SharePoint when the disk mirror needs revalidation — not
   part of the offline pytest set).

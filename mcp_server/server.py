@@ -205,13 +205,46 @@ def search_reports(query: str, limit: int = 20, acl_workspace_ids: Optional[List
 
 @mcp.tool()
 def get_workspace_reports(workspace_id: str, acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
-    """All reports in one workspace, with dataset binding, last refresh
-    status/time, refresh schedule and report type per report."""
+    """Thin report list for one workspace: report id, name, dataset binding.
+
+    Served from the KB-scale report directory — this tool NEVER loads the
+    ~284 MB workspace_catalog (concurrent heavy parses OOM-killed the shared
+    container under team load on 2026-11-23). Per-report refresh/ops detail:
+    use the webapp workspace page. Call list_workspaces first to get the
+    workspace_id."""
     try:
-        out = _svc().get_workspace_reports(workspace_id, _effective_ids(acl_workspace_ids))
-        if out is None:
-            return _not_found(f"Workspace {workspace_id}")
-        return {"success": True, "data": out}
+        s = _svc()
+        allowed = _effective_ids(acl_workspace_ids)
+        if allowed is not None and workspace_id not in allowed:
+            return {
+                "success": False,
+                "aclFiltered": True,
+                "error": f"Workspace {workspace_id[:8]}... is not in your allowed workspace list",
+            }
+        rows = s.get_report_directory_rows(allowed)
+        ws_rows = [r for r in rows if r.get("workspaceId") == workspace_id]
+        ws_rows.sort(key=lambda r: (r.get("reportName") or "").lower())
+        reports = [
+            {
+                "id": r.get("reportId"),
+                "name": r.get("reportName") or "",
+                "datasetId": r.get("datasetId") or "",
+                "from_catalog": True,
+            }
+            for r in ws_rows
+        ]
+        return {
+            "success": True,
+            "workspace_id": workspace_id,
+            "workspace_name": (ws_rows[0].get("workspaceName") or "") if ws_rows else "",
+            "count": len(reports),
+            "detailLevel": "thin",
+            "detailNote": (
+                "Thin list (id/name/dataset). Per-report refresh status, "
+                "schedule and usage: open the workspace in the webapp."
+            ),
+            "reports": reports,
+        }
     except Exception as exc:
         return _error(exc)
 
@@ -307,6 +340,35 @@ def get_model_details(
         return _error(exc)
 
 
+# ------------------------------------------------------------- heavy gate
+
+import threading
+
+# Tools that parse large catalog indexes (unused_fields ~102 MB,
+# field_usage ~54 MB) serialize through this gate: ONE heavy parse at a
+# time process-wide. Concurrent callers get an immediate friendly refusal
+# instead of a second simultaneous multi-hundred-MB parse — which, stacked
+# on the webapp's own heavy loads, OOM-killed the shared container under
+# team load (2026-11-23). Thin-pack-backed tools never enter the gate.
+_HEAVY_GATE = threading.BoundedSemaphore(1)
+
+
+def _heavy_call(fn, *args, **kwargs) -> Dict[str, Any]:
+    if not _HEAVY_GATE.acquire(blocking=False):
+        return {
+            "success": False,
+            "busy": True,
+            "error": (
+                "Another heavy catalog query is running on the server; "
+                "retry in ~30 seconds."
+            ),
+        }
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _HEAVY_GATE.release()
+
+
 # ---------------------------------------------------------------- fields
 
 
@@ -317,7 +379,9 @@ def get_unused_fields(limit: int = 50, acl_workspace_ids: Optional[List[str]] = 
     DAX-referenced, M-expression-tagged, relationship keys, or referenced by
     another measure. Note the returned 'caveat' (RLS/sort-by undetectable)."""
     try:
-        out = _svc().unused_fields_rows(_effective_ids(acl_workspace_ids))
+        out = _heavy_call(_svc().unused_fields_rows, _effective_ids(acl_workspace_ids))
+        if isinstance(out, dict) and out.get("busy"):
+            return out
         rows = list(out.get("rows") or [])
         out["rows"] = rows[: max(1, min(int(limit), 500))]
         out["rowsShown"] = len(out["rows"])
@@ -333,7 +397,9 @@ def get_field_usage(field_key: str, acl_workspace_ids: Optional[List[str]] = Non
     (format 'table.column' or 'table.measure' — see the fieldKey values in
     get_unused_fields or the Impact Explorer). Weekly-built index."""
     try:
-        out = _svc().field_usage_detail(field_key, _effective_ids(acl_workspace_ids))
+        out = _heavy_call(_svc().field_usage_detail, field_key, _effective_ids(acl_workspace_ids))
+        if isinstance(out, dict) and out.get("busy"):
+            return out
         if out is None:
             return _not_found(f"Field {field_key!r}")
         return {"success": True, "data": out}
