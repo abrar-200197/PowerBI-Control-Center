@@ -15,6 +15,7 @@ them lazily at call/request time, by which point `app` is fully initialized
 in sys.modules.
 """
 import logging
+import requests
 from functools import wraps
 from flask import Blueprint, request, jsonify, render_template, session, send_file
 
@@ -425,6 +426,12 @@ def export_similarity_analysis():
             if not user_token:
                 return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
+            # Threshold for the GET re-analyze path (POST uses frontend-provided
+            # results). Lost in an old edit and restored 2026-11-23 - its
+            # NameError made the GET export path return 500 since before the
+            # blueprint extraction.
+            threshold = float(request.args.get('threshold', 0.3))
+
             # Run the same similarity analysis
             from scanner_connector import PowerBIScanner
             scanner = PowerBIScanner()
@@ -559,62 +566,62 @@ def export_similarity_analysis():
                     if comparison_count % 100 == 0:
                         print(f"   Progress: {comparison_count}/{total_comparisons} comparisons ({int(comparison_count/total_comparisons*100)}%)")
 
-                report_a = reports_data[i]
-                report_b = reports_data[j]
+                    report_a = reports_data[i]
+                    report_b = reports_data[j]
 
-                if '[App]' in report_a['name'] or '[App]' in report_b['name']:
-                    continue
+                    if '[App]' in report_a['name'] or '[App]' in report_b['name']:
+                        continue
 
-                similarity = calculate_report_similarity(report_a, report_b)
+                    similarity = calculate_report_similarity(report_a, report_b)
 
-                # Use dynamic threshold (convert percentage to decimal if needed)
-                threshold_value = threshold * 100 if threshold <= 1 else threshold
-                if similarity['overall_score'] >= threshold_value:
-                    # Check if cross-workspace
-                    is_cross_ws = report_a.get('workspace_id') != report_b.get('workspace_id')
+                    # Use dynamic threshold (convert percentage to decimal if needed)
+                    threshold_value = threshold * 100 if threshold <= 1 else threshold
+                    if similarity['overall_score'] >= threshold_value:
+                        # Check if cross-workspace
+                        is_cross_ws = report_a.get('workspace_id') != report_b.get('workspace_id')
 
-                    comparisons.append({
-                        'report_a_id': report_a.get('id', ''),
-                        'report_a_name': report_a['name'],
-                        'report_a_workspace': report_a.get('workspace_name', ''),
-                        'report_a_workspace_id': report_a.get('workspace_id', ''),
-                        'report_a_modified_by': report_a.get('modifiedBy', ''),
-                        'report_a_modified_date': report_a.get('modifiedDateTime', ''),
-                        'report_b_id': report_b.get('id', ''),
-                        'report_b_name': report_b['name'],
-                        'report_b_workspace': report_b.get('workspace_name', ''),
-                        'report_b_workspace_id': report_b.get('workspace_id', ''),
-                        'report_b_modified_by': report_b.get('modifiedBy', ''),
-                        'report_b_modified_date': report_b.get('modifiedDateTime', ''),
-                        'is_cross_workspace': 'Yes' if is_cross_ws else 'No',
-                        'similarity_score': similarity['overall_score'],
-                        'dax_similarity': similarity['scores']['dax_similarity'],
-                        'table_similarity': similarity['scores']['table_similarity'],
-                        'page_similarity': similarity['scores']['page_similarity'],
-                        'visual_similarity': similarity['scores'].get('visual_similarity', 0),
-                        'identical_measures_count': len(similarity['details']['identical_measures']),
-                        'identical_measures': ', '.join(similarity['details']['identical_measures']),
-                        'logic_matched_measures_count': len(similarity['details'].get('logic_matched_measures', [])),
-                        'logic_matched_measures': '; '.join([f"{m.get('measure_a')} ⟷ {m.get('measure_b')}" for m in similarity['details'].get('logic_matched_measures', [])]),
-                        'identical_tables_count': len(similarity['details']['identical_tables']),
-                        'identical_tables': ', '.join(similarity['details']['identical_tables']),
-                        'identical_pages_count': len(similarity['details']['identical_pages']),
-                        'identical_pages': ', '.join(similarity['details']['identical_pages']),
-                        'identical_visuals_count': len(similarity['details'].get('identical_visuals', [])),
-                        'similar_visuals_count': len(similarity['details'].get('similar_visuals', [])),
-                        'unique_measures_a_count': len(similarity['details']['unique_to_a']),
-                        'unique_measures_a': ', '.join(similarity['details']['unique_to_a']),
-                        'unique_measures_b_count': len(similarity['details']['unique_to_b']),
-                        'unique_measures_b': ', '.join(similarity['details']['unique_to_b']),
-                        'unique_tables_a_count': len(similarity['details']['unique_tables_a']),
-                        'unique_tables_a': ', '.join(similarity['details']['unique_tables_a']),
-                        'unique_tables_b_count': len(similarity['details']['unique_tables_b']),
-                        'unique_tables_b': ', '.join(similarity['details']['unique_tables_b']),
-                        'unique_pages_a_count': len(similarity['details']['unique_pages_a']),
-                        'unique_pages_a': ', '.join(similarity['details']['unique_pages_a']),
-                        'unique_pages_b_count': len(similarity['details']['unique_pages_b']),
-                        'unique_pages_b': ', '.join(similarity['details']['unique_pages_b'])
-                    })
+                        comparisons.append({
+                            'report_a_id': report_a.get('id', ''),
+                            'report_a_name': report_a['name'],
+                            'report_a_workspace': report_a.get('workspace_name', ''),
+                            'report_a_workspace_id': report_a.get('workspace_id', ''),
+                            'report_a_modified_by': report_a.get('modifiedBy', ''),
+                            'report_a_modified_date': report_a.get('modifiedDateTime', ''),
+                            'report_b_id': report_b.get('id', ''),
+                            'report_b_name': report_b['name'],
+                            'report_b_workspace': report_b.get('workspace_name', ''),
+                            'report_b_workspace_id': report_b.get('workspace_id', ''),
+                            'report_b_modified_by': report_b.get('modifiedBy', ''),
+                            'report_b_modified_date': report_b.get('modifiedDateTime', ''),
+                            'is_cross_workspace': 'Yes' if is_cross_ws else 'No',
+                            'similarity_score': similarity['overall_score'],
+                            'dax_similarity': similarity['scores']['dax_similarity'],
+                            'table_similarity': similarity['scores']['table_similarity'],
+                            'page_similarity': similarity['scores']['page_similarity'],
+                            'visual_similarity': similarity['scores'].get('visual_similarity', 0),
+                            'identical_measures_count': len(similarity['details']['identical_measures']),
+                            'identical_measures': ', '.join(similarity['details']['identical_measures']),
+                            'logic_matched_measures_count': len(similarity['details'].get('logic_matched_measures', [])),
+                            'logic_matched_measures': '; '.join([f"{m.get('measure_a')} ⟷ {m.get('measure_b')}" for m in similarity['details'].get('logic_matched_measures', [])]),
+                            'identical_tables_count': len(similarity['details']['identical_tables']),
+                            'identical_tables': ', '.join(similarity['details']['identical_tables']),
+                            'identical_pages_count': len(similarity['details']['identical_pages']),
+                            'identical_pages': ', '.join(similarity['details']['identical_pages']),
+                            'identical_visuals_count': len(similarity['details'].get('identical_visuals', [])),
+                            'similar_visuals_count': len(similarity['details'].get('similar_visuals', [])),
+                            'unique_measures_a_count': len(similarity['details']['unique_to_a']),
+                            'unique_measures_a': ', '.join(similarity['details']['unique_to_a']),
+                            'unique_measures_b_count': len(similarity['details']['unique_to_b']),
+                            'unique_measures_b': ', '.join(similarity['details']['unique_to_b']),
+                            'unique_tables_a_count': len(similarity['details']['unique_tables_a']),
+                            'unique_tables_a': ', '.join(similarity['details']['unique_tables_a']),
+                            'unique_tables_b_count': len(similarity['details']['unique_tables_b']),
+                            'unique_tables_b': ', '.join(similarity['details']['unique_tables_b']),
+                            'unique_pages_a_count': len(similarity['details']['unique_pages_a']),
+                            'unique_pages_a': ', '.join(similarity['details']['unique_pages_a']),
+                            'unique_pages_b_count': len(similarity['details']['unique_pages_b']),
+                            'unique_pages_b': ', '.join(similarity['details']['unique_pages_b'])
+                        })
 
             print(f"\n✅ Comparison complete! Found {len(comparisons)} similar pairs (>= 70% similarity)")
             print(f"   Now generating export file...")

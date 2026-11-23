@@ -2538,6 +2538,10 @@ def deep_content_search(workspace_id):
 
             # Get folder hierarchy from Fabric API
             try:
+                # headers was lost in the route-extraction commit (28bdeb9):
+                # NameError at runtime. Use the captured user_token (this code
+                # may run in the background thread - no session access here).
+                headers = {'Authorization': f'Bearer {user_token}'} if user_token else {}
                 folders_url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/folders?recursive=true"
                 folders_response = requests.get(folders_url, headers=headers)
 
@@ -3034,6 +3038,649 @@ def get_datasets():
             'success': False,
             'error': str(e)
         }), 500
+
+# --- Catalog fast-path helpers (restored 2026-11-23) ---
+# The blueprint-extraction commit (28bdeb9) restored route bodies that
+# call these helpers without restoring the helpers themselves, so the
+# /api/reports catalog fast-path raised NameError at runtime and
+# silently fell back to the slow live Scanner path. Definitions
+# recovered byte-exact from commit 4f74f7b (fd450d7^), the newest
+# revision containing all six. Guarded by
+# tests/test_apppy_undefined_names.py.
+
+def _fetch_workspace_folder_meta(workspace_id, timeout=12):
+    """
+    Fetch workspace folder tree + report→folder membership for Report Catalog.
+
+    Returns:
+      {
+        'folders': [{id, name, parentFolderId, report_count, hasChildren}, ...],
+        'report_folder_map': {reportId: folderId|None},  # None = root
+        'folder_names_map': {folderId: {id, name, parentFolderId}},
+      }
+
+    Folder names come from Fabric Folders API.
+    Membership prefers Fabric Items (report/parentFolderId) — cheap vs Admin Scanner.
+    Cached per workspace for WORKSPACE_FOLDERS_CACHE_DURATION seconds.
+    """
+    import time as _time
+    import requests as _requests
+
+    empty = {'folders': [], 'report_folder_map': {}, 'folder_names_map': {}}
+    if not workspace_id:
+        return empty
+
+    cached = workspace_folders_cache.get(workspace_id)
+    if cached and (_time.time() - float(cached.get('timestamp') or 0)) < WORKSPACE_FOLDERS_CACHE_DURATION:
+        return {
+            'folders': list(cached.get('folders') or []),
+            'report_folder_map': dict(cached.get('report_folder_map') or {}),
+            'folder_names_map': dict(cached.get('folder_names_map') or {}),
+        }
+
+    folder_names_map = {}
+    report_folder_map = {}  # reportId -> folderId (omit root / None not stored; treated as root)
+
+    def _ingest_folder_rows(rows):
+        for folder in rows or []:
+            fid = folder.get('id')
+            if not fid:
+                continue
+            fname = (
+                folder.get('displayName')
+                or folder.get('name')
+                or f'Folder {str(fid)[:8]}'
+            )
+            folder_names_map[fid] = {
+                'id': fid,
+                'name': fname,
+                'parentFolderId': folder.get('parentFolderId'),
+            }
+
+    def _auth_headers(token):
+        return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+
+    def _try_fabric_folders(token, label):
+        if not token:
+            return False
+        try:
+            url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/folders?recursive=true"
+            resp = _requests.get(url, headers=_auth_headers(token), timeout=timeout)
+            if resp.status_code == 200:
+                _ingest_folder_rows(resp.json().get('value', []))
+                print(f"   📁 Folders via Fabric ({label}): {len(folder_names_map)}")
+                return True
+            print(f"   ⚠️ Fabric folders ({label}) HTTP {resp.status_code}")
+        except Exception as ex:
+            print(f"   ⚠️ Fabric folders ({label}) error: {ex}")
+        return False
+
+    def _paginate_fabric_items(token, params_base, label):
+        """Yield items from Fabric workspace items API with continuation."""
+        url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/items"
+        headers = _auth_headers(token)
+        continuation = None
+        pages = 0
+        while pages < 30:
+            pages += 1
+            params = dict(params_base or {})
+            if continuation:
+                params['continuationToken'] = continuation
+            resp = _requests.get(url, headers=headers, params=params, timeout=timeout)
+            if resp.status_code != 200:
+                print(f"   ⚠️ Fabric items ({label}) HTTP {resp.status_code} params={params_base}")
+                return
+            body = resp.json() or {}
+            for item in body.get('value') or []:
+                yield item
+            continuation = body.get('continuationToken')
+            if not continuation:
+                break
+
+    def _is_report_item(item):
+        itype = (item.get('type') or '').replace(' ', '').lower()
+        return itype in (
+            'report',
+            'paginatedreport',
+            'pagedreport',
+            'powerbireport',
+            'rdl',
+        )
+
+    def _item_folder_id(item):
+        return (
+            item.get('folderId')
+            or item.get('parentFolderId')
+            or item.get('folderObjectId')
+            or None
+        )
+
+    def _try_fabric_items_membership(token, label):
+        """
+        ONE workspace items list (paginated) → reportId → folderId.
+        Avoids N+1 per-folder calls that made workspace select slow.
+        """
+        nonlocal report_folder_map
+        if not token:
+            return False
+        try:
+            rootish = 0
+            in_folder = 0
+            for item in _paginate_fabric_items(token, {'recursive': 'true'}, f"{label}/items"):
+                if not _is_report_item(item):
+                    continue
+                rid = item.get('id')
+                if not rid:
+                    continue
+                rid_s = str(rid)
+                parent = _item_folder_id(item)
+                if parent:
+                    report_folder_map[rid_s] = str(parent)
+                    in_folder += 1
+                else:
+                    report_folder_map[rid_s] = None
+                    rootish += 1
+
+            print(
+                f"   📁 Report→folder map ({label}): "
+                f"total={len(report_folder_map)} in_folder={in_folder} root={rootish}"
+            )
+            return len(report_folder_map) > 0
+        except Exception as ex:
+            print(f"   ⚠️ Fabric items membership ({label}) error: {ex}")
+        return False
+
+    # Tokens: try Fabric user token FIRST only. Do not fan-out PBI+SP+Scanner
+    # unless Fabric fails — that was forcing new tokens every workspace select.
+    tok = None
+    label = 'user-fabric'
+    try:
+        tok = get_user_fabric_token()
+    except Exception as ex:
+        print(f"   ⚠️ get_user_fabric_token failed: {ex}")
+
+    if tok:
+        _try_fabric_folders(tok, label)
+        _try_fabric_items_membership(tok, label)
+
+    # Fallback 1: user Power BI token (sometimes accepted on Fabric endpoints)
+    if not folder_names_map or not report_folder_map:
+        try:
+            pbi_tok = get_user_powerbi_token()
+            if pbi_tok:
+                if not folder_names_map:
+                    _try_fabric_folders(pbi_tok, 'user-pbi')
+                if not report_folder_map:
+                    _try_fabric_items_membership(pbi_tok, 'user-pbi')
+        except Exception as ex:
+            print(f"   ⚠️ user-pbi folder fallback failed: {ex}")
+
+    # Fallback 2: service principal — only if still empty (slow token + possible scan)
+    if not folder_names_map or not report_folder_map:
+        try:
+            from scanner_connector import PowerBIScanner
+            sp = PowerBIScanner()
+            sp_token = None
+            if hasattr(sp, 'get_access_token'):
+                try:
+                    try:
+                        sp_token = sp.get_access_token(
+                            scope='https://api.fabric.microsoft.com/.default'
+                        )
+                    except TypeError:
+                        sp_token = sp.get_access_token()
+                except Exception:
+                    sp_token = None
+            if sp_token:
+                if not folder_names_map:
+                    _try_fabric_folders(sp_token, 'service-principal')
+                if not report_folder_map:
+                    _try_fabric_items_membership(sp_token, 'service-principal')
+            # Admin Scanner only as last resort (expensive)
+            if not folder_names_map or not report_folder_map:
+                print("   ⚠️ Folder meta incomplete — Admin Scanner last resort…")
+                scanner = PowerBIScanner()
+                scanner.access_token = sp_token or scanner.get_access_token()
+                try:
+                    scan_data = scanner.run_scan(
+                        workspace_id=workspace_id,
+                        dataset_schema=False,
+                        dataset_expressions=False,
+                        lineage=False,
+                    )
+                except TypeError:
+                    scan_data = scanner.run_scan(workspace_id=workspace_id)
+                if scan_data and scan_data.get('workspaces'):
+                    for ws in scan_data['workspaces']:
+                        if ws.get('id') != workspace_id:
+                            continue
+                        if not folder_names_map:
+                            _ingest_folder_rows(ws.get('folders') or [])
+                        for rep in ws.get('reports') or []:
+                            rid = rep.get('id')
+                            if not rid:
+                                continue
+                            fid = rep.get('folderObjectId') or rep.get('folderId')
+                            if str(rid) not in report_folder_map:
+                                report_folder_map[str(rid)] = str(fid) if fid else None
+                            if fid and fid not in folder_names_map:
+                                folder_names_map[fid] = {
+                                    'id': fid,
+                                    'name': rep.get('folderName') or f'Folder {str(fid)[:8]}',
+                                    'parentFolderId': None,
+                                }
+                        print(
+                            f"   📁 Scanner fallback folders={len(folder_names_map)} "
+                            f"membership={len(report_folder_map)}"
+                        )
+                        break
+        except Exception as ex:
+            print(f"   ⚠️ SP/Scanner folder fallback failed: {ex}")
+
+    # report_count per folder from membership
+    counts = {}
+    root_count = 0
+    for _rid, fid in report_folder_map.items():
+        if fid:
+            counts[fid] = counts.get(fid, 0) + 1
+        else:
+            root_count += 1
+
+    folders_list = []
+    for fid, finfo in folder_names_map.items():
+        leaf = finfo.get('name') or fid
+        parent_id = finfo.get('parentFolderId')
+        folders_list.append({
+            'id': fid,
+            'name': leaf,
+            'parentFolderId': parent_id,
+            'report_count': int(counts.get(fid) or 0),
+            'hasChildren': False,
+        })
+
+    by_id = {f['id']: f for f in folders_list}
+    for f in folders_list:
+        pid = f.get('parentFolderId')
+        if pid and pid in by_id:
+            by_id[pid]['hasChildren'] = True
+
+    # Virtual root entry when there are uncategorized reports
+    if root_count > 0:
+        folders_list.append({
+            'id': '__ROOT__',
+            'name': 'Root Directory (Uncategorized)',
+            'parentFolderId': None,
+            'report_count': root_count,
+            'hasChildren': False,
+        })
+
+    folders_list = sorted(folders_list, key=lambda f: (f.get('name') or '').lower())
+
+    workspace_folders_cache[workspace_id] = {
+        'folders': folders_list,
+        'report_folder_map': report_folder_map,
+        'folder_names_map': folder_names_map,
+        'timestamp': _time.time(),
+    }
+    print(
+        f"   ✅ Workspace folder meta ready: folders={len(folders_list)} "
+        f"mapped_reports={len(report_folder_map)} for {workspace_id[:8]}…"
+    )
+    return {
+        'folders': list(folders_list),
+        'report_folder_map': dict(report_folder_map),
+        'folder_names_map': dict(folder_names_map),
+    }
+
+
+def _filter_reports_by_folder(report_list, folder_id, folder_meta):
+    """
+    Filter catalog/live report shells by folder using membership map + hierarchy.
+    folder_id='__ROOT__' → reports with no folder.
+    """
+    if not folder_id:
+        return report_list
+
+    folder_names_map = (folder_meta or {}).get('folder_names_map') or {}
+    report_folder_map = (folder_meta or {}).get('report_folder_map') or {}
+
+    def _report_folder(rep):
+        rid = str(rep.get('id') or '')
+        if rid and rid in report_folder_map:
+            return report_folder_map.get(rid)
+        return rep.get('folderId') or rep.get('folderObjectId') or None
+
+    if folder_id == '__ROOT__':
+        return [r for r in report_list if not _report_folder(r)]
+
+    # Selected folder + nested children
+    if folder_names_map:
+        allowed = get_all_child_folders_recursive(folder_id, folder_names_map)
+    else:
+        allowed = {folder_id}
+
+    out = []
+    for r in report_list:
+        rf = _report_folder(r)
+        if rf and rf in allowed:
+            out.append(r)
+    return out
+
+
+def _attach_folder_ids(report_list, report_folder_map):
+    """Stamp folderId onto report shells for UI client-side filtering."""
+    if not report_folder_map:
+        return report_list
+    out = []
+    for r in report_list or []:
+        if not isinstance(r, dict):
+            out.append(r)
+            continue
+        rr = dict(r)
+        rid = str(rr.get('id') or '')
+        if rid and rid in report_folder_map:
+            fid = report_folder_map.get(rid)
+            rr['folderId'] = fid
+            rr['folderObjectId'] = fid
+        out.append(rr)
+    return out
+
+
+def _catalog_reports_shell(catalog_reports):
+    """
+    Instant catalog rows. Prefer precomputed ops fields (refresh + views)
+    when present in SharePoint catalog; otherwise leave null/pending.
+    """
+    report_list = []
+    for r in catalog_reports or []:
+        has_ops = bool(
+            r.get('ops_from_catalog')
+            or r.get('last_refreshed')
+            or r.get('last_refresh_status')
+            or r.get('refresh_schedule')
+            or r.get('refresh_type')
+            or r.get('view_count') is not None
+        )
+        # Optional owner fields from catalog (after extract preserves them).
+        # UI still runs /api/reports-metadata for live fill; seeding avoids N/A flash.
+        # Seed owner fields when catalog has them, but never mark metadata_loaded here.
+        # UI waits for ONE batch /api/reports-metadata so ALL rows stop spinning together.
+        created_by = _pick_person(r.get('createdBy'), r.get('created_by'))
+        modified_by = _pick_person(r.get('modifiedBy'), r.get('modified_by'))
+        created_dt = _pick_datetime(
+            r.get('createdDateTime'), r.get('created_date_time'), r.get('created_date')
+        )
+        modified_dt = _pick_datetime(
+            r.get('modifiedDateTime'), r.get('modified_date_time'), r.get('modified_date')
+        )
+
+        last_ref = r.get('last_refreshed')
+        last_status = r.get('last_refresh_status')
+        refresh_note = r.get('refresh_note')
+        refresh_source = r.get('refresh_source')
+        days = r.get('days_since_refresh')
+        # Fast paint: if ops has no scheduled timestamp, fall back to report modified
+        # (OneDrive-tab history is not in REST; modified is the closest public signal)
+        if not last_ref and modified_dt:
+            try:
+                from powerbi_connector import (
+                    refresh_info_from_content_modified as _cm,
+                    days_since_refresh as _dsr,
+                )
+                cm = _cm(None, {'modifiedDateTime': modified_dt}, dataset_workspace_id=None)
+                if cm and cm.get('last_refreshed'):
+                    last_ref = cm.get('last_refreshed')
+                    last_status = cm.get('last_refresh_status') or last_status or 'Completed'
+                    refresh_note = cm.get('refresh_note') or refresh_note
+                    refresh_source = cm.get('refresh_source') or 'content_modified'
+                    days = _dsr(last_ref)
+            except Exception:
+                pass
+        if days is None and last_ref:
+            try:
+                from powerbi_connector import days_since_refresh as _dsr
+                days = _dsr(last_ref)
+            except Exception:
+                days = None
+
+        report_list.append({
+            'id': r.get('id'),
+            'name': r.get('name'),
+            'datasetId': r.get('datasetId') or '',
+            'folderId': r.get('folderId'),
+            'folderName': r.get('folderName'),
+            'refresh_schedule': r.get('refresh_schedule'),
+            'last_refreshed': last_ref,
+            'last_refresh_status': last_status,
+            'refresh_type': r.get('refresh_type'),
+            'refresh_note': refresh_note,
+            'refresh_source': refresh_source,
+            'days_since_refresh': days,
+            'dataset_workspace_id': r.get('dataset_workspace_id'),
+            'dataset_owner': r.get('dataset_owner'),
+            'view_count': r.get('view_count'),
+            'last_viewed': r.get('last_viewed'),
+            'usage_loaded': r.get('view_count') is not None,
+            'created_by': created_by or None,
+            'modified_by': modified_by or None,
+            'created_date_time': created_dt or None,
+            'modified_date_time': modified_dt or None,
+            'metadata_loaded': False,
+            'last_accessed': None,
+            'last_accessed_by': None,
+            'last_modified': None,
+            'last_generated': None,
+            'has_documentation': False,
+            'needs_update': False,
+            'webUrl': r.get('webUrl') or '',
+            'from_catalog': True,
+            'ops_from_catalog': has_ops,
+            'datasetName': r.get('datasetName'),
+            'reportType': r.get('reportType'),
+            # Only pending when ops snapshot not yet in catalog
+            'refresh_pending': not has_ops,
+        })
+    return report_list
+
+
+def _enrich_catalog_reports_with_refresh(catalog_reports, workspace_id):
+    """
+    Take catalog report shells and overlay live refresh data (robust resolver).
+    Structure from catalog (fast); refresh/status still live (accurate).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from powerbi_connector import (
+        resolve_dataset_refresh_info,
+        _empty_refresh_info,
+        merge_refresh_candidates,
+        days_since_refresh,
+        refresh_info_from_content_modified,
+    )
+
+    report_list = []
+    dataset_ids = set()
+    for r in catalog_reports:
+        ds = r.get('datasetId')
+        if ds:
+            dataset_ids.add(ds)
+
+    dataset_refresh_map = {}
+    if dataset_ids:
+        try:
+            headers = get_user_powerbi_headers()
+        except Exception:
+            headers = {}
+        base_url = "https://api.powerbi.com/v1.0/myorg"
+
+        def _one(ds_id):
+            try:
+                return ds_id, resolve_dataset_refresh_info(
+                    headers=headers,
+                    workspace_id=workspace_id,
+                    dataset_id=ds_id,
+                    dataset_workspace_id=workspace_id,
+                    history_top=3,   # enough for endTime fallback; keeps bulk path lighter
+                    base_url=base_url,
+                    timeout=5,      # fail fast under load; UI already painted
+                )
+            except Exception as exc:
+                return ds_id, _empty_refresh_info(
+                    refresh_schedule='Error',
+                    last_refresh_status='Error',
+                    refresh_type='error',
+                    refresh_note=str(exc),
+                    dataset_workspace_id=workspace_id,
+                )
+
+        # Cap concurrency to reduce Power BI throttling / cascading timeouts
+        workers = min(6, max(2, len(dataset_ids)))
+        print(f"   ⚡ Catalog path: live refresh for {len(dataset_ids)} dataset(s) (workers={workers})…")
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(_one, ds): ds for ds in dataset_ids}
+            for fut in as_completed(futs):
+                ds = futs[fut]
+                try:
+                    rid, info = fut.result(timeout=60)
+                    dataset_refresh_map[rid] = info
+                except Exception as exc:
+                    dataset_refresh_map[ds] = _empty_refresh_info(
+                        refresh_schedule='Error',
+                        last_refresh_status='Error',
+                        refresh_type='error',
+                        refresh_note=str(exc),
+                    )
+
+    for r in catalog_reports:
+        ds_id = r.get('datasetId') or ''
+        live = dataset_refresh_map.get(ds_id, {}) or {}
+        # Catalog / SharePoint ops snapshot (scheduled + admin + prior fallbacks)
+        catalog_ops = {
+            'last_refreshed': r.get('last_refreshed'),
+            'last_refresh_status': r.get('last_refresh_status'),
+            'refresh_schedule': r.get('refresh_schedule'),
+            'refresh_type': r.get('refresh_type'),
+            'refresh_note': r.get('refresh_note'),
+            'refresh_source': r.get('refresh_source'),
+            'history_refresh_type': r.get('history_refresh_type'),
+            'dataset_owner': r.get('dataset_owner'),
+            'dataset_workspace_id': r.get('dataset_workspace_id') or workspace_id,
+        }
+        created_by = _pick_person(r.get('createdBy'), r.get('created_by'))
+        modified_by = _pick_person(r.get('modifiedBy'), r.get('modified_by'))
+        created_dt = _pick_datetime(
+            r.get('createdDateTime'), r.get('created_date_time'), r.get('created_date')
+        )
+        modified_dt = _pick_datetime(
+            r.get('modifiedDateTime'), r.get('modified_date_time'), r.get('modified_date')
+        )
+        # Content-modified fallback when scheduled + catalog ops both lack a timestamp
+        # (common for OneDrive-only models — portal OneDrive tab is not in REST APIs)
+        content_side = None
+        if not live.get('last_refreshed') and not catalog_ops.get('last_refreshed') and modified_dt:
+            content_side = refresh_info_from_content_modified(
+                None,
+                {
+                    'modifiedDateTime': modified_dt,
+                    'name': r.get('name'),
+                },
+                dataset_workspace_id=workspace_id,
+            )
+        # Latest timestamp wins across live scheduled, catalog ops, content-modified
+        info = merge_refresh_candidates(live, catalog_ops, content_side or {})
+        has_people = bool(created_by or modified_by or created_dt or modified_dt)
+        days = info.get('days_since_refresh')
+        if days is None:
+            days = days_since_refresh(info.get('last_refreshed'))
+        report_list.append({
+            'id': r.get('id'),
+            'name': r.get('name'),
+            'datasetId': ds_id,
+            'folderId': r.get('folderId'),
+            'folderName': r.get('folderName'),
+            'refresh_schedule': info.get('refresh_schedule'),
+            'last_refreshed': info.get('last_refreshed'),
+            'last_refresh_status': info.get('last_refresh_status'),
+            'refresh_type': info.get('refresh_type'),
+            'refresh_note': info.get('refresh_note'),
+            'refresh_source': info.get('refresh_source'),
+            'days_since_refresh': days,
+            'dataset_workspace_id': info.get('dataset_workspace_id'),
+            'dataset_owner': info.get('dataset_owner') or r.get('dataset_owner'),
+            'view_count': r.get('view_count'),
+            'last_viewed': r.get('last_viewed'),
+            'created_by': created_by or None,
+            'modified_by': modified_by or None,
+            'created_date_time': created_dt or None,
+            'modified_date_time': modified_dt or None,
+            # Always false — UI batch-loads owner columns together
+            'metadata_loaded': False,
+            'last_accessed': None,
+            'last_accessed_by': None,
+            'last_modified': None,
+            'last_generated': None,
+            'has_documentation': False,
+            'needs_update': False,
+            'webUrl': r.get('webUrl') or '',
+            'from_catalog': True,
+            'datasetName': r.get('datasetName'),
+            'reportType': r.get('reportType'),
+        })
+    return report_list
+
+
+def _filter_reports_by_refresh_status(report_list, status_filter):
+    """Active/inactive filter shared by catalog + live paths."""
+    from datetime import datetime, timezone as tz
+
+    def _is_live(rep):
+        rtype = (rep.get('refresh_type') or '').lower()
+        status = (rep.get('last_refresh_status') or '').lower()
+        schedule = (rep.get('refresh_schedule') or '').lower()
+        return (
+            rtype in ('directquery', 'live')
+            or 'directquery' in status or 'live' in status
+            or 'directquery' in schedule or 'live' in schedule
+        )
+
+    filtered = []
+    for report in report_list:
+        last_refreshed = report.get('last_refreshed')
+        is_live = _is_live(report)
+        if status_filter == 'inactive':
+            if is_live:
+                continue
+            if not last_refreshed:
+                filtered.append(report)
+            else:
+                try:
+                    s = last_refreshed
+                    if s.endswith('Z'):
+                        s = s[:-1] + '+00:00'
+                    rt = datetime.fromisoformat(s)
+                    if rt.tzinfo is None:
+                        rt = rt.replace(tzinfo=tz.utc)
+                    if (datetime.now(tz.utc) - rt).days >= 30:
+                        filtered.append(report)
+                except Exception:
+                    filtered.append(report)
+        elif status_filter == 'active':
+            if is_live:
+                filtered.append(report)
+                continue
+            if last_refreshed:
+                try:
+                    s = last_refreshed
+                    if s.endswith('Z'):
+                        s = s[:-1] + '+00:00'
+                    rt = datetime.fromisoformat(s)
+                    if rt.tzinfo is None:
+                        rt = rt.replace(tzinfo=tz.utc)
+                    if (datetime.now(tz.utc) - rt).days < 30:
+                        filtered.append(report)
+                except Exception:
+                    pass
+    return filtered
+
 
 @app.route('/api/reports')
 @login_required

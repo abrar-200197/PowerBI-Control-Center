@@ -125,6 +125,24 @@ app registration, and a populated `.env` (gitignored — never commit it).
 15. Don't weaken auth: the `login_required` split (401 JSON for `/api/*`,
     redirect for pages) and the 12-hour absolute session cap are intentional.
     `download_generated_file` deliberately omits `@login_required` (comment in code).
+16. **Extraction commits must ship their helpers.** The blueprint-extraction
+    commits restored route bodies without the module-level helpers they call
+    (`_catalog_reports_shell`, `_enrich_catalog_reports_with_refresh`,
+    `_filter_reports_by_refresh_status`, `_fetch_workspace_folder_meta`,
+    `_attach_folder_ids`, `_filter_reports_by_folder` in app.py; `threshold`
+    + `requests` + loop nesting in routes/similarity.py) — NameErrors that
+    silently degraded `/api/reports` to the live-Scanner fallback and killed
+    the similarity GET-export path. Guard: `tests/test_apppy_undefined_names.py`
+    (pyflakes; run `pip install -r requirements-dev.txt`). When restoring
+    route bodies, restore their helpers, and re-run that test.
+17. **Pipeline deploys blip; bad rollback tags kill the site.** Every deploy
+    runs stop → sleep 15 → start + cold pull: expect a 1–3 min 503 window.
+    Never "roll back" to an image tag you have not verified exists in ACR —
+    ACR data-plane is not listable from this subscription, a wrong tag gives
+    `ImageNotFoundFailure`, the site stays STOPPED (503) and cold-start
+    blocked. Verified-good tags as of 2026-11-23: `:593434` (serving +
+    `/mcp` 401 guard live), `:593433` DOES NOT EXIST in ACR. Check
+    `LogFiles/..._docker.log` via Kudu (`/api/vfs/LogFiles/`) for boot truth.
 
 ## Testing notes
 

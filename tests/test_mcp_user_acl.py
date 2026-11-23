@@ -99,6 +99,10 @@ def test_tool_uses_injected_list():
     captured = {}
 
     class _Stub:
+        def get_json(self, name):
+            # Force the list_workspaces_for_user fallback path (no thin pack).
+            return None
+
         def list_workspaces_for_user(self, allowed_workspace_ids):
             captured["allowed"] = allowed_workspace_ids
             return []
