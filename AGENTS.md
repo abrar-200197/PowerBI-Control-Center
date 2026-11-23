@@ -54,14 +54,14 @@ app registration, and a populated `.env` (gitignored — never commit it).
 |---|---|
 | `app.py` | **The live application** (~9.7k lines): Flask assembly, MSAL auth, 42 routes, background jobs, cache dicts |
 | `routes/` | 5 blueprints extracted from app.py: `catalog_bp`, `similarity_bp`, `semantic_models_bp`, `report_diff_bp`, `decommission_bp`. **No `url_prefix`** — routes carry full absolute paths |
-| `features/` | "Planning phase" package (its `__init__.py` says so). Several modules are live-imported (pbip_parser/differ, decommission_inventory, report_archive_service, report_usage_tracker, semantic_model_lineage, utils); `auth_decorators.py` is a stale duplicate. Where a route exists in both `app.py` and `features/`, **the app.py copy is authoritative** |
+| `features/` | "Planning phase" package (its `__init__.py` says so). Several modules are live-imported (pbip_parser/differ, decommission_inventory, report_archive_service, report_usage_tracker, semantic_model_lineage, utils). Where a route exists in both `app.py` and `features/`, **the app.py copy is authoritative** |
 | `catalog_service/` | Precomputed catalog layer: `service.py` (serving + verified disk mirror + TTL cache), `metadata_lib/` (batch extract: pipeline, scanner_client, normalizer, expression_parser, impact_builder, auth), `field_usage_index`, `unused_fields_index`, `semantic_models_index`, `thin_packs`, `ops_snapshot` |
 | Root connectors | `powerbi_connector.py` (REST), `scanner_connector.py` (Admin Scanner), `xmla_connector.py` (DAX via `executeQueries`), `combined_metadata_fetcher.py` (orchestrator), `visual_metadata_extractor.py` (.pbix export parse + Playwright render scan) |
 | `crash_test_analyzer.py` | Health diagnostics engine (scoring rules in domain-model) |
 | `ai_generator.py` | Metadata collector + Azure OpenAI GPT-4o doc sections (hardcoded fallback strings when the LLM call fails) |
 | `document_creator.py` | python-docx Word docs incl. Mermaid ER diagram rendered via `mmdc` when available |
 | `azure_function_catalog/` | Deployment mirror of the catalog extract as a timer Azure Function. Mostly byte-identical copies of root files, but four have drifted (`catalog_service/service.py`, `metadata_lib/sharepoint_client.py`, `powerbi_connector.py`, `visual_metadata_extractor.py`) — the root copies are richer. Apply edits to shared files in **both** copies |
-| `templates/`, `static/` | Jinja templates; page JS is inline `<script>` blocks; CDN libs (jQuery, select2, SheetJS, powerbi-client); **no bundler**. `static/js/app.js` is dead/legacy — referenced by no template |
+| `templates/`, `static/` | Jinja templates; page JS is inline `<script>` blocks; CDN libs (jQuery, select2, SheetJS, powerbi-client); **no bundler**. (`static/js/app.js` and `features/auth_decorators.py` were removed 2026-11-23 as dead code.) |
 | `data/` | Runtime caches only, all gitignored: `catalog_cache/latest/` (disk mirror + `.meta.json` sidecars), `flask_sessions/`, `usage_cache/` |
 
 ## Conventions
@@ -112,8 +112,12 @@ app registration, and a populated `.env` (gitignored — never commit it).
    both places (drift already exists; root is authoritative).
 9. **No request/session context inside ThreadPoolExecutor threads** — explicit
    comment at the lineage code. Pass tokens and user IDs as arguments.
-10. **app.py defines some caches twice** (L266–276 and L377–387); the second
-    block wins (`SCANNER_CACHE_DURATION = 600`). Know which block you are editing.
+10. **app.py cache definitions live in ONE block** (~L380: `workspaces_cache`,
+    `workspace_cache`, `reports_cache`, `scanner_cache`, `usage_cache`,
+    `workspace_folders_cache` + the duration constants). The historical
+    duplicate block earlier in the file (whose `SCANNER_CACHE_DURATION=1800`
+    was silently shadowed by the `600` in this block) was removed
+    2026-11-23 - do not reintroduce parallel cache dicts elsewhere in the file.
 11. **Catalog heavy blobs stay out of memory** (`CATALOG_KEEP_HEAVY_IN_MEMORY=false`)
     — App Service OOM protection. Don't "fix" this by eagerly loading
     `workspace_catalog.json`; extend the thin-pack pattern instead.

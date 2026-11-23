@@ -1,6 +1,7 @@
 # powerbi_connector.py - Corrected for Client Credentials Flow
 import requests
 import json
+import os
 import threading
 from config import Config
 
@@ -86,17 +87,40 @@ class PowerBIConnector:
             'Content-Type': 'application/json'
         }
     
+    def _paged_get(self, url, label):
+        """GET a Power BI list endpoint, following @odata.nextLink pagination.
+
+        P3 (matches the root copy): Power BI caps list endpoints at ~100
+        entities per page — large tenants silently truncated. PBI_MAX_PAGES
+        bounds a runaway loop.
+        """
+        items = []
+        page_url = url
+        max_pages = int(os.getenv('PBI_MAX_PAGES', '100'))
+        for _page in range(max_pages):
+            response = requests.get(page_url, headers=self._get_headers(), timeout=120)
+            response.raise_for_status()
+            payload = response.json()
+            items.extend(payload.get('value', []))
+            next_url = payload.get('@odata.nextLink') or payload.get('nextLink') or ''
+            if not next_url:
+                break
+            page_url = next_url
+        else:
+            print(f"⚠️ [pager] hit PBI_MAX_PAGES={max_pages} for {label} — results may be incomplete")
+        return items
+
     def get_workspaces(self):
-        """Get list of all workspaces (groups) the service principal has access to"""
+        """Get list of all workspaces (groups) the service principal has access to
+
+        P3 (matches the root copy): follows @odata.nextLink pagination.
+        """
         print(f"\n📊 Fetching workspaces...")
 
         url = f"{self.base_url}/groups"
 
         try:
-            response = requests.get(url, headers=self._get_headers())
-            response.raise_for_status()
-
-            workspaces = response.json().get('value', [])
+            workspaces = self._paged_get(url, 'workspaces')
             print(f"✅ Found {len(workspaces)} workspace(s)")
 
             if workspaces:
@@ -119,7 +143,7 @@ class PowerBIConnector:
             return []
 
     def get_all_reports(self, workspace_id=None):
-        """Get list of all reports in workspace"""
+        """Get list of all reports in workspace (follows pagination — P3)"""
         if not workspace_id:
             workspace_id = Config.WORKSPACE_ID
 
@@ -128,10 +152,7 @@ class PowerBIConnector:
         url = f"{self.base_url}/groups/{workspace_id}/reports"
 
         try:
-            response = requests.get(url, headers=self._get_headers())
-            response.raise_for_status()
-
-            reports = response.json().get('value', [])
+            reports = self._paged_get(url, 'reports')
             print(f"✅ Found {len(reports)} report(s)")
 
             if reports:

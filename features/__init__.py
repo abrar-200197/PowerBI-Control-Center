@@ -47,6 +47,5 @@ __author__ = "Power BI Control Center Team"
 __all__ = [
     'semantic_model_lineage',
     'report_usage_tracker',
-    'utils',
-    'auth_decorators'
+    'utils'
 ]

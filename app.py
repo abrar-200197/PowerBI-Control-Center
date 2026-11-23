@@ -263,20 +263,6 @@ def add_cache_control_headers(response):
         response.headers['Expires'] = '0'
     return response
 
-# ⚡ PERFORMANCE OPTIMIZATION: Enhanced caching system
-# User-specific workspace caching
-workspaces_cache = {}  # Format: {user_id: {'data': [...], 'timestamp': float}}
-workspace_cache = {}   # Format: {workspace_id_user_id: {'data': {...}, 'timestamp': float}}
-scanner_cache = {}     # Format: {workspace_id_dataset_id: {'data': {...}, 'timestamp': float}}
-reports_cache = {}     # Format: {workspace_id_user_id_folder: {'data': [...], 'timestamp': float}}
-
-# Cache durations (in seconds)
-WORKSPACES_CACHE_DURATION = 300  # 5 minutes - workspaces list rarely changes
-CACHE_DURATION = 300  # 5 minutes - general cache
-SCANNER_CACHE_DURATION = 1800  # 30 minutes - scanner data is expensive to fetch
-
-print("✅ Usage cache will persist in memory (cleared only on explicit refresh or restart)")
-
 # Azure AD SSO Configuration
 TENANT_ID = os.getenv('TENANT_ID')
 CLIENT_ID = os.getenv('CLIENT_ID')
@@ -375,8 +361,12 @@ ai_generator = AIDocGenerator(
 )
 
 # Cache for workspaces and reports (to avoid repeated API calls)
-# IMPORTANT: These are keyed by user_id to prevent cross-user data leakage
+# IMPORTANT: These are keyed by user_id to prevent cross-user data leakage.
+# This is the SINGLE definition block — a duplicate earlier in this file was
+# removed (its SCANNER_CACHE_DURATION=1800 was silently shadowed by the 600
+# below; see AGENTS.md gotcha 10).
 workspaces_cache = {}  # Key: user_id, Value: {'data': [], 'timestamp': 0}
+workspace_cache = {}   # Key: workspace_id_user_id, Value: {'data': {...}, 'timestamp': float}
 reports_cache = {}  # Key: {workspace_id}_{user_id}, Value: {'data': [], 'timestamp': 0}
 scanner_cache = {}  # Key: workspace_id, Value: {'data': {...}, 'timestamp': 0}
 usage_cache = {}  # Key: workspace_id, Value: {'data': {...}, 'timestamp': datetime}
