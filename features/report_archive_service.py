@@ -37,6 +37,7 @@ _ARCHIVE_LOCAL_PARTS = (
     "kviswanathan",
     "ychandran",
     "nkathiresan",
+    "adinesh",
 )
 _ARCHIVE_DOMAINS = (
     "ashleyfurnitureindia.com",
