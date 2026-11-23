@@ -198,16 +198,18 @@ reverse impact analysis, field usage, unused fields, model details.
   `~\.ashleycode\mcp\pbi-control-center\.env` first, then repo/CWD `.env`.
   `mcp` is pinned `>=1.2.0,<2` (2.x renamed FastMCP → MCPServer; this repo
   targets the 1.x API).
-- **Hosted / remote mode (path to webapp-like access)**:
-  `mcp_server/http_entry.py` serves the same tools over streamable-HTTP at
-  `/mcp` behind a bearer-token guard (`MCP_HTTP_TOKEN` app setting; uvicorn
-  via the `[http]` extra). Deploy as a second App Service/container;
-  colleagues connect with
+- **Hosted / remote mode (webapp-like access, same App Service)**:
+  the deployed container runs the MCP sidecar (uvicorn, 127.0.0.1:8001,
+  started by `start-webapp.sh`) and the Flask app proxies it at `/mcp`
+  (`mcp_server/flask_proxy.py`). Set `MCP_HTTP_TOKEN` in App Service
+  settings or `/mcp` fails closed (503). Colleagues connect with
   `opencode mcp add powerbi-control-center --global --url "https://<app>.azurewebsites.net/mcp" --header "Authorization=Bearer <token>"`.
+  `mcp_server/http_entry.py` also runs standalone for a separate instance.
   Per-user workspace filtering (on-behalf-of Power BI access) is the planned
   next phase.
-- The `mcp` package lives in `requirements-dev.txt`, never in the deployed
-  `requirements.txt`.
+- `mcp` used to be dev-only; since the deployed web app hosts the MCP
+  sidecar (`/mcp` proxy), `mcp` and `uvicorn` now ship in the deployed
+  `requirements.txt`. `pytest` stays in `requirements-dev.txt` only.
 - **Default in every session (team-scoped)**: `scripts/setup-mcp.ps1` installs
   a self-contained copy of the server to `~\.ashleycode\mcp\pbi-control-center`
   (jira-style — no repo needed at runtime) and registers it in the user's

@@ -107,5 +107,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # halves steady-state memory (only one in-memory catalog copy instead of two)
 # vs. the previous 2-worker/4-thread setup. Override at deploy with:
 # gunicorn --workers ${WEB_CONCURRENCY:-1} ...
-CMD ["gunicorn", "--bind=0.0.0.0:8000", "--timeout", "900", "--workers", "1", "--threads", "8", "--worker-class", "gthread", "--max-requests", "500", "--max-requests-jitter", "50", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
+# Same App Service hosts the web app AND the MCP server:
+# start-webapp.sh launches the MCP streamable-HTTP sidecar on 127.0.0.1:8001
+# (uvicorn; proxied by Flask at /mcp - see mcp_server/flask_proxy.py) and then
+# execs gunicorn as PID 1 (the single-worker OAuth session rationale below
+# still applies to the front door).
+RUN chmod +x start-webapp.sh
+CMD ["./start-webapp.sh"]
 

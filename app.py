@@ -940,6 +940,12 @@ app.register_blueprint(catalog_bp)
 from routes.report_diff import report_diff_bp  # noqa: E402
 app.register_blueprint(report_diff_bp)
 
+# MCP over the same App Service: /mcp proxies to the uvicorn sidecar started
+# by start-webapp.sh (127.0.0.1:8001). Guarded by MCP_HTTP_TOKEN bearer auth;
+# fails closed (503) when the token is not configured.
+from mcp_server.flask_proxy import mcp_proxy_bp  # noqa: E402
+app.register_blueprint(mcp_proxy_bp)
+
 
 def get_user_fabric_token():
     """
