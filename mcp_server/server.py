@@ -101,6 +101,19 @@ def _allowed_workspace_ids() -> Optional[Set[str]]:
     return {s.strip() for s in raw.split(",") if s.strip()}
 
 
+def _effective_ids(_acl: Optional[List[str]]) -> Optional[Set[str]]:
+    """Effective ACL for a tool call.
+
+    The injected per-user allow-list (hosted mode, _BearerGuard) wins when
+    present; otherwise the machine-wide MCP_ALLOWED_WORKSPACE_IDS applies;
+    otherwise None (tenant-wide). Injected by the _BearerGuard from
+    MCP_USER_TOKENS — tools should not set it themselves.
+    """
+    if _acl is not None:
+        return {s for s in _acl if s}
+    return _allowed_workspace_ids()
+
+
 def _not_found(what: str) -> Dict[str, Any]:
     return {"success": False, "error": f"{what} not found (or catalog unavailable)"}
 
@@ -113,7 +126,7 @@ def _error(exc: Exception) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def catalog_status() -> Dict[str, Any]:
+def catalog_status(acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Catalog availability and freshness: mode, generatedAt timestamp,
     SharePoint folder, cache TTLs, and which artifacts are on the disk mirror.
 
@@ -132,13 +145,45 @@ def catalog_status() -> Dict[str, Any]:
 
 
 @mcp.tool()
-def list_workspaces() -> Dict[str, Any]:
-    """All workspaces in the catalog with report/dataset counts.
+def list_workspaces(acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """All workspaces in the catalog with report counts.
 
-    Use to find a workspace_id before calling other tools."""
+    Use to find a workspace_id before calling other tools. Fast path serves
+    from the thin home pack (KB-scale, memory-cached); capacity/dataset
+    detail fields are None there — use get_workspace_reports for
+    per-workspace detail. Falls back to the full catalog when the thin pack
+    is unavailable."""
     try:
-        allowed = _allowed_workspace_ids()
-        rows = _svc().list_workspaces_for_user(allowed)
+        s = _svc()
+        allowed = _effective_ids(acl_workspace_ids)
+        pack = s.get_json("ui_home_index.json")
+        if isinstance(pack, dict) and isinstance(pack.get("workspaces"), list):
+            rows = [
+                {
+                    "id": w.get("id"),
+                    "name": w.get("name") or "",
+                    "type": "",
+                    "state": "",
+                    "isOnDedicatedCapacity": None,
+                    "capacityId": None,
+                    "reportCount": w.get("reportCount") or 0,
+                    "datasetCount": None,
+                    "from_catalog": True,
+                }
+                for w in pack["workspaces"]
+                if w.get("id")
+            ]
+            if allowed is not None:
+                rows = [r for r in rows if r["id"] in allowed]
+            rows.sort(key=lambda r: (r["name"] or "").lower())
+            return {
+                "success": True,
+                "count": len(rows),
+                "aclFiltered": allowed is not None,
+                "source": "thin-home-index",
+                "workspaces": rows,
+            }
+        rows = s.list_workspaces_for_user(allowed)
         return {"success": True, "count": len(rows),
                 "aclFiltered": allowed is not None, "workspaces": rows}
     except Exception as exc:
@@ -146,24 +191,24 @@ def list_workspaces() -> Dict[str, Any]:
 
 
 @mcp.tool()
-def search_reports(query: str, limit: int = 20) -> Dict[str, Any]:
+def search_reports(query: str, limit: int = 20, acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Search reports by name/id across the tenant (case-insensitive substring).
 
     Returns reportId, reportName, workspaceId, workspaceName rows.
     Provide a non-empty query — an empty query intentionally returns nothing."""
     try:
-        out = _svc().search_reports(query=query, allowed_workspace_ids=_allowed_workspace_ids(), limit=limit)
+        out = _svc().search_reports(query=query, allowed_workspace_ids=_effective_ids(acl_workspace_ids), limit=limit)
         return {"success": True, "data": out}
     except Exception as exc:
         return _error(exc)
 
 
 @mcp.tool()
-def get_workspace_reports(workspace_id: str) -> Dict[str, Any]:
+def get_workspace_reports(workspace_id: str, acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """All reports in one workspace, with dataset binding, last refresh
     status/time, refresh schedule and report type per report."""
     try:
-        out = _svc().get_workspace_reports(workspace_id, _allowed_workspace_ids())
+        out = _svc().get_workspace_reports(workspace_id, _effective_ids(acl_workspace_ids))
         if out is None:
             return _not_found(f"Workspace {workspace_id}")
         return {"success": True, "data": out}
@@ -172,7 +217,7 @@ def get_workspace_reports(workspace_id: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_home_summary() -> Dict[str, Any]:
+def get_home_summary(acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Tenant-wide KPI summary from the latest ops run (summary.json):
     workspace/report counts, refresh and usage statistics.
     Aggregate KPIs - not filtered by MCP_ALLOWED_WORKSPACE_IDS."""
@@ -189,7 +234,7 @@ def get_home_summary() -> Dict[str, Any]:
 
 
 @mcp.tool()
-def top_impact_tables(n: int = 15) -> Dict[str, Any]:
+def top_impact_tables(n: int = 15, acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """The n physical source tables with the biggest blast radius
     (most dependent datasets/reports/workspaces), sorted by reportCount.
     Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
@@ -201,7 +246,7 @@ def top_impact_tables(n: int = 15) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def lookup_table_impact(table_name: str) -> Dict[str, Any]:
+def lookup_table_impact(table_name: str, acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Reverse impact lookup by physical table (or model table) name,
     case-insensitive: which datasets/reports/workspaces consume it.
 
@@ -217,7 +262,7 @@ def lookup_table_impact(table_name: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_table_impact_detail(table_key: str) -> Dict[str, Any]:
+def get_table_impact_detail(table_key: str, acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Full impact entry for one source table (by tableKey or table name):
     model table names, dependent datasets with their reports, impact summary.
     Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
@@ -231,12 +276,12 @@ def get_table_impact_detail(table_key: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_report_sources(report_id: str) -> Dict[str, Any]:
+def get_report_sources(report_id: str, acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Every source used by one report (SQL servers/databases/tables, Excel,
     SharePoint files, model tables) plus report metadata. Accepts a report
     GUID; use search_reports first if you only have a report name."""
     try:
-        out = _svc().impact_report_detail(report_id, _allowed_workspace_ids())
+        out = _svc().impact_report_detail(report_id, _effective_ids(acl_workspace_ids))
         if out is None:
             return _not_found(f"Report {report_id}")
         return {"success": True, "data": out}
@@ -246,7 +291,7 @@ def get_report_sources(report_id: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def get_model_details(
-    dataset_id: str, workspace_id: str = ""
+    dataset_id: str, workspace_id: str = "", acl_workspace_ids: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Thin model view of one semantic model/dataset: tables, columns,
     measures, relationships. Optionally pass workspace_id to disambiguate.
@@ -266,13 +311,13 @@ def get_model_details(
 
 
 @mcp.tool()
-def get_unused_fields(limit: int = 50) -> Dict[str, Any]:
+def get_unused_fields(limit: int = 50, acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Tenant-wide 'truly unused' columns/measures — safe-to-delete
     candidates, weekly-built. Excluded from the list if they are visual-bound,
     DAX-referenced, M-expression-tagged, relationship keys, or referenced by
     another measure. Note the returned 'caveat' (RLS/sort-by undetectable)."""
     try:
-        out = _svc().unused_fields_rows(_allowed_workspace_ids())
+        out = _svc().unused_fields_rows(_effective_ids(acl_workspace_ids))
         rows = list(out.get("rows") or [])
         out["rows"] = rows[: max(1, min(int(limit), 500))]
         out["rowsShown"] = len(out["rows"])
@@ -283,12 +328,12 @@ def get_unused_fields(limit: int = 50) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_field_usage(field_key: str) -> Dict[str, Any]:
+def get_field_usage(field_key: str, acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Which reports use one field/metric, given its fieldKey
     (format 'table.column' or 'table.measure' — see the fieldKey values in
     get_unused_fields or the Impact Explorer). Weekly-built index."""
     try:
-        out = _svc().field_usage_detail(field_key, _allowed_workspace_ids())
+        out = _svc().field_usage_detail(field_key, _effective_ids(acl_workspace_ids))
         if out is None:
             return _not_found(f"Field {field_key!r}")
         return {"success": True, "data": out}
