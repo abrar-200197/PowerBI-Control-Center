@@ -205,15 +205,14 @@ reverse impact analysis, field usage, unused fields, model details.
   settings or `/mcp` fails closed (503). Colleagues connect with
   `opencode mcp add powerbi-control-center --global --url "https://<app>.azurewebsites.net/mcp" --header "Authorization=Bearer <token>"`.
   `mcp_server/http_entry.py` also runs standalone for a separate instance.
-  **Per-user scoping (Phase 2)**: set `MCP_USER_TOKENS` (JSON:
-  `{"<personal-token>": {"upn": "...", "workspaces": ["<guid>", ...]}}`) in
-  App Service settings and give each teammate their personal token — the
-  guard injects their allow-list into every tool call (unknown tokens 401;
-  "workspaces" absent falls back to MCP_ALLOWED_WORKSPACE_IDS). The admin
-  per-user `artifactAccess` API is RETIRED (returns empty), so live
-  "what this user can access" enumeration is not available — lists are
-  curated. Per-user workspaces absent → global env → tenant-wide. Live
-  per-user access via on-behalf-of Power BI auth remains a future option.
+  **Access decision (2026-11-23)**: production uses the SHARED
+  `MCP_HTTP_TOKEN` with tenant-wide catalog scope. Per-user tokens
+  (`MCP_USER_TOKENS`) are implemented and dormant — dropped for scale (one
+  token per user is unmanageable at team size). The admin per-user
+  `artifactAccess` API is RETIRED (returns empty), so live "what this user
+  can access" enumeration is not available; live per-user visibility would
+  need Entra sign-in on the endpoint + on-behalf-of Power BI access
+  (mirroring the webapp) — documented Phase 3 path if/when needed.
 - `mcp` used to be dev-only; since the deployed web app hosts the MCP
   sidecar (`/mcp` proxy), `mcp` and `uvicorn` now ship in the deployed
   `requirements.txt`. `pytest` stays in `requirements-dev.txt` only.
