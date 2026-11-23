@@ -14,11 +14,30 @@ Instead, resolve them lazily at call/request time, by which point `app` is
 fully initialized in sys.modules.
 """
 import os
+import threading
 import time
 from functools import wraps
 from flask import Blueprint, request, jsonify, render_template, session
 
 catalog_bp = Blueprint('catalog', __name__)
+
+# Route-level heavy gate (webapp twin of the MCP sidecar's _HEAVY_GATE —
+# separate process, separate semaphore): unused-fields, report-column-usage
+# and model-details parse multi-hundred-MB indexes. ONE heavy parse at a time
+# per worker; concurrent requests get 503 instead of stacking OOM-prone parses
+# on top of each other (same incident class as the 2026-11-23 sidecar OOM).
+_HEAVY_ROUTE_GATE = threading.BoundedSemaphore(1)
+
+
+def _heavy_route_call(fn):
+    """Run fn() holding the heavy gate. Returns (True, result) or (False, None)
+    when another heavy call is already running (caller responds 503)."""
+    if not _HEAVY_ROUTE_GATE.acquire(blocking=False):
+        return (False, None)
+    try:
+        return (True, fn())
+    finally:
+        _HEAVY_ROUTE_GATE.release()
 
 
 def login_required(f):
@@ -390,7 +409,9 @@ def api_catalog_impact_table_detail():
 
         allowed = _user_allowed_workspace_ids()
         acl_applied = False
-        if allowed is not None and len(allowed) > 0:
+        # Fail-closed (P0): allowed is set() on fetch failure — an empty set
+        # filters everything out rather than leaking tenant-wide data.
+        if allowed is not None:
             acl_applied = True
             filtered_datasets = []
             for d in entry.get('datasets') or []:
@@ -633,10 +654,16 @@ def api_catalog_impact_unused_fields():
     try:
         force = request.args.get('refresh') in ('1', 'true', 'yes')
         allowed = _user_allowed_workspace_ids()
-        data = catalog_service.unused_fields_rows(
+        # Heavy gate (P0): this parses a multi-hundred-MB index — serialize it.
+        got_gate, data = _heavy_route_call(lambda: catalog_service.unused_fields_rows(
             force_refresh=force,
             allowed_workspace_ids=allowed if allowed is not None else None,
-        )
+        ))
+        if not got_gate:
+            return jsonify({
+                'success': False,
+                'error': 'Another heavy catalog query is running; please retry in ~30 seconds.',
+            }), 503
         payload = {
             'success': True,
             'v': 1,
@@ -673,7 +700,15 @@ def api_catalog_report_column_usage():
     if not report_id:
         return jsonify({'success': False, 'error': 'report_id required'}), 400
     try:
-        detail = catalog_service.report_column_usage(report_id)
+        # Heavy gate (P0): scans the impact index for per-report usage.
+        got_gate, detail = _heavy_route_call(
+            lambda: catalog_service.report_column_usage(report_id)
+        )
+        if not got_gate:
+            return jsonify({
+                'success': False,
+                'error': 'Another heavy catalog query is running; please retry in ~30 seconds.',
+            }), 503
         if not detail:
             return jsonify({'success': False, 'error': f'No column usage data found for report {report_id}'}), 404
         return jsonify({'success': True, 'data': detail})
@@ -694,7 +729,9 @@ def api_catalog_impact_lookup():
     try:
         hits = catalog_service.lookup_table(table)
         allowed = _user_allowed_workspace_ids()
-        if allowed is not None and len(allowed) > 0:
+        # Fail-closed (P0): an empty allow-list (fetch failure) filters
+        # everything instead of returning tenant-wide hits.
+        if allowed is not None:
             filtered = []
             for entry in hits:
                 datasets = [d for d in (entry.get('datasets') or []) if d.get('workspaceId') in allowed]
@@ -729,15 +766,21 @@ def api_catalog_impact_model_details():
         return jsonify({'success': False, 'error': 'dataset_id required'}), 400
     try:
         allowed = _user_allowed_workspace_ids()
-        if allowed is not None and len(allowed) > 0 and workspace_id and workspace_id not in allowed:
+        if allowed is not None and workspace_id and workspace_id not in allowed:
             return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
-        details = catalog_service.impact_model_details(
+        # Heavy gate (P0): model details parse workspace_catalog (284 MB).
+        got_gate, details = _heavy_route_call(lambda: catalog_service.impact_model_details(
             dataset_id=dataset_id,
             workspace_id=workspace_id,
             focus_table=focus_table,
             model_table_name=model_table,
-        )
+        ))
+        if not got_gate:
+            return jsonify({
+                'success': False,
+                'error': 'Another heavy catalog query is running; please retry in ~30 seconds.',
+            }), 503
         if not details:
             return jsonify({
                 'success': False,
@@ -746,7 +789,7 @@ def api_catalog_impact_model_details():
 
         # ACL: if no workspace_id was passed, still enforce when we resolved one
         ws_resolved = details.get('workspaceId') or workspace_id
-        if allowed is not None and len(allowed) > 0 and ws_resolved and ws_resolved not in allowed:
+        if allowed is not None and ws_resolved and ws_resolved not in allowed:
             return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
         payload = {

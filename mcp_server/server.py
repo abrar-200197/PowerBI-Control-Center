@@ -209,9 +209,11 @@ def get_workspace_reports(workspace_id: str, acl_workspace_ids: Optional[List[st
 
     Served from the KB-scale report directory — this tool NEVER loads the
     ~284 MB workspace_catalog (concurrent heavy parses OOM-killed the shared
-    container under team load on 2026-11-23). Per-report refresh/ops detail:
-    use the webapp workspace page. Call list_workspaces first to get the
-    workspace_id."""
+    container under team load on 2026-11-23). If the thin report directory is
+    missing, this tool returns an empty list instead of falling back to a
+    heavy catalog rebuild (the webapp may rebuild; the sidecar must not).
+    Per-report refresh/ops detail: use the webapp workspace page. Call
+    list_workspaces first to get the workspace_id."""
     try:
         s = _svc()
         allowed = _effective_ids(acl_workspace_ids)
@@ -221,7 +223,10 @@ def get_workspace_reports(workspace_id: str, acl_workspace_ids: Optional[List[st
                 "aclFiltered": True,
                 "error": f"Workspace {workspace_id[:8]}... is not in your allowed workspace list",
             }
-        rows = s.get_report_directory_rows(allowed)
+        # allow_catalog_fallback=False (memory fix, 2026-11-23): the sidecar
+        # must never trigger a heavy workspace_catalog parse to rebuild a
+        # missing thin pack — it returns [] and the caller re-runs the extract.
+        rows = s.get_report_directory_rows(allowed, allow_catalog_fallback=False)
         ws_rows = [r for r in rows if r.get("workspaceId") == workspace_id]
         ws_rows.sort(key=lambda r: (r.get("reportName") or "").lower())
         reports = [
@@ -286,10 +291,13 @@ def lookup_table_impact(table_name: str, acl_workspace_ids: Optional[List[str]] 
     Ideal for "what breaks if we change/drop table X" questions.
     Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
     try:
-        rows = _svc().lookup_table(table_name)
-        if not rows:
+        # Heavy gate (P0): lookup_table loads impact_index.json when needed.
+        out = _heavy_call(_svc().lookup_table, table_name)
+        if isinstance(out, dict) and out.get("busy"):
+            return out
+        if not out:
             return _not_found(f"Table {table_name!r}")
-        return {"success": True, "count": len(rows), "matches": rows}
+        return {"success": True, "count": len(out), "matches": out}
     except Exception as exc:
         return _error(exc)
 
@@ -300,7 +308,10 @@ def get_table_impact_detail(table_key: str, acl_workspace_ids: Optional[List[str
     model table names, dependent datasets with their reports, impact summary.
     Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
     try:
-        out = _svc().impact_table_detail(table_key)
+        # Heavy gate (P0): impact_table_detail parses impact_index.json.
+        out = _heavy_call(_svc().impact_table_detail, table_key)
+        if isinstance(out, dict) and out.get("busy"):
+            return out
         if out is None:
             return _not_found(f"Table key {table_key!r}")
         return {"success": True, "data": out}
@@ -314,7 +325,11 @@ def get_report_sources(report_id: str, acl_workspace_ids: Optional[List[str]] = 
     SharePoint files, model tables) plus report metadata. Accepts a report
     GUID; use search_reports first if you only have a report name."""
     try:
-        out = _svc().impact_report_detail(report_id, _effective_ids(acl_workspace_ids))
+        # Heavy gate (P0): report sources fall back to impact_index.json and
+        # read ui_impact_reports.json (~50 MB) when the thin pack is missing.
+        out = _heavy_call(_svc().impact_report_detail, report_id, _effective_ids(acl_workspace_ids))
+        if isinstance(out, dict) and out.get("busy"):
+            return out
         if out is None:
             return _not_found(f"Report {report_id}")
         return {"success": True, "data": out}
@@ -330,9 +345,14 @@ def get_model_details(
     measures, relationships. Optionally pass workspace_id to disambiguate.
     Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
     try:
-        out = _svc().impact_model_details(
-            dataset_id=dataset_id, workspace_id=workspace_id
+        # Heavy gate (P0): model details parse workspace_catalog (~284 MB).
+        out = _heavy_call(
+            _svc().impact_model_details,
+            dataset_id=dataset_id,
+            workspace_id=workspace_id,
         )
+        if isinstance(out, dict) and out.get("busy"):
+            return out
         if out is None:
             return _not_found(f"Dataset {dataset_id}")
         return {"success": True, "data": out}
@@ -344,12 +364,16 @@ def get_model_details(
 
 import threading
 
-# Tools that parse large catalog indexes (unused_fields ~102 MB,
-# field_usage ~54 MB) serialize through this gate: ONE heavy parse at a
-# time process-wide. Concurrent callers get an immediate friendly refusal
-# instead of a second simultaneous multi-hundred-MB parse — which, stacked
-# on the webapp's own heavy loads, OOM-killed the shared container under
-# team load (2026-11-23). Thin-pack-backed tools never enter the gate.
+# Tools that parse large catalog indexes serialize through this gate: ONE
+# heavy parse at a time process-wide. Gated: lookup_table_impact +
+# get_table_impact_detail + get_report_sources (impact_index.json / ~50 MB
+# ui_impact_reports.json), get_model_details (workspace_catalog ~284 MB),
+# get_unused_fields (~102 MB) and get_field_usage (~54 MB). Concurrent callers
+# get an immediate friendly refusal instead of a second simultaneous
+# multi-hundred-MB parse — which, stacked on the webapp's own heavy loads,
+# OOM-killed the shared container under team load (2026-11-23). Thin-pack-
+# backed tools (top_impact_tables, get_workspace_reports, search_reports)
+# never enter the gate.
 _HEAVY_GATE = threading.BoundedSemaphore(1)
 
 

@@ -225,6 +225,8 @@ HEAVY_CATALOG_FILES = frozenset({
     "refresh_snapshot.json",
     "usage_snapshot.json",
     "ui_impact_reports.json",  # ~50MB with details; prefer detail APIs + disk
+    "field_usage_index.json",  # ~54MB — field_usage_detail fallback read at serving time
+    "unused_fields_index.json",  # ~102MB — OOM source under concurrent loads
 })
 # Never ship these large blobs to the browser — server-side only.
 BROWSER_BLOCKED_CATALOG_FILES = frozenset({

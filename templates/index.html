@@ -2973,8 +2973,10 @@
             `;
         }
 
-        // Generate a unique job ID for this generation
-        const jobId = `${reportId}_${Date.now()}`;
+        // Job ID comes from the SERVER response (P0 fix): the old client-side
+        // `${reportId}_${Date.now()}` id was predictable and could collide;
+        // POST /api/generate now mints a uuid4 and returns it in the response.
+        let jobId = null;
 
         try {
             // Start the generation request (returns immediately with job_id)
@@ -2987,8 +2989,7 @@
                     workspace_id: currentWorkspaceId,
                     report_id: reportId,
                     dataset_id: report.datasetId,
-                    report_name: reportName,
-                    job_id: jobId
+                    report_name: reportName
                 })
             });
 
@@ -2998,6 +2999,7 @@
                 throw new Error(result.error || 'Failed to start generation');
             }
 
+            jobId = result.job_id;
             console.log(`✅ Generation started with job ID: ${jobId}`);
 
             // Start polling for progress updates
@@ -3281,9 +3283,18 @@
     }
 
     function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        // Quote-safe version (P0 XSS fix): the old div.textContent/innerHTML
+        // trick left quotes unescaped, so values placed inside HTML
+        // attributes (onclick="...", hrefs) were injectable.
+        if (text === null || text === undefined) return '';
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        };
+        return String(text).replace(/[&<>"']/g, m => map[m]);
     }
 
     /**

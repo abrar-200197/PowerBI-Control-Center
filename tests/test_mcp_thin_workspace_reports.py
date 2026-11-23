@@ -6,7 +6,7 @@ loads — the container was OOM-killed and production flapped. Guards:
 
   1. get_workspace_reports serves from the thin report directory and the
      stub RAISES if anything tries to load workspace_catalog.json.
-  2. Heavy index tools (get_unused_fields ~102 MB, get_field_usage ~54 MB)
+  2. Heavy index tools (get_unused_fields ~102 MB, get_field_usage ~54 MB) — P0 2026-11-23 also gates lookup_table_impact, get_table_impact_detail, get_report_sources and get_model_details
      pass through _heavy_call: concurrent callers get a friendly busy
      response instead of a second simultaneous parse.
 
@@ -39,7 +39,12 @@ _ROWS = [
 class _ThinStub:
     """Thin-pack-backed service. Any heavy-blob access FAILS the test."""
 
-    def get_report_directory_rows(self, allowed_workspace_ids):
+    def __init__(self):
+        # Records the allow_catalog_fallback value passed by the MCP tool.
+        self.directory_fallback_flags = []
+
+    def get_report_directory_rows(self, allowed_workspace_ids, allow_catalog_fallback=True):
+        self.directory_fallback_flags.append(allow_catalog_fallback)
         rows = list(_ROWS)
         if allowed_workspace_ids is not None:
             rows = [r for r in rows if r.get("workspaceId") in allowed_workspace_ids]
@@ -53,6 +58,19 @@ class _ThinStub:
 
     def field_usage_detail(self, field_key, allowed_workspace_ids):
         return {"fieldKey": field_key, "usedIn": []}
+
+    # --- newly gated impact/model tools (P0) -------------------------------
+    def lookup_table(self, table_name):
+        return [{"table": table_name, "datasets": []}]
+
+    def impact_table_detail(self, table_key):
+        return {"tableKey": table_key, "datasets": []}
+
+    def impact_report_detail(self, report_id, allowed_workspace_ids=None):
+        return {"reportId": report_id, "sources": []}
+
+    def impact_model_details(self, dataset_id="", workspace_id=""):
+        return {"datasetId": dataset_id, "tables": []}
 
 
 _ORIG_SVC = server._svc_singleton
@@ -118,6 +136,41 @@ def test_heavy_gate_serializes():
     assert out["success"] is True and out["data"]["fieldKey"] == "t.m"
 
 
+def test_heavy_gate_gates_impact_and_model_tools():
+    """P0: the four impact/model tools parse multi-hundred-MB indexes and
+    must serialize through _heavy_call like the fields tools."""
+    assert server._HEAVY_GATE.acquire(blocking=False)
+    try:
+        calls = (
+            lambda: server.lookup_table_impact("t"),
+            lambda: server.get_table_impact_detail("k"),
+            lambda: server.get_report_sources("r1"),
+            lambda: server.get_model_details("d1"),
+        )
+        for call in calls:
+            out = call()
+            assert out["success"] is False and out.get("busy") is True, out
+    finally:
+        server._HEAVY_GATE.release()
+    # Gate free -> all four succeed against the stub.
+    assert server.lookup_table_impact("t")["success"] is True
+    assert server.get_table_impact_detail("k")["success"] is True
+    assert server.get_report_sources("r1")["success"] is True
+    assert server.get_model_details("d1")["success"] is True
+
+
+def test_workspace_reports_never_falls_back_to_catalog():
+    """P0: the MCP tool must pass allow_catalog_fallback=False so a missing
+    thin pack returns [] instead of triggering a heavy catalog rebuild."""
+    out = server.get_workspace_reports("ws-1")
+    assert out["success"] is True
+    stub = server._svc_singleton
+    assert stub.directory_fallback_flags, "expected at least one recorded flag"
+    assert all(f is False for f in stub.directory_fallback_flags), (
+        stub.directory_fallback_flags
+    )
+
+
 if __name__ == "__main__":
     _setup()
     try:
@@ -126,6 +179,8 @@ if __name__ == "__main__":
         test_thin_reports_acl_denial()
         test_thin_reports_unknown_or_empty_workspace()
         test_heavy_gate_serializes()
+        test_heavy_gate_gates_impact_and_model_tools()
+        test_workspace_reports_never_falls_back_to_catalog()
     finally:
         _teardown()
     print("All tests passed.")

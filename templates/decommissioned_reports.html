@@ -283,7 +283,13 @@ const EXPANDED = new Set();
 /** Current render: group id -> workspace name */
 let GROUP_NAMES = {};
 const $ = (id) => document.getElementById(id);
-function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
+function esc(s){
+    // Quote-safe (P0 XSS fix): escapes quotes so escaped values are safe
+    // inside HTML attributes, not only text nodes.
+    if (s == null) return '';
+    const map = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'};
+    return String(s).replace(/[&<>"']/g, m => map[m]);
+}
 function wsKey(name){return String(name==null?'Unknown':name)}
 
 function toggleGroupById(gid){

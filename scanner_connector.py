@@ -7,6 +7,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Hard ceiling for one Admin scan run (initiate → poll → result). The polling
+# loop below previously had NO deadline: a stuck scanStatus call could hang a
+# worker thread indefinitely (gunicorn runs 8 threads — hung scans exhaust the
+# pool). Override with SCANNER_RUN_TIMEOUT_SEC if a tenant legitimately needs
+# longer scans.
+SCANNER_RUN_TIMEOUT_SEC = int(os.getenv("SCANNER_RUN_TIMEOUT_SEC", "900"))
+
 class PowerBIScanner:
     """Uses Admin Scanner API to get dataset expressions (M / SQL)"""
 
@@ -32,7 +39,7 @@ class PowerBIScanner:
         }
 
         try:
-            res = requests.post(url, data=data)
+            res = requests.post(url, data=data, timeout=30)
             # This will raise an HTTPError for bad responses (4xx or 5xx)
             res.raise_for_status()
             self.access_token = res.json().get("access_token")
@@ -82,9 +89,15 @@ class PowerBIScanner:
             "?lineage=True&datasourceDetails=True&datasetSchema=True&datasetExpressions=True"
         )
 
-        # Use provided workspace_id or fall back to self.workspace_id
+        # Use provided workspace_id or fall back to self.workspace_id.
+        # Normalize list input (P0): combined_metadata_fetcher can pass a list
+        # of workspace ids — the old code wrapped it as [list], sending a
+        # nested array to the Admin API which the scan silently mis-handles.
         target_workspace = workspace_id or self.workspace_id
-        workspace_list = [target_workspace] if target_workspace else []
+        if isinstance(target_workspace, (list, tuple, set)):
+            workspace_list = [w for w in target_workspace if w]
+        else:
+            workspace_list = [target_workspace] if target_workspace else []
         if not workspace_list:
             print("❌ No workspace ID configured in environment")
             return None
@@ -105,7 +118,8 @@ class PowerBIScanner:
         print("\n1️⃣  Initiating Admin Scan Request...")
 
         try:
-            res = requests.post(scan_url, headers=headers, json=body)
+            # (connect, read) timeouts: initiate can take ~1 min tenant-wide.
+            res = requests.post(scan_url, headers=headers, json=body, timeout=(10, 60))
             
             # --- DETAILED ERROR PRINTING FOR SCAN API ---
             if res.status_code in (401, 403):
@@ -135,13 +149,23 @@ class PowerBIScanner:
             poll_interval = 1  # Start with 1 second
             max_poll_interval = 5  # Cap at 5 seconds
             poll_count = 0
+            # Hard deadline for the whole run (P0): the loop below used to be
+            # while-True with no exit for a stuck/perpetually-queued scan.
+            scan_deadline = time.time() + SCANNER_RUN_TIMEOUT_SEC
 
             while True:
-                s_res = requests.get(status_url, headers=headers)
+                s_res = requests.get(status_url, headers=headers, timeout=(10, 30))
                 s_res.raise_for_status()
                 s = s_res.json()
                 state = s.get('status')
                 poll_count += 1
+
+                if time.time() > scan_deadline:
+                    print(
+                        f"❌ Scan {scan_id} exceeded SCANNER_RUN_TIMEOUT_SEC "
+                        f"({SCANNER_RUN_TIMEOUT_SEC}s) — giving up."
+                    )
+                    return None
 
                 if state == "Succeeded":
                     print(f"   Status: {state} (after {poll_count} polls)")
@@ -159,7 +183,7 @@ class PowerBIScanner:
 
             print("\n3️⃣  Retrieving scan result...")
             result_url = f"{self.base_url}/admin/workspaces/scanResult/{scan_id}"
-            result_res = requests.get(result_url, headers=headers)
+            result_res = requests.get(result_url, headers=headers, timeout=(10, 300))
             result_res.raise_for_status()
             data = result_res.json()
 

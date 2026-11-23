@@ -73,9 +73,9 @@ app registration, and a populated `.env` (gitignored — never commit it).
 - Long work: `threading.Thread(daemon=True)` + progress dict polled via a
   `/api/.../progress/<job_id>` route, or `ThreadPoolExecutor` inside handlers
   (`max_workers` 10–20).
-- Config is env-var driven. `.env` at repo root; `.env.example` does not exist
-  (`.dockerignore` expects one) — if you add env vars, document them in a
-  `.env.example` (names only).
+- Config is env-var driven. `.env` at repo root; `.env.example` documents
+  every supported env var (names + defaults, never real values) — if you
+  add env vars, document them there.
 
 ## Gotchas — read before editing
 
@@ -161,6 +161,39 @@ app registration, and a populated `.env` (gitignored — never commit it).
     `python scripts/check-deps-resolution.py` (clean-venv install + sidecar
     import); after deploy confirm the container stream shows
     "Uvicorn running on http://127.0.0.1:8001" and "MCP warm-up".
+19. **ACL is fail-closed everywhere (P0, 2026-11-23).** Workspace-scoped
+    routes gate on `_user_allowed_workspace_ids()`; it returns `set()` on
+    fetch failure (never None in practice), and an empty allow-list DENIES
+    (403) rather than falling through to tenant-wide service-principal
+    data. Gated: `/api/reports` (pre-gate before both catalog and live
+    paths), export-inactive-reports, decommission candidates, report-usage,
+    orphaned-reports, reports-metadata, similarity analyze/export
+    (single-workspace branch), and the routes/catalog impact endpoints. Do
+    NOT reintroduce `len(allowed) > 0` fail-open guards — an empty set must
+    filter everything, not skip filtering. Known exceptions documented as
+    tenant-wide-for-authenticated-users: semantic_models, decommission
+    blueprint, report_diff (enforce later, deliberately).
+20. **Heavy parses are serialized by two independent gates (P0).**
+    Webapp: `_HEAVY_ROUTE_GATE` in routes/catalog.py — unused-fields,
+    report-column-usage and model-details return 503 "Another heavy catalog
+    query is running" when busy. Sidecar: `_HEAVY_GATE` in
+    mcp_server/server.py — six tools gated (see the MCP MEMORY note). Any
+    NEW endpoint/tool that can parse a multi-hundred-MB index MUST enter
+    its process's gate; `field_usage_index.json` and
+    `unused_fields_index.json` are in HEAVY_CATALOG_FILES (both root and
+    azure_function_catalog copies) so they are never retained in RAM.
+21. **Scanner calls have timeouts and a run deadline (P0).** All four
+    `requests` calls in scanner_connector.py carry explicit timeouts, the
+    scanStatus poll loop enforces `SCANNER_RUN_TIMEOUT_SEC` (default 900s,
+    `.env.example` has the name) and returns None on expiry — callers
+    already handle a None scan result. `run_scan` also normalizes list
+    input (combined_metadata_fetcher can pass multiple workspace ids).
+22. **Doc-gen jobs are server-owned (P0).** POST /api/generate mints a
+    uuid4 job_id (client job_id is ignored; index.html uses
+    `result.job_id`), records the owner oid in `generation_owners`, and
+    `/api/generate/download/<job_id>` is `@login_required` + owner-checked.
+    The cleanup thread pops both dicts. Do not "simplify" back to
+    client-supplied job ids or an unauthenticated download route.
 
 ## Testing notes
 
@@ -217,11 +250,16 @@ reverse impact analysis, field usage, unused fields, model details.
 - MEMORY (2026-11-23): the hosted sidecar must NEVER parse
   `workspace_catalog.json` (~284 MB → OOM-killed the shared container when
   concurrent with the webapp's own heavy loads). `get_workspace_reports` is
-  served from the thin report directory; `get_unused_fields` /
-  `get_field_usage` (~102/~54 MB indexes) serialize through a one-at-a-time
-  gate with a friendly busy response. Guard:
+  served from the thin report directory AND passes
+  `allow_catalog_fallback=False` — a missing thin pack returns [] rather
+  than triggering a heavy rebuild. SIX tools serialize through the
+  one-at-a-time `_heavy_call` gate with a friendly busy response:
+  `get_unused_fields` / `get_field_usage` (~102/~54 MB) plus (P0 batch)
+  `lookup_table_impact`, `get_table_impact_detail`, `get_report_sources`,
+  `get_model_details`. Guard:
   `tests/test_mcp_thin_workspace_reports.py` (stub fails on any heavy-blob
-  access). Keep new tools thin-pack-backed.
+  access; asserts the fallback flag and gate-busy for all six). Keep new
+  tools thin-pack-backed or gate them.
 - Smoke test: `python tests/test_mcp_server.py` (spawns the server over
   stdio; may hit SharePoint when the disk mirror needs revalidation — not
   part of the offline pytest set).

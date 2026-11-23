@@ -399,13 +399,20 @@ class CatalogService:
         self,
         allowed_workspace_ids: Optional[Set[str]] = None,
         force_refresh: bool = False,
+        allow_catalog_fallback: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Thin report directory (report → workspace) for Catalog reverse search.
         Prefers ui_report_directory.json; builds from catalog when missing.
+
+        allow_catalog_fallback=False (MCP sidecar mode): NEVER parse the heavy
+        ~284 MB workspace_catalog to rebuild a missing thin pack — return []
+        instead. The webapp keeps the default (True) and may rebuild.
         """
         pack = self.get_json("ui_report_directory.json", force_refresh=force_refresh)
         if not pack or not isinstance(pack.get("rows"), list):
+            if not allow_catalog_fallback:
+                return []
             cat = self.get_workspace_catalog(force_refresh=force_refresh)
             if cat:
                 try:
@@ -1322,10 +1329,14 @@ class CatalogService:
                 meta_row = r
                 break
 
-        if meta_row and allowed_workspace_ids is not None:
-            wid = meta_row.get("workspaceId")
+        # ACL (P0, fail-closed): when the caller passes an allow-list, deny
+        # unless the report's workspace id resolves AND is in the list. The
+        # old check only ran `if meta_row and wid` — reports missing from the
+        # thin pack (or with an empty workspaceId) fell through unfiltered.
+        if allowed_workspace_ids is not None:
+            wid = (meta_row or {}).get("workspaceId") or ""
             if wid and wid not in allowed_workspace_ids:
-                return None
+                return None  # cheap denial before any heavy source resolution
 
         details_map = (pack or {}).get("detailsByReportId") or {}
         sources = details_map.get(rid)
@@ -1334,6 +1345,20 @@ class CatalogService:
             sources = self._sources_for_report_from_index(rid)
         if sources is None:
             return None
+
+        if allowed_workspace_ids is not None:
+            wid = (meta_row or {}).get("workspaceId") or ""
+            if not wid:
+                # Resolve from the report's source datasets before deciding.
+                for s in sources or []:
+                    for d in (s.get("datasets") or []):
+                        if d.get("workspaceId"):
+                            wid = d.get("workspaceId")
+                            break
+                    if wid:
+                        break
+            if not wid or wid not in allowed_workspace_ids:
+                return None
 
         return {
             "reportId": rid,

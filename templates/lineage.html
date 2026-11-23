@@ -3253,7 +3253,7 @@
             Object.keys(tablesByWorkspace).sort().forEach(wsName => {
                 html += `<div style="margin-bottom: 24px;">
                     <h3 style="margin: 0 0 12px 0; padding: 8px 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 6px; font-size: 16px;">
-                        🌍 ${wsName} (${tablesByWorkspace[wsName].length} table${tablesByWorkspace[wsName].length !== 1 ? 's' : ''})
+                        🌍 ${escapeHtml(wsName)} (${tablesByWorkspace[wsName].length} table${tablesByWorkspace[wsName].length !== 1 ? 's' : ''})
                     </h3>
                     <div class="table-container dictionary-table-wrap" style="background: white; border-radius: 8px; border: 1px solid #E2E8F0; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);">
                         <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
@@ -3310,19 +3310,28 @@
     }
 
     function buildTableCard(table, index, workspaceId) {
+        // Two-layer escape for inline handler args (P0 XSS fix): jsEsc makes
+        // the value safe as a JS string literal (backslash + quote), then
+        // escapeHtml makes it safe inside the double-quoted HTML attribute —
+        // entities are decoded by the browser BEFORE the handler JS parses,
+        // so both layers are required.
+        const jsEsc = (s) => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const wsArg = escapeHtml(jsEsc(workspaceId));
+        const dsArg = escapeHtml(jsEsc(table.dataset_name || ''));
+        const tnArg = escapeHtml(jsEsc(table.table_name || ''));
         const reportLinks = table.reports.map(r =>
-            `<a href="https://app.powerbi.com/groups/${workspaceId}/reports/${r.id}" target="_blank" style="color: #4299E1; text-decoration: none; font-weight: 600;">${r.name} ↗</a>`
+            `<a href="https://app.powerbi.com/groups/${workspaceId}/reports/${r.id}" target="_blank" style="color: #4299E1; text-decoration: none; font-weight: 600;">${escapeHtml(r.name)} ↗</a>`
         ).join(', ');
 
         // Table row format instead of card
         let row = '<tr style="border-bottom: 1px solid #E2E8F0;">';
 
         // Column 1: Table Name (with icon)
-        row += `<td style="padding: 16px 12px; font-weight: 600; color: #2D3748;">📊 ${table.table_name}</td>`;
+        row += `<td style="padding: 16px 12px; font-weight: 600; color: #2D3748;">📊 ${escapeHtml(table.table_name)}</td>`;
 
         // Column 2: Report Names (highlighted with yellow background)
         row += `<td style="padding: 16px 12px; background: #FEF3C7; font-weight: 600; color: #92400E;">
-            ${table.dataset_name}
+            ${escapeHtml(table.dataset_name)}
         </td>`;
 
         // Column 3: Column Count
@@ -3337,7 +3346,7 @@
 
         // Column 5: Actions
         row += `<td style="padding: 16px 12px; text-align: center;">
-            <button onclick="loadAndToggleTableColumns('table_${index}', '${workspaceId}', '${table.dataset_name.replace(/'/g, "\\'")}', '${table.table_name.replace(/'/g, "\\'")}')"
+            <button onclick="loadAndToggleTableColumns('table_${index}', '${wsArg}', '${dsArg}', '${tnArg}')"
                     id="btn_table_${index}"
                     style="background: #4299E1; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: background 0.2s;"
                     onmouseover="this.style.background='#3182CE'"

@@ -126,7 +126,7 @@ def analyze_report_similarity(workspace_id):
             print("   📊 Fetching all accessible workspaces...")
             # Get all workspaces user has access to
             headers = {'Authorization': f'Bearer {user_token}', 'Content-Type': 'application/json'}
-            ws_response = requests.get('https://api.powerbi.com/v1.0/myorg/groups', headers=headers)
+            ws_response = requests.get('https://api.powerbi.com/v1.0/myorg/groups', headers=headers, timeout=30)
             if ws_response.status_code == 200:
                 all_workspaces = ws_response.json().get('value', [])
                 workspaces_to_scan = [ws['id'] for ws in all_workspaces]
@@ -134,6 +134,12 @@ def analyze_report_similarity(workspace_id):
             else:
                 return jsonify({'success': False, 'error': 'Failed to fetch workspaces'}), 500
         else:
+            # ACL (P0): run_scan uses the SERVICE PRINCIPAL (tenant-wide);
+            # without this gate any authenticated user could scan any workspace.
+            from routes.catalog import _user_allowed_workspace_ids
+            allowed_ws = _user_allowed_workspace_ids()
+            if allowed_ws is not None and workspace_id not in allowed_ws:
+                return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
             workspaces_to_scan = [workspace_id]
 
         # Run scan to get all reports with metadata
@@ -446,7 +452,7 @@ def export_similarity_analysis():
                 print("   🌍 Cross-workspace export - fetching all accessible workspaces...")
                 # Get all workspaces user has access to
                 headers = {'Authorization': f'Bearer {user_token}', 'Content-Type': 'application/json'}
-                ws_response = requests.get('https://api.powerbi.com/v1.0/myorg/groups', headers=headers)
+                ws_response = requests.get('https://api.powerbi.com/v1.0/myorg/groups', headers=headers, timeout=30)
                 if ws_response.status_code == 200:
                     all_workspaces = ws_response.json().get('value', [])
                     workspaces_to_scan = [ws['id'] for ws in all_workspaces[:10]]  # Limit to 10 for performance
@@ -463,6 +469,14 @@ def export_similarity_analysis():
                 else:
                     return jsonify({'success': False, 'error': 'Failed to fetch workspaces'}), 500
             else:
+                # ACL (P0): run_scan uses the SERVICE PRINCIPAL (tenant-wide);
+                # without this gate any authenticated user could export any
+                # workspace's similarity data. The 'ALL' branch above scans
+                # only the workspaces from the user's own /groups call.
+                from routes.catalog import _user_allowed_workspace_ids
+                allowed_ws = _user_allowed_workspace_ids()
+                if allowed_ws is not None and workspace_id not in allowed_ws:
+                    return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
                 workspaces_to_scan = [workspace_id]
 
             # Scan all workspaces

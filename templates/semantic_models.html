@@ -642,9 +642,17 @@ document.addEventListener('keydown', (e) => {
     }
 
     function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        // Quote-safe (P0 XSS fix): escapes quotes so escaped values are safe
+        // inside HTML attributes, not only text nodes.
+        if (text === null || text === undefined) return '';
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        };
+        return String(text).replace(/[&<>"']/g, m => map[m]);
     }
 
     function showAlert(type, message) {

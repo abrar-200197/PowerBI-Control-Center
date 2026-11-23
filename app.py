@@ -388,6 +388,7 @@ WORKSPACE_FOLDERS_CACHE_DURATION = 600  # 10 minutes — folder names change rar
 
 # Progress tracking for document generation
 generation_progress = {}  # Key: job_id, Value: {'progress': 0-100, 'status': 'message', 'file_path': 'path/to/file.docx', 'complete': False, 'error': None}
+generation_owners = {}  # Key: job_id, Value: user oid that started the job (download authorization; the background thread overwrites generation_progress, so ownership cannot live there)
 
 # Persistent file-based cache directory for usage metrics
 USAGE_CACHE_DIR = os.path.join(os.getcwd(), 'data', 'usage_cache')
@@ -3742,6 +3743,15 @@ def get_reports():
         if status_filter in ('active', 'inactive'):
             include_refresh = True
 
+        # ACL: fail-closed gate for BOTH the catalog fast path and the live
+        # fallback below (P0). The live path runs on the service principal and
+        # would otherwise serve tenant-wide data for any workspace id.
+        # _user_allowed_workspace_ids() returns set() on failure (never None in
+        # practice), so an auth/backend failure denies instead of leaking.
+        allowed_ws = _user_allowed_workspace_ids()
+        if allowed_ws is not None and workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
         if (
             not force_live
             and CATALOG_AVAILABLE
@@ -3751,7 +3761,10 @@ def get_reports():
             try:
                 allowed = _user_allowed_workspace_ids()
                 if workspace_id not in (allowed or set()):
-                    print(f"   ⚠️ Catalog fast-path: user cannot access workspace {workspace_id[:8]}…")
+                    # Defense-in-depth: the pre-gate above already returned 403
+                    # for this workspace; unreachable unless the allow-list
+                    # changed between the two checks.
+                    return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
                 else:
                     catalog_payload = catalog_service.get_workspace_reports(
                         workspace_id, allowed_workspace_ids=allowed
@@ -4438,6 +4451,12 @@ def export_inactive_reports(workspace_id):
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
         from flask import send_file
 
+        # ACL: fail-closed (P0) — this route exposes tenant-wide catalog +
+        # Scanner data for any workspace id passed in the URL.
+        allowed_ws = _user_allowed_workspace_ids()
+        if allowed_ws is not None and workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
         print(f"\n📋 GENERATING DECOMMISSION REPORT FOR WORKSPACE: {workspace_id}")
         REFRESH_STALE_DAYS = 90
         VIEW_LOOKBACK_LABEL = '60 days'
@@ -4978,6 +4997,11 @@ def decommission_list_candidates(workspace_id):
         if not workspace_id:
             return jsonify({'success': False, 'error': 'workspace_id required'}), 400
 
+        # ACL: fail-closed (P0) — tenant-wide catalog listing.
+        allowed_ws = _user_allowed_workspace_ids()
+        if allowed_ws is not None and workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
         REFRESH_STALE_DAYS = 90
         VIEW_LOOKBACK_LABEL = '60 days'
 
@@ -5319,6 +5343,12 @@ def get_report_usage(workspace_id):
         from datetime import datetime, timedelta, timezone
         import requests
         from scanner_connector import PowerBIScanner
+
+        # ACL: fail-closed (P0) — usage metrics cover any workspace id passed
+        # in the URL (Admin Activity Events are tenant-wide).
+        allowed_ws = _user_allowed_workspace_ids()
+        if allowed_ws is not None and workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
         print(f"\n📊 FETCHING REPORT USAGE METRICS FOR WORKSPACE: {workspace_id}")
         print(f"   ⚠️  NOTE: Live Activity Events requires Service Principal with Power BI Admin role")
@@ -5776,6 +5806,12 @@ def get_orphaned_reports(workspace_id):
     try:
         from datetime import datetime, timezone
         import requests
+
+        # ACL: fail-closed (P0) — orphan detection overlays tenant-wide
+        # Scanner/catalog data for any workspace id passed in the URL.
+        allowed_ws = _user_allowed_workspace_ids()
+        if allowed_ws is not None and workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
         print(f"\n👻 DETECTING ORPHANED REPORTS FOR WORKSPACE: {workspace_id}")
 
@@ -6269,6 +6305,13 @@ def get_reports_metadata(workspace_id):
     try:
         from scanner_connector import PowerBIScanner
         import time
+
+        # ACL: fail-closed (P0) — creator/modifier metadata is tenant-wide;
+        # the cache below is keyed by workspace only (not per-user), so the
+        # gate must run before any cached data is served.
+        allowed_ws = _user_allowed_workspace_ids()
+        if allowed_ws is not None and workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
         # Check cache first (5-minute TTL)
         cache_key = f"metadata_{workspace_id}"
@@ -10022,10 +10065,15 @@ def get_generation_progress(job_id):
 
 
 @app.route('/api/generate/download/<job_id>')
+@login_required
 def download_generated_file(job_id):
     """Download the generated file for a completed job"""
-    # Note: Removed @login_required to avoid request context issues
-    # The job_id itself acts as a secure token (UUID + timestamp)
+    # Auth restored (P0): the job_id alone is not a secret — it travels in
+    # progress polls and the old format was predictable. Require a session
+    # AND that the caller owns the job (oid recorded at POST /api/generate).
+    owner = generation_owners.get(job_id)
+    if owner != session.get('user', {}).get('oid', ''):
+        return jsonify({'error': 'Not authorized for this job'}), 403
 
     job_data = generation_progress.get(job_id)
 
@@ -10163,7 +10211,12 @@ def _generate_documentation_background(workspace_id, report_id, dataset_id, repo
 
         # Create Word document
         doc_creator = PowerBIDocumentCreator()
-        doc_filename = f"{report_name}_Documentation.docx"
+        # Sanitize the client-supplied report_name (P0): without this, '../..'
+        # in a report name could write outside the output directory and
+        # filesystem-illegal characters would break the docx write.
+        import re
+        _safe_stem = re.sub(r"[^\w\-.() ]+", "_", (report_name or "Report")).strip().strip(".") or "Report"
+        doc_filename = f"{_safe_stem}_Documentation.docx"
         doc_path = os.path.join(output_dir, doc_filename)
         print(f"\n📝 Creating Word document: {doc_path}")
 
@@ -10195,6 +10248,7 @@ def _generate_documentation_background(workspace_id, report_id, dataset_id, repo
                         os.remove(doc_path)
                 except:
                     pass
+                generation_owners.pop(job_id, None)
                 del generation_progress[job_id]
 
         threading.Thread(target=cleanup_progress, daemon=True).start()
@@ -10223,7 +10277,10 @@ def generate_documentation():
     report_id = data.get('report_id')
     dataset_id = data.get('dataset_id')
     report_name = data.get('report_name', 'Report')
-    job_id = data.get('job_id', f'{report_id}_{int(time.time())}')
+    # Server-side job id (P0): client-supplied ids were predictable, letting
+    # any logged-in user poll progress or hit the download of another user's
+    # job. The client now uses the job_id returned in this response.
+    job_id = uuid.uuid4().hex
 
     if not report_id:
         return jsonify({
@@ -10238,8 +10295,9 @@ def generate_documentation():
     # Get user token from session
     user_token = session.get('access_token')
 
-    # Initialize progress tracking
+    # Initialize progress tracking + ownership (download authorization)
     generation_progress[job_id] = {'progress': 0, 'status': 'Starting...', 'complete': False}
+    generation_owners[job_id] = session.get('user', {}).get('oid', '')
 
     # Start background thread for generation
     thread = threading.Thread(
