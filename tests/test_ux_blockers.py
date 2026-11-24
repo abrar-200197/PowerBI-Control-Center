@@ -76,6 +76,51 @@ def test_eb40_row_click_navigation_is_preserved():
     assert home.count("tr.addEventListener('click', (e) => {") == 2
 
 
+
+# ---------------------------------------------------------------------------
+# B2 - crash-modal close semantics (templates/index.html)
+# ---------------------------------------------------------------------------
+
+def test_crash_modal_close_is_instance_scoped():
+    """closeCrashTestModal removes the passed backdrop instance; the
+    defensive no-instance path clears crash-scoped backdrops only."""
+    idx = _read("templates/index.html")
+    assert idx.count("function closeCrashTestModal(backdrop)") == 1
+    assert idx.count("Array.from(document.querySelectorAll('.ct-backdrop'))") == 1
+
+
+def test_crash_modal_handlers_pass_their_own_instance():
+    """Close button, backdrop click and Escape all pass their own backdrop;
+    the ambiguous no-argument form must not be used anywhere."""
+    idx = _read("templates/index.html")
+    assert idx.count("closeCrashTestModal(this.closest('.ct-backdrop'))") == 1
+    assert idx.count("closeCrashTestModal(this)") == 1
+    assert idx.count("closeCrashTestModal(ctBackdrop)") == 1
+    assert idx.count("closeCrashTestModal()") == 0
+
+
+def test_ct_backdrop_class_is_owned_by_the_crash_modal_only():
+    """If another modal ever adopts ct-backdrop, the defensive remove-all
+    fallback would close it too - force that to be a conscious change."""
+    idx = _read("templates/index.html")
+    assert idx.count('<div class="ct-backdrop"') == 1
+    assert idx.count(".ct-backdrop {") == 1
+
+
+def test_crash_modal_focus_restore_survives_instance_close():
+    """Trigger reference is set on open and used (guard + focus) on close."""
+    idx = _read("templates/index.html")
+    assert idx.count("window._crashModalTrigger") == 4
+
+
+def test_preopen_stale_backdrop_cleanup_still_present():
+    """showCrashTestModal clears stale backdrops before opening (baseline
+    invariant that prevents stacking through the normal flow)."""
+    idx = _read("templates/index.html")
+    assert idx.count(
+        "document.querySelectorAll('.ct-backdrop').forEach(el => el.remove());") == 1
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

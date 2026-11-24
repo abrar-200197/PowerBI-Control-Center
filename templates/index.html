@@ -3887,7 +3887,7 @@
         const exportText = exportLines.join('\n');
 
         const modalHtml = `
-          <div class="ct-backdrop" role="dialog" aria-modal="true" aria-label="Crash test results" aria-labelledby="ct-title" onclick="if(event.target===this)closeCrashTestModal()">
+          <div class="ct-backdrop" role="dialog" aria-modal="true" aria-label="Crash test results" aria-labelledby="ct-title" onclick="if(event.target===this)closeCrashTestModal(this)">
             <div class="ct-modal">
               <div class="ct-head">
                 <div style="min-width:0">
@@ -3897,7 +3897,7 @@
                 <div class="ct-head-actions">
                   <a href="${esc(reportLink)}" target="_blank" rel="noopener">Open report</a>
                   <button type="button" data-copy-text="${esc(exportText)}" onclick="copyCrashTestResults(this)">Copy results</button>
-                  <button type="button" onclick="closeCrashTestModal()">Close</button>
+                  <button type="button" onclick="closeCrashTestModal(this.closest('.ct-backdrop'))">Close</button>
                 </div>
               </div>
               <div class="ct-summary">
@@ -3924,14 +3924,27 @@
             const ctCloseBtn = ctBackdrop.querySelector('.ct-head-actions button:last-child');
             if (ctCloseBtn) { try { ctCloseBtn.focus(); } catch (e) { /* ignore */ } }
             ctBackdrop.addEventListener('keydown', (ev) => {
-                if (ev.key === 'Escape') closeCrashTestModal();
+                if (ev.key === 'Escape') closeCrashTestModal(ctBackdrop);
             });
         }
     }
 
-    function closeCrashTestModal() {
-        const bd = document.querySelector('.ct-backdrop');
-        if (bd) bd.remove();
+    function closeCrashTestModal(backdrop) {
+        // B2 hardening: close the modal INSTANCE the user is interacting
+        // with. Inline handlers pass their own backdrop element; if called
+        // without a valid instance (defensive path), clear every crash-test
+        // backdrop - the ct-backdrop class is owned exclusively by this
+        // modal, so unrelated modals are never affected. The modal has no
+        // body-level open state (the fixed backdrop owns scrolling), and
+        // its keydown listener lives on the removed element, so removal
+        // restores scrolling and drops the listener with it.
+        // Note: showCrashTestModal already removes stale backdrops before
+        // opening a new one, so stacked states should not occur through the
+        // UI flow; this keeps close correct even if they ever do.
+        const scoped = (backdrop && backdrop.classList && backdrop.classList.contains('ct-backdrop'))
+            ? [backdrop]
+            : Array.from(document.querySelectorAll('.ct-backdrop'));
+        scoped.forEach((bd) => bd.remove());
         if (window._crashModalTrigger && document.contains(window._crashModalTrigger)) {
             try { window._crashModalTrigger.focus(); } catch (e) { /* ignore */ }
         }
