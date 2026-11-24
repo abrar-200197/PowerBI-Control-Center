@@ -167,16 +167,33 @@ app registration, and a populated `.env` (gitignored — never commit it).
     `python scripts/check-deps-resolution.py` (clean-venv install + sidecar
     import); after deploy confirm the container stream shows
     "Uvicorn running on http://127.0.0.1:8001" and "MCP warm-up".
-19. **ACL is fail-closed everywhere (P0, 2026-11-23).** Workspace-scoped
-    routes gate on `_user_allowed_workspace_ids()`; it returns `set()` on
-    fetch failure (never None in practice), and an empty allow-list DENIES
-    (403) rather than falling through to tenant-wide service-principal
-    data. Gated: `/api/reports` (pre-gate before both catalog and live
-    paths), export-inactive-reports, decommission candidates, report-usage,
-    orphaned-reports, reports-metadata, similarity analyze/export
-    (single-workspace branch), and the routes/catalog impact endpoints. Do
-    NOT reintroduce `len(allowed) > 0` fail-open guards — an empty set must
-    filter everything, not skip filtering. Known exceptions documented as
+19. **ACL is fail-closed everywhere (P0, 2026-11-23; extended 2026-11-24).**
+    Workspace-scoped routes gate on `_user_allowed_workspace_ids()`; it
+    returns `set()` on fetch failure (never None), and an empty allow-list
+    DENIES (403) rather than falling through to tenant-wide
+    service-principal data. Gated: `/api/reports` (pre-gate before both
+    catalog and live paths), export-inactive-reports, decommission
+    candidates, report-usage, orphaned-reports, reports-metadata, similarity
+    analyze/export (single-workspace branch) **and the multi-type
+    `/api/similarity-analysis` route**, the routes/catalog impact endpoints
+    **including `impact/report-column-usage`** (service method now takes
+    `allowed_workspace_ids`), **table-search (single workspace; the
+    ALL/GLOBAL branch filters its scan list to the allow-list), table-
+    columns, content-search, deep-content-search, crash-test,
+    visual-lineage, /api/lineage (scanner step), /api/dataset/lineage**
+    (the lineage scans only the supplied workspace, so gating it closes the
+    route), **and POST /api/generate** (which now also fails with 401
+    instead of falling back to the service principal when no valid user
+    token exists). The allow-list helper caches under its OWN
+    `acl_workspaces_{oid}` key namespace, source-tagged
+    `delegated_groups`, with a paginated delegated `/groups` fetch
+    (~550-workspace tenant; Power BI caps lists at ~100/page) — NEVER read
+    the UI `workspaces_{oid}` entry for ACL decisions: `/api/workspaces`
+    writes tenant-wide service-principal fallback data under that key, and
+    trusting it silently widens every gate. Regression tests:
+    `tests/test_webapp_acl.py`. Do NOT reintroduce `len(allowed) > 0`
+    fail-open guards — an empty set must filter everything, not skip
+    filtering. Known exceptions documented as
     tenant-wide-for-authenticated-users: semantic_models, decommission
     blueprint, report_diff (enforce later, deliberately). Residual edge in
     impact model-details: when neither the request nor the catalog can

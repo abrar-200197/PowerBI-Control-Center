@@ -1540,7 +1540,11 @@ class CatalogService:
             "excludedViaRelationshipKey": pack.get("excludedViaRelationshipKey") or 0,
         }
 
-    def report_column_usage(self, report_id: str) -> Optional[Dict[str, Any]]:
+    def report_column_usage(
+        self,
+        report_id: str,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Level 2 — per-report column/measure usage breakdown (report drawer
         signal, NOT a deletion list). For the given report, cross-references
@@ -1552,6 +1556,11 @@ class CatalogService:
         Server-side only (reads field_usage_index.json + workspace_catalog.json
         directly, not a browser-exposed thin pack) since this is a drill-down
         for one report at a time, not a tenant-wide searchable grid.
+
+        ACL (P0, fail-closed): when allowed_workspace_ids is provided, the
+        report's workspace must resolve from the field-usage index AND be in
+        the list — an unresolvable workspace denies, matching the
+        impact_report_detail rule.
         """
         if not report_id:
             return None
@@ -1560,6 +1569,13 @@ class CatalogService:
         report_entry = per_report_cache.get(report_id)
         if report_entry is None:
             return None
+
+        # ACL (P0, fail-closed): deny before any heavy fallback work.
+        if allowed_workspace_ids is not None:
+            wid = (report_entry or {}).get("workspaceId") or ""
+            if not wid or wid not in allowed_workspace_ids:
+                return None
+
         used_fields = report_entry.get("fields") or {}
         used_keys = set(used_fields.keys())
 

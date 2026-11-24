@@ -13,6 +13,7 @@ the blueprint registration line while this module is still mid-import.
 Instead, resolve them lazily at call/request time, by which point `app` is
 fully initialized in sys.modules.
 """
+import hmac
 import os
 import threading
 import time
@@ -27,6 +28,12 @@ catalog_bp = Blueprint('catalog', __name__)
 # per worker; concurrent requests get 503 instead of stacking OOM-prone parses
 # on top of each other (same incident class as the 2026-11-23 sidecar OOM).
 _HEAVY_ROUTE_GATE = threading.BoundedSemaphore(1)
+
+# Page cap for the ACL allow-list fetch (P0, 2026-11-24): Power BI caps list
+# responses at ~100 rows/page and this tenant has ~550 workspaces — a
+# single-page fetch truncated the allow-list and 403'd legitimate workspaces.
+# 10 pages x 100 rows is generous headroom; the cap exists to bound latency.
+_ACL_MAX_PAGES = 10
 
 
 def _heavy_route_call(fn):
@@ -83,28 +90,63 @@ def impact_explorer_page():
 
 def _user_allowed_workspace_ids():
     """
-    Workspace IDs the current SSO user can access (from live /groups, cached).
-    Returns None if undetermined (caller may skip filtering only for admin tools).
-    Returns set() on hard failure after auth.
+    Workspace IDs the current SSO user can access — the single allow-list
+    source for every fail-closed workspace gate (AGENTS.md gotcha 19).
+
+    Reads ONLY the dedicated `acl_workspaces_{oid}` cache namespace. The UI
+    `workspaces_{oid}` entry written by /api/workspaces can contain the
+    TENANT-WIDE workspace list from its service-principal fallback; trusting
+    it here would silently widen every ACL gate to tenant-wide (P0 fix).
+
+    The live fetch uses the user's DELEGATED token against /groups and is
+    paginated via `@odata.nextLink` (same pattern as
+    powerbi_connector._paged_get): a single-page fetch truncated the
+    allow-list and produced false 403 denials for users in >100 workspaces.
+
+    Returns set() on any failure after auth (fail closed, never None) —
+    an empty allow-list DENIES, it never falls through to tenant-wide data.
     """
     import requests
     from app import workspaces_cache, CACHE_DURATION
     try:
         user_id = session.get('user', {}).get('oid', 'unknown')
-        cache_key = f"workspaces_{user_id}"
+        cache_key = f"acl_workspaces_{user_id}"
         current_time = time.time()
-        if cache_key in workspaces_cache and workspaces_cache[cache_key].get('data') and \
-           (current_time - workspaces_cache[cache_key].get('timestamp', 0)) < CACHE_DURATION:
-            return {w.get('id') for w in workspaces_cache[cache_key]['data'] if w.get('id')}
+        cached = workspaces_cache.get(cache_key)
+        if (
+            isinstance(cached, dict)
+            and cached.get('source') == 'delegated_groups'
+            and (current_time - cached.get('timestamp', 0)) < CACHE_DURATION
+        ):
+            return {w.get('id') for w in (cached.get('data') or []) if w.get('id')}
 
-        # Lightweight live fetch (same as get_workspaces core)
+        # Delegated, paginated fetch. Never use the service principal here:
+        # this list IS the security perimeter.
         headers = _get_user_powerbi_headers()
-        resp = requests.get("https://api.powerbi.com/v1.0/myorg/groups", headers=headers, timeout=30)
-        if resp.status_code != 200:
-            print(f"⚠️ allowed workspaces fetch HTTP {resp.status_code}")
-            return set()
-        workspaces = resp.json().get('value', [])
-        workspaces_cache[cache_key] = {'data': workspaces, 'timestamp': current_time}
+        workspaces = []
+        url = "https://api.powerbi.com/v1.0/myorg/groups?$top=100"
+        for _page in range(_ACL_MAX_PAGES):
+            resp = requests.get(url, headers=headers, timeout=30)
+            if resp.status_code != 200:
+                print(f"⚠️ allowed workspaces fetch HTTP {resp.status_code}")
+                return set()
+            payload = resp.json()
+            workspaces.extend(payload.get('value', []) or [])
+            url = payload.get('nextLink') or payload.get('@odata.nextLink')
+            if not url:
+                break
+        else:
+            # Page cap exhausted while a nextLink was still pending — the
+            # allow-list may be incomplete (fail closed per page, not tenant).
+            print(f"⚠️ allowed-workspaces fetch hit the {_ACL_MAX_PAGES}-page cap; allow-list may be truncated")
+
+        # Source tag: only entries fetched here (delegated) may ever be
+        # served back as an allow-list.
+        workspaces_cache[cache_key] = {
+            'data': workspaces,
+            'timestamp': current_time,
+            'source': 'delegated_groups',
+        }
         return {w.get('id') for w in workspaces if w.get('id')}
     except Exception as exc:
         print(f"⚠️ _user_allowed_workspace_ids: {exc}")
@@ -269,7 +311,9 @@ def api_catalog_refresh_internal():
     auth_h = (request.headers.get('Authorization') or '').strip()
     if auth_h.lower().startswith('bearer '):
         provided = provided or auth_h[7:].strip()
-    if not provided or provided != secret:
+    # Constant-time compare (machine-auth endpoint guarding the tenant-wide
+    # catalog refresh path).
+    if not provided or not hmac.compare_digest(provided.encode('utf-8'), secret.encode('utf-8')):
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
 
     try:
@@ -700,9 +744,14 @@ def api_catalog_report_column_usage():
     if not report_id:
         return jsonify({'success': False, 'error': 'report_id required'}), 400
     try:
+        # ACL (P0, fail-closed): resolve the caller's allow-list BEFORE taking
+        # the heavy gate, then let the service deny non-permitted reports.
+        allowed_ws = _user_allowed_workspace_ids()
         # Heavy gate (P0): scans the impact index for per-report usage.
         got_gate, detail = _heavy_route_call(
-            lambda: catalog_service.report_column_usage(report_id)
+            lambda: catalog_service.report_column_usage(
+                report_id, allowed_workspace_ids=allowed_ws
+            )
         )
         if not got_gate:
             return jsonify({

@@ -1335,6 +1335,15 @@ def get_similarity_analysis():
                 'error': f"Unsupported type '{analysis_type}'. Use reports|visuals|measures|tables"
             }), 400
 
+        # ACL (P0, fail-closed): this multi-type route reads the tenant-wide
+        # catalog AND runs service-principal Scanner scans (visuals/measures)
+        # + seeds the shared schema cache — the same exposure the single-
+        # workspace branch below already gates. set() on fetch failure denies.
+        from routes.catalog import _user_allowed_workspace_ids
+        allowed_ws = _user_allowed_workspace_ids()
+        if workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
         print(f"\n🔍 SIMILARITY ANALYSIS: type={analysis_type} ws={workspace_id} thr={threshold}")
         similarity_logger.info(f"SIMILARITY ANALYSIS: type={analysis_type} ws={workspace_id} thr={threshold}")
 

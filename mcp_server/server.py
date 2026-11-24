@@ -410,7 +410,16 @@ def get_unused_fields(limit: int = 50, acl_workspace_ids: Optional[List[str]] = 
     DAX-referenced, M-expression-tagged, relationship keys, or referenced by
     another measure. Note the returned 'caveat' (RLS/sort-by undetectable)."""
     try:
-        out = _heavy_call(_svc().unused_fields_rows, _effective_ids(acl_workspace_ids))
+        # Keyword-only binding (P0 fix): the ACL set used to be passed
+        # positionally and landed in `force_refresh`, silently dropping the
+        # allow-list (tenant-wide leak) AND forcing a ~104 MB SharePoint
+        # re-download on every call.
+        out = _heavy_call(
+            lambda: _svc().unused_fields_rows(
+                force_refresh=False,
+                allowed_workspace_ids=_effective_ids(acl_workspace_ids),
+            )
+        )
         if isinstance(out, dict) and out.get("busy"):
             return out
         rows = list(out.get("rows") or [])

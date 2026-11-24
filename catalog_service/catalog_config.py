@@ -238,15 +238,20 @@ BROWSER_BLOCKED_CATALOG_FILES = frozenset({
     "refresh_snapshot.json",
 })
 # Safe small JSON the browser may request via /api/catalog/data/*
+# P0 ACL (2026-11-24): tenant-data packs are NOT browsable — their content is
+# served only through ACL-filtered routes. ui_impact_reports.json additionally
+# carries detailsByReportId (per-report source lists for the whole tenant) and
+# was previously listed with a comment claiming the API stripped it — it never
+# did. ui_home_index.json (per-workspace detail lists) and
+# ui_report_directory.json (full tenant report directory) likewise bypassed
+# the /api/home-summary/details and /api/catalog/reports-search filters.
+# The Impact UI only ever fetches summary.json; ui_impact_tables.json stays
+# browsable because table impact is tenant-wide by design.
 BROWSER_ALLOWED_CATALOG_FILES = frozenset({
     "summary.json",
     "ops_summary.json",
     "sources.json",
-    "ui_home_index.json",
     "ui_impact_tables.json",
-    # Grid list only is safe; API strips detailsByReportId before browser use
-    "ui_impact_reports.json",
-    "ui_report_directory.json",
     "ui_decommission_candidates.json",
 })
 

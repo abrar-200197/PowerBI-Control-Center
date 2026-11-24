@@ -1347,6 +1347,15 @@ def search_workspace_tables(workspace_id):
         # Check if cross-workspace search
         is_global = workspace_id.upper() == 'ALL' or workspace_id.upper() == 'GLOBAL'
 
+        # ACL (P0, fail-closed): single-workspace search runs the Admin Scanner
+        # with the SERVICE PRINCIPAL (tenant-wide by design), so the requested
+        # workspace must be in the user's delegated allow-list. The helper
+        # always returns a set — set() on fetch failure denies everything.
+        if not is_global:
+            allowed_ws = _user_allowed_workspace_ids()
+            if workspace_id not in allowed_ws:
+                return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
         print(f"\n🔍 ===============================================")
         if is_global:
             print(f"🔍 TABLE SEARCH (CROSS-WORKSPACE): '{search_term}'")
@@ -1377,6 +1386,16 @@ def search_workspace_tables(workspace_id):
                 all_workspaces = ws_response.json().get('value', [])
                 workspaces_to_scan = [ws['id'] for ws in all_workspaces]
                 workspace_names = {ws['id']: ws['name'] for ws in all_workspaces}
+                # ACL (fail-closed): enumeration above used the user's own
+                # token, but the scans below run with the service principal —
+                # keep only workspaces in the user's delegated allow-list. An
+                # empty allow-list filters everything (zero results, not 403,
+                # since no tenant-wide data is touched).
+                allowed_ws = _user_allowed_workspace_ids()
+                workspaces_to_scan = [wid for wid in workspaces_to_scan if wid in allowed_ws]
+                workspace_names = {k: v for k, v in workspace_names.items() if k in allowed_ws}
+                if not workspaces_to_scan:
+                    print("   ⚠️ ACL: no accessible workspaces for cross-workspace table search")
                 print(f"   ✅ Will search across {len(workspaces_to_scan)} workspaces")
             else:
                 return jsonify({'success': False, 'error': 'Failed to fetch workspaces'}), 500
@@ -1800,6 +1819,13 @@ def get_table_columns(workspace_id, dataset_name, table_name):
     try:
         from scanner_connector import PowerBIScanner
 
+        # ACL (P0, fail-closed): the Admin Scanner runs with the service
+        # principal, so this workspace must be in the user's delegated
+        # allow-list. set() on fetch failure denies everything.
+        allowed_ws = _user_allowed_workspace_ids()
+        if workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
         print(f"\n📋 FETCHING COLUMNS FOR TABLE: {table_name}")
         print(f"   Workspace: {workspace_id}")
         print(f"   Dataset: {dataset_name}")
@@ -2029,6 +2055,13 @@ def search_workspace_content(workspace_id):
 
         # Use case-insensitive matching (SQL LIKE equivalent)
         search_term_lower = search_term.lower()
+
+        # ACL (P0, fail-closed): the Admin Scanner runs with the service
+        # principal, so this workspace must be in the user's delegated
+        # allow-list. set() on fetch failure denies everything.
+        allowed_ws = _user_allowed_workspace_ids()
+        if workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
         print(f"\n📄 ===============================================")
         print(f"📄 CONTENT SEARCH: '{search_term}' in workspace {workspace_id}")
@@ -2376,6 +2409,14 @@ def deep_content_search(workspace_id):
             return jsonify({'success': False, 'error': 'Search query is required'}), 400
 
         search_term_lower = search_term.lower()
+
+        # ACL (P0, fail-closed): this route runs the Admin Scanner AND
+        # headless Playwright with service-principal-derived data, so the
+        # workspace must be in the user's delegated allow-list. Placed before
+        # the deep_search_progress write so a denial leaves no progress state.
+        allowed_ws = _user_allowed_workspace_ids()
+        if workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
         # Build scope description
         scope_info = []
@@ -6596,6 +6637,15 @@ def get_dataset_lineage():
                 'error': 'workspace_id and dataset_id are required'
             }), 400
 
+        # ACL (P0, fail-closed): SemanticModelLineage scans ONLY the supplied
+        # workspace (a dataset_id from a different workspace fails with
+        # "not found"), so gating this workspace_id closes the route — the
+        # dataset's effective home for this call IS the supplied workspace.
+        # The scan itself runs with the service principal.
+        allowed_ws = _user_allowed_workspace_ids()
+        if workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
         # Get user token from session
         user_token = session.get('access_token')
         if not user_token:
@@ -7011,6 +7061,14 @@ def crash_test_report(report_id):
                 'success': False,
                 'error': 'Missing required parameters: workspace_id and dataset_id'
             }), 400
+
+        # ACL (P0, fail-closed): crash test runs the Admin Scanner with the
+        # service principal (report metadata + schema) and Enhanced Mode uses
+        # SP-derived embed data, so the workspace must be in the user's
+        # delegated allow-list. set() on fetch failure denies everything.
+        allowed_ws = _user_allowed_workspace_ids()
+        if workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
         print(f"\n🔬 HYBRID CRASH TEST REQUEST")
         print(f"   Report: {report_id}")
@@ -7946,6 +8004,14 @@ def get_lineage():
                 'error': 'Not authenticated'
             }), 401
 
+        # ACL (P0, fail-closed): although the report fetch below uses the
+        # user's own token (Power BI 403s inaccessible workspaces), the
+        # dataset-model step in this route scans with the SERVICE PRINCIPAL —
+        # the requested workspace must be in the user's delegated allow-list.
+        allowed_ws = _user_allowed_workspace_ids()
+        if workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
         headers = {
             'Authorization': f'Bearer {user_token}',
             'Content-Type': 'application/json'
@@ -8814,6 +8880,13 @@ def get_visual_lineage(report_id):
                 'success': False,
                 'error': 'workspace_id is required'
             }), 400
+
+        # ACL (P0, fail-closed): the Admin Scanner runs with the service
+        # principal, so this workspace must be in the user's delegated
+        # allow-list. set() on fetch failure denies everything.
+        allowed_ws = _user_allowed_workspace_ids()
+        if workspace_id not in allowed_ws:
+            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
 
         print(f"\n📊 ===============================================")
         print(f"📊 VISUAL LINEAGE REQUEST")
@@ -10295,8 +10368,25 @@ def generate_documentation():
     if not workspace_id:
         workspace_id = config.WORKSPACE_ID
 
-    # Get user token from session
-    user_token = session.get('access_token')
+    # ACL (P0, fail-closed): documentation generation collects tenant-wide
+    # model metadata (M expressions, measures, datasources), so the target
+    # workspace must be in the user's delegated allow-list.
+    allowed_ws = _user_allowed_workspace_ids()
+    if workspace_id not in allowed_ws:
+        return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+
+    # Refresh-capable token (silent MSAL refresh + session write-back) instead
+    # of the raw session JWT, which goes stale after ~1h. If no valid token
+    # can be obtained, FAIL the request — the background job must never fall
+    # back to the service principal (that would expose tenant-wide data for
+    # any authenticated user, P0 fix).
+    user_token = get_user_powerbi_token()
+    if not user_token:
+        return jsonify({
+            'success': False,
+            'error': 'Power BI session expired. Please sign in again.',
+            'redirect': '/login'
+        }), 401
 
     # Initialize progress tracking + ownership (download authorization)
     generation_progress[job_id] = {'progress': 0, 'status': 'Starting...', 'complete': False}

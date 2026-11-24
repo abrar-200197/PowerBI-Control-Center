@@ -39,6 +39,10 @@ _ROWS = [
 class _ThinStub:
     """Thin-pack-backed service. Any heavy-blob access FAILS the test."""
 
+    # Class-level so tests can inspect recorded calls after _setup() swaps
+    # the singleton instance.
+    unused_fields_calls = []
+
     def __init__(self):
         # Records the allow_catalog_fallback value passed by the MCP tool.
         self.directory_fallback_flags = []
@@ -53,8 +57,17 @@ class _ThinStub:
     def get_workspace_catalog(self, force_refresh=False):
         raise AssertionError("sidecar attempted to load the ~284 MB workspace_catalog")
 
-    def unused_fields_rows(self, allowed_workspace_ids):
-        return {"rows": [{"fieldKey": "t.m"}], "caveat": "test"}
+    def unused_fields_rows(self, force_refresh=False, allowed_workspace_ids=None):
+        # Real CatalogService signature: (force_refresh, allowed_workspace_ids).
+        # The stub previously declared only (allowed_workspace_ids), which let
+        # a positional misbinding look correct under test (P0 regression guard).
+        _ThinStub.unused_fields_calls.append(
+            {"force_refresh": force_refresh, "allowed_workspace_ids": allowed_workspace_ids}
+        )
+        rows = [{"fieldKey": "t.m", "workspaceId": "ws-1"}]
+        if allowed_workspace_ids is not None:
+            rows = [r for r in rows if r.get("workspaceId") in allowed_workspace_ids]
+        return {"rows": rows, "caveat": "test"}
 
     def field_usage_detail(self, field_key, allowed_workspace_ids):
         return {"fieldKey": field_key, "usedIn": []}
@@ -123,6 +136,24 @@ def test_thin_reports_other_workspace_filtered_out():
 def test_thin_reports_acl_denial():
     out = server.get_workspace_reports("ws-1", acl_workspace_ids=["ws-9"])
     assert out["success"] is False and out["aclFiltered"] is True
+
+
+def test_unused_fields_acl_binding():
+    """P0 regression (2026-11-24): get_unused_fields used to pass the ACL set
+    POSITIONALLY into unused_fields_rows, where it bound to `force_refresh`
+    (truthy set -> forced ~104 MB re-download per call) while
+    allowed_workspace_ids stayed None -> tenant-wide leak whenever
+    MCP_ALLOWED_WORKSPACE_IDS / per-user tokens were configured."""
+    _ThinStub.unused_fields_calls = []
+    out = server.get_unused_fields(limit=10, acl_workspace_ids=["ws-9"])
+    assert out["success"] is True, out
+    # The allow-list must land in allowed_workspace_ids and filter the rows.
+    assert _ThinStub.unused_fields_calls, "stub was not called"
+    call = _ThinStub.unused_fields_calls[-1]
+    assert call["allowed_workspace_ids"] == {"ws-9"}, call
+    assert call["force_refresh"] is False, call
+    # ws-1 rows are filtered out by the ws-9 allow-list.
+    assert out["data"]["rows"] == [], out
 
 
 def test_thin_reports_unknown_or_empty_workspace():
@@ -200,6 +231,7 @@ if __name__ == "__main__":
         test_thin_workspace_reports()
         test_thin_reports_other_workspace_filtered_out()
         test_thin_reports_acl_denial()
+        test_unused_fields_acl_binding()
         test_thin_reports_unknown_or_empty_workspace()
         test_heavy_gate_serializes()
         test_heavy_gate_gates_impact_and_model_tools()

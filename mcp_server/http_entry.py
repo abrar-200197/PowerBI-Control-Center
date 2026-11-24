@@ -27,6 +27,7 @@ Run locally:  python -m mcp_server.http_entry   (needs: pip install uvicorn)
 
 from __future__ import annotations
 
+import hmac
 import os
 import threading
 
@@ -117,7 +118,7 @@ class _BearerGuard:
             entry = users.get(supplied)
             if entry is not None:
                 acl = user_acl.effective_workspaces(entry)
-            elif shared and supplied == shared:
+            elif shared and hmac.compare_digest(supplied.encode("utf-8"), shared.encode("utf-8")):
                 acl = None  # global scope identity: tools use machine-wide env
             else:
                 if os.getenv("MCP_GUARD_DEBUG"):
@@ -128,7 +129,7 @@ class _BearerGuard:
                 )
                 return
         elif shared:
-            if supplied != shared:
+            if not hmac.compare_digest(supplied.encode("utf-8"), shared.encode("utf-8")):
                 await self._reject(send, 401, b"Unauthorized: missing or invalid bearer token.")
                 return
         # else: no auth configured - unguarded (development only).

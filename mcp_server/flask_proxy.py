@@ -20,6 +20,7 @@ tenant-wide by design. See AGENTS.md "MCP server".
 
 from __future__ import annotations
 
+import hmac
 import os
 
 import requests
@@ -58,7 +59,11 @@ def mcp_endpoint():
         )
 
     upstream_url, token = cfg
-    if request.headers.get("Authorization", "").strip() != f"Bearer {token}":
+    # Constant-time compare (defense-in-depth: this is the only pre-auth on a
+    # tenant-wide data surface; the sidecar re-validates the same token).
+    supplied_auth = request.headers.get("Authorization", "").strip()
+    expected_auth = f"Bearer {token}"
+    if not hmac.compare_digest(supplied_auth.encode("utf-8"), expected_auth.encode("utf-8")):
         return Response(
             "Unauthorized: missing or invalid bearer token.\n",
             status=401,
