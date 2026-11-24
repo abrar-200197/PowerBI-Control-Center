@@ -1008,7 +1008,10 @@ def export_similarity_analysis():
             writer.writerow(['Power BI Similarity Analysis Report'])
             writer.writerow(['Generated:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
             writer.writerow(['Workspace ID:', workspace_id])
-            writer.writerow(['Total Reports:', len(reports_data)])
+            # P1: the POST path (client-provided results) never defines
+            # reports_data — mirror the line-742 guard or the CSV fallback
+            # crashes with NameError instead of exporting.
+            writer.writerow(['Total Reports:', len(comparisons) if request.method == 'POST' else len(reports_data)])
             writer.writerow(['Similar Pairs:', len(comparisons)])
             if workspace_scan_note:
                 writer.writerow(['Note:', workspace_scan_note])

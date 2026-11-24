@@ -187,7 +187,11 @@ def main() -> None:
     import uvicorn
 
     _warm_catalog_thin()
-    host = os.getenv("MCP_HTTP_HOST", "0.0.0.0")
+    # P1: default to loopback — the standalone pip-installed entrypoint used
+    # to bind 0.0.0.0 by default while unguarded, exposing the tenant catalog
+    # to the LAN (start-webapp.sh explicitly sets 127.0.0.1 for the container;
+    # the two defaults now agree).
+    host = os.getenv("MCP_HTTP_HOST", "127.0.0.1")
     port = int(os.getenv("MCP_HTTP_PORT", "8000"))
     # MCP clients connect to http(s)://<host>:<port>/mcp
     uvicorn.run(build_app(), host=host, port=port)

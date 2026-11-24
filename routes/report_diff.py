@@ -126,6 +126,21 @@ def api_compare_report_differences():
     path_a = os.path.join(tmp_dir, 'version_a.zip')
     path_b = os.path.join(tmp_dir, 'version_b.zip')
     try:
+        # P1 fix: check the stream sizes BEFORE spooling — the old order wrote
+        # the complete upload to disk first, so an oversized body filled the
+        # temp disk before the 413 ever ran. (The process-wide
+        # MAX_CONTENT_LENGTH in app.py is the outer backstop.)
+        for label, upload in (('version_a', file_a), ('version_b', file_b)):
+            upload.stream.seek(0, os.SEEK_END)
+            stream_size = upload.stream.tell()
+            upload.stream.seek(0)
+            if stream_size > MAX_UPLOAD_BYTES:
+                return jsonify({
+                    'success': False,
+                    'error': f'{label} is too large ({stream_size / (1024 * 1024):.0f} MB); limit is '
+                             f'{MAX_UPLOAD_BYTES / (1024 * 1024):.0f} MB',
+                }), 413
+
         file_a.save(path_a)
         file_b.save(path_b)
 

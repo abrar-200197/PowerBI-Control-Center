@@ -163,6 +163,13 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_NAME'] = 'pbi_session'
 
+# P1 fix: bound multipart uploads at the Werkzeug layer (previously
+# unlimited). The only upload feature is the report-diff comparison, whose
+# own route cap is 1700 MB — the Flask cap sits just above it so the route's
+# per-file check and error message still govern normal rejections, while a
+# runaway multipart body is rejected before it fills the temp disk.
+app.config['MAX_CONTENT_LENGTH'] = 1800 * 1024 * 1024
+
 # Server-side session store (Flask-Session).
 # Local: prefer %TEMP% (or FLASK_SESSION_DIR). Sessions under OneDrive paths often
 # fail to read back the OAuth "state" → endless /login loop.
@@ -383,6 +390,48 @@ generation_owners = {}  # Key: job_id, Value: user oid that started the job (dow
 # Persistent file-based cache directory for usage metrics
 USAGE_CACHE_DIR = os.path.join(os.getcwd(), 'data', 'usage_cache')
 os.makedirs(USAGE_CACHE_DIR, exist_ok=True)
+
+
+def _sweep_expired_caches():
+    """
+    P1 (memory, 2026-11-24): cache TTLs are checked only on READ, so expired
+    per-user/per-folder report lists and multi-MB scanner dataset models
+    accumulated for the whole worker lifetime (this SKU has an OOM history).
+    Drops entries well past their TTL (4x grace — a read that races the
+    sweeper still finds its entry) and hard-caps the scanner model cache.
+    """
+    now = time.time()
+    max_age = CACHE_DURATION * 4
+    dropped = 0
+    for cache in (workspaces_cache, workspace_cache, reports_cache,
+                  scanner_cache, usage_cache, workspace_folders_cache):
+        for key in list(cache.keys()):
+            entry = cache.get(key)
+            ts = entry.get('timestamp') if isinstance(entry, dict) else None
+            if ts and (now - ts) > max_age:
+                cache.pop(key, None)
+                dropped += 1
+    # scanner_cache holds full multi-MB dataset models — hard entry cap,
+    # evicting oldest-first.
+    if len(scanner_cache) > 20:
+        oldest = sorted(
+            (k for k, v in scanner_cache.items() if isinstance(v, dict)),
+            key=lambda k: (scanner_cache[k].get('timestamp') or 0),
+        )[: len(scanner_cache) - 20]
+        for key in oldest:
+            scanner_cache.pop(key, None)
+            dropped += 1
+    if dropped:
+        print(f"🧹 Cache sweeper dropped {dropped} expired/over-cap entries")
+
+
+def _cache_sweeper_loop():
+    while True:
+        time.sleep(600)
+        try:
+            _sweep_expired_caches()
+        except Exception as exc:
+            print(f"⚠️ cache sweeper error: {exc}")
 
 def clear_user_cache(user_id):
     """Clear all cached data for a specific user"""
@@ -2712,11 +2761,15 @@ def deep_content_search(workspace_id):
                 try:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    visual_result = loop.run_until_complete(
-                        extractor.extract_visuals(workspace_id, report_id, timeout=60)
-                    )
-                    loop.close()
-
+                    try:
+                        visual_result = loop.run_until_complete(
+                            extractor.extract_visuals(workspace_id, report_id, timeout=60)
+                        )
+                    finally:
+                        # P1: close the loop on success AND failure — it used
+                        # to leak an event loop / selector fd per failed
+                        # extraction.
+                        loop.close()
                     if visual_result.get('success'):
                         # Cache the result with timestamp
                         visual_result['cached_at'] = datetime.now().isoformat()
@@ -3726,7 +3779,8 @@ def get_reports():
         import requests
         workspace_id = request.args.get('workspace_id')
         folder_id = request.args.get('folder_id')  # NEW: Optional folder filter
-        status_filter = request.args.get('status')  # NEW: Optional status filter (active/inactive)
+        # Normalized once (all downstream comparisons are lowercase literals).
+        status_filter = (request.args.get('status') or '').strip().lower() or None  # NEW: Optional status filter (active/inactive)
 
         print(f"\n🎯 get_reports() called:")
         print(f"   workspace_id = {workspace_id}")
@@ -3750,7 +3804,16 @@ def get_reports():
 
         # Get user info for cache key (include folder_id in cache key)
         user_id = session.get('user', {}).get('oid', 'unknown')
-        cache_key = f"{workspace_id}_{user_id}_{folder_id or 'all'}"
+        # P1 fix: the cache key MUST carry the status filter and the
+        # include_refresh flag — filtered/unfiltered payloads used to share
+        # one key, so an inactive-only fetch poisoned the unfiltered view for
+        # the whole TTL (and vice versa), and the include_refresh background
+        # merge read a stale non-refresh payload.
+        include_refresh = request.args.get('include_refresh', '0').lower() in ('1', 'true', 'yes')
+        # Active/inactive filter needs refresh timestamps
+        if status_filter in ('active', 'inactive'):
+            include_refresh = True
+        cache_key = f"{workspace_id}_{user_id}_{folder_id or 'all'}_{status_filter or 'any'}_r{int(bool(include_refresh))}"
         print(f"   Cache key: {cache_key}")
 
         # Check cache first (per-user, per-workspace, per-folder)
@@ -3777,11 +3840,9 @@ def get_reports():
         # Default: return list immediately (no live refresh) — UI paints fast.
         # Optional: include_refresh=1 overlays live refresh (slower; use after paint).
         # Skip Scanner when catalog has this workspace. Fall through on miss.
+        # (include_refresh is computed above, before the cache key — the key
+        # carries it.)
         # =====================================================================
-        include_refresh = request.args.get('include_refresh', '0').lower() in ('1', 'true', 'yes')
-        # Active/inactive filter needs refresh timestamps
-        if status_filter in ('active', 'inactive'):
-            include_refresh = True
 
         if (
             not force_live
@@ -3923,7 +3984,19 @@ def get_reports():
                 print("⚠️ Scanner API failed, falling back to regular API (no folder info)")
                 base_url = "https://api.powerbi.com/v1.0/myorg"
                 url = f"{base_url}/groups/{workspace_id}/reports"
-                headers = get_user_powerbi_headers()
+                try:
+                    headers = get_user_powerbi_headers()
+                except Exception as token_exc:
+                    # P1: surface an expired session as 401 + redirect hint —
+                    # /api/workspaces already does this; a generic 500 here
+                    # made the UI show an error instead of the re-login flow.
+                    if 'token expired' in str(token_exc).lower() or 'not authenticated' in str(token_exc).lower():
+                        return jsonify({
+                            'success': False,
+                            'error': 'Power BI session expired. Please sign in again.',
+                            'redirect': '/login'
+                        }), 401
+                    raise
                 response = requests.get(url, headers=headers, timeout=(10, 60))
                 response.raise_for_status()
                 reports = response.json().get('value', [])
@@ -5418,69 +5491,16 @@ def get_report_usage(workspace_id):
             print(f"   🔍 No persistent cache found at {cache_file}")
 
         cached_dates = set((persistent_cache.get('daily_data') or {}).keys())
-        all_dates_needed = [
-            (datetime.now(timezone.utc) - timedelta(days=i)).strftime('%Y-%m-%d')
-            for i in range(days_back)
-        ]
-        missing_dates = [d for d in all_dates_needed if d not in cached_dates]
-
         cached_views, cached_last = _aggregate_usage_days(persistent_cache.get('daily_data') or {})
         cached_total_views = sum(cached_views.values()) if cached_views else 0
-        print(
-            f"   📅 Period: {days_back} days | Cached days: {len(cached_dates)} | "
-            f"Missing: {len(missing_dates)} | Cached views: {cached_total_views}"
-        )
 
-        # Only short-circuit on cache when it actually has view data (avoid empty poison).
-        last_updated = persistent_cache.get('last_updated')
-        if (
-            not force_live
-            and last_updated
-            and len(missing_dates) == 0
-            and cached_total_views > 0
-        ):
-            try:
-                last_updated_dt = datetime.fromisoformat(last_updated)
-                if last_updated_dt.tzinfo is None:
-                    last_updated_dt = last_updated_dt.replace(tzinfo=timezone.utc)
-                cache_age_hours = (datetime.now(timezone.utc) - last_updated_dt).total_seconds() / 3600
-            except Exception:
-                cache_age_hours = 999
-
-            if cache_age_hours < 24:
-                print(
-                    f"   ✅ Using non-empty Activity cache "
-                    f"(age: {cache_age_hours:.1f}h, views={cached_total_views})"
-                )
-                return jsonify({
-                    'success': True,
-                    'workspace_id': workspace_id,
-                    'days_analyzed': days_back,
-                    'report_views': cached_views,
-                    'last_viewed': cached_last,
-                    'source': 'activity_cache',
-                    'note': f'Loaded from cache (age: {cache_age_hours:.1f}h, views={cached_total_views})'
-                })
-
-        # Empty full cache is useless — drop it so we re-fetch rather than serving zeros forever
-        if len(missing_dates) == 0 and cached_total_views == 0 and cached_dates:
-            print("   🗑️ Discarding empty Activity day-cache (0 total views) — will re-fetch")
-            missing_dates = list(all_dates_needed)
-            persistent_cache = {'daily_data': {}, 'last_updated': None}
-            cached_dates = set()
-            try:
-                if os.path.exists(cache_file):
-                    os.remove(cache_file)
-            except Exception:
-                pass
-
-        # Only fetch missing days (incremental update)
-        print(f"   🚀 Fetching {len(missing_dates)} missing Activity days...")
-
-        report_views = {}  # Dictionary to store view counts per report_id
-
-        # Use service principal token (Scanner API connector) instead of user token
-        # Activity Events API requires service principal authentication
+        # Service principal token + server-date probe FIRST (P1 fix): the
+        # cache window below derives from the SERVER date (the system clock on
+        # this box has been known to run years ahead — see the comment in the
+        # probe). Deriving the fetch window from the system clock while the
+        # fetches use the server date produced negative day offsets → future
+        # startDateTime → HTTP 400 → days treated as "no data" and never
+        # cached, so the incremental fetch never converged.
         scanner = PowerBIScanner()
         service_principal_token = scanner.get_access_token()
 
@@ -5537,6 +5557,70 @@ def get_report_usage(workspace_id):
             # Final fallback
             end_date = (datetime.utcnow() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
             print(f"   ⚠️  Error getting server date ({str(e)}), using UTC now: {end_date.strftime('%Y-%m-%d')}")
+
+        # P1 fix: derive the needed-day window from the SERVER-derived
+        # end_date (the last COMPLETE day), not the system clock. The old list
+        # included "today" (per system clock), which the Activity Events API
+        # can never return (incomplete day) — so `missing_dates` could never
+        # reach 0 and the 24h short-circuit never fired. end_date itself is a
+        # complete day and IS fetchable, so the window now converges.
+        all_dates_needed = [
+            (end_date - timedelta(days=i)).strftime('%Y-%m-%d')
+            for i in range(days_back)
+        ]
+        missing_dates = [d for d in all_dates_needed if d not in cached_dates]
+        print(
+            f"   📅 Period: {days_back} days | Cached days: {len(cached_dates)} | "
+            f"Missing: {len(missing_dates)} | Cached views: {cached_total_views}"
+        )
+
+        # Only short-circuit on cache when it actually has view data (avoid empty poison).
+        last_updated = persistent_cache.get('last_updated')
+        if (
+            not force_live
+            and last_updated
+            and len(missing_dates) == 0
+            and cached_total_views > 0
+        ):
+            try:
+                last_updated_dt = datetime.fromisoformat(last_updated)
+                if last_updated_dt.tzinfo is None:
+                    last_updated_dt = last_updated_dt.replace(tzinfo=timezone.utc)
+                cache_age_hours = (datetime.now(timezone.utc) - last_updated_dt).total_seconds() / 3600
+            except Exception:
+                cache_age_hours = 999
+
+            if cache_age_hours < 24:
+                print(
+                    f"   ✅ Using non-empty Activity cache "
+                    f"(age: {cache_age_hours:.1f}h, views={cached_total_views})"
+                )
+                return jsonify({
+                    'success': True,
+                    'workspace_id': workspace_id,
+                    'days_analyzed': days_back,
+                    'report_views': cached_views,
+                    'last_viewed': cached_last,
+                    'source': 'activity_cache',
+                    'note': f'Loaded from cache (age: {cache_age_hours:.1f}h, views={cached_total_views})'
+                })
+
+        # Empty full cache is useless — drop it so we re-fetch rather than serving zeros forever
+        if len(missing_dates) == 0 and cached_total_views == 0 and cached_dates:
+            print("   🗑️ Discarding empty Activity day-cache (0 total views) — will re-fetch")
+            missing_dates = list(all_dates_needed)
+            persistent_cache = {'daily_data': {}, 'last_updated': None}
+            cached_dates = set()
+            try:
+                if os.path.exists(cache_file):
+                    os.remove(cache_file)
+            except Exception:
+                pass
+
+        # Only fetch missing days (incremental update)
+        print(f"   🚀 Fetching {len(missing_dates)} missing Activity days...")
+
+        report_views = {}  # Dictionary to store view counts per report_id
 
         print(f"   ⚡ MAXIMUM SPEED MODE: {max_workers} parallel workers with intelligent retry logic for {days_back} days...")
 
@@ -5707,6 +5791,13 @@ def get_report_usage(workspace_id):
         for date_str in missing_dates:
             target_date = datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
             day_offset = (end_date - target_date).days
+            if day_offset < 0:
+                # P1 guard: a date AFTER the server-derived end (e.g. a cache
+                # entry keyed by a wrong system-clock "today") would produce a
+                # future startDateTime and HTTP 400. Skip it — it is not a
+                # fetchable complete day.
+                print(f"   ⚠️ Skipping non-fetchable future day {date_str} (offset {day_offset})")
+                continue
             date_to_offset[day_offset] = date_str
 
         new_daily_data = {}  # Store newly fetched data
@@ -8042,19 +8133,16 @@ def get_lineage():
         # Step 2: Get all workspaces to create workspace name mapping for Dataflows
         workspace_map = {}
         try:
-            # Get workspaces from session cache or API
-            workspaces_cache_key = f"workspaces_{session.get('user_id')}"
-            cached_workspaces = session.get(workspaces_cache_key)
-
-            if cached_workspaces:
-                workspace_map = {ws['id']: ws['name'] for ws in cached_workspaces}
-            else:
-                # Fetch workspaces if not cached
-                workspaces_url = 'https://api.powerbi.com/v1.0/myorg/groups'
-                workspaces_response = requests.get(workspaces_url, headers=headers, timeout=(10, 60))
-                if workspaces_response.status_code == 200:
-                    workspaces_data = workspaces_response.json()
-                    workspace_map = {ws['id']: ws['name'] for ws in workspaces_data.get('value', [])}
+            # P1: the old "session cache" branch here was doubly dead —
+            # sessions never store 'user_id' (they store user.oid) AND the
+            # lookup read the session dict, not the module-level
+            # workspaces_cache — so the workspaces list was refetched on
+            # every call. Removed; the live fetch is the actual behavior.
+            workspaces_url = 'https://api.powerbi.com/v1.0/myorg/groups'
+            workspaces_response = requests.get(workspaces_url, headers=headers, timeout=(10, 60))
+            if workspaces_response.status_code == 200:
+                workspaces_data = workspaces_response.json()
+                workspace_map = {ws['id']: ws['name'] for ws in workspaces_data.get('value', [])}
         except Exception as e:
             print(f"   ⚠️ Could not fetch workspace names for Dataflow resolution: {e}")
 
@@ -9144,10 +9232,15 @@ def get_visual_lineage(report_id):
                     # Run async extraction
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    visual_result = loop.run_until_complete(
-                        extractor.extract_visuals(workspace_id, report_id, timeout=90)
-                    )
-                    loop.close()
+                    try:
+                        visual_result = loop.run_until_complete(
+                            extractor.extract_visuals(workspace_id, report_id, timeout=90)
+                        )
+                    finally:
+                        # P1: close the loop on success AND failure — it used
+                        # to leak an event loop / selector fd per failed
+                        # extraction.
+                        loop.close()
 
                     # Cache the result
                     if visual_result.get('success'):
@@ -10139,6 +10232,11 @@ def analyze_m_expression(expression):
 @login_required
 def get_generation_progress(job_id):
     """Get the current progress of a documentation generation job"""
+    # Owner-only (P0): the download route checks generation_owners; progress
+    # carried status/error/file_path to anyone who learned a job_id.
+    owner = generation_owners.get(job_id)
+    if owner is not None and owner != session.get('user', {}).get('oid', ''):
+        return jsonify({'success': False, 'error': 'Not your job'}), 403
     progress_data = generation_progress.get(job_id, {'progress': 0, 'status': 'Not started', 'complete': False})
     return jsonify(progress_data)
 
@@ -10178,6 +10276,30 @@ def download_generated_file(job_id):
         as_attachment=True,
         download_name=filename
     )
+
+
+def _schedule_generation_cleanup(job_id, delay_seconds=300, delete_file=None):
+    """
+    Pop generation_progress + generation_owners after the UI has had time to
+    poll the final state. Used by the success path AND the error/early-return
+    paths (the error paths previously leaked both dicts for the worker's
+    lifetime).
+    """
+    def _cleanup():
+        time.sleep(delay_seconds)
+        try:
+            if delete_file:
+                try:
+                    if os.path.exists(delete_file):
+                        os.remove(delete_file)
+                except Exception:
+                    pass
+            generation_owners.pop(job_id, None)
+            generation_progress.pop(job_id, None)
+            print(f"🧹 Cleaned up job {job_id}")
+        except Exception as exc:
+            print(f"⚠️ job cleanup error for {job_id}: {exc}")
+    threading.Thread(target=_cleanup, daemon=True).start()
 
 
 def _generate_documentation_background(workspace_id, report_id, dataset_id, report_name, job_id, user_token):
@@ -10222,6 +10344,9 @@ def _generate_documentation_background(workspace_id, report_id, dataset_id, repo
                 'complete': True,
                 'error': 'Could not determine dataset ID for this report'
             }
+            # P0 fix: schedule cleanup on this early-return path too (both
+            # dicts used to leak for the worker's lifetime).
+            _schedule_generation_cleanup(job_id)
             return  # Exit the background thread
 
         generation_progress[job_id] = {'progress': 20, 'status': 'Fetching metadata...', 'complete': False}
@@ -10316,21 +10441,9 @@ def _generate_documentation_background(workspace_id, report_id, dataset_id, repo
 
         print(f"✅ [Job {job_id}] Documentation generation complete!")
 
-        # Clean up progress after a delay
-        def cleanup_progress():
-            time.sleep(300)  # Keep progress for 5 minutes
-            if job_id in generation_progress:
-                print(f"🧹 Cleaning up job {job_id}")
-                # Also delete the file
-                try:
-                    if os.path.exists(doc_path):
-                        os.remove(doc_path)
-                except:
-                    pass
-                generation_owners.pop(job_id, None)
-                del generation_progress[job_id]
-
-        threading.Thread(target=cleanup_progress, daemon=True).start()
+        # Clean up progress after a delay (also deletes the generated file;
+        # error paths get the same treatment via _schedule_generation_cleanup)
+        _schedule_generation_cleanup(job_id, delete_file=doc_path)
 
     except Exception as e:
         print(f"❌ [Job {job_id}] Error generating document: {str(e)}")
@@ -10344,6 +10457,11 @@ def _generate_documentation_background(workspace_id, report_id, dataset_id, repo
             'complete': True,
             'error': str(e)
         }
+        # P0 fix: schedule cleanup on the ERROR path too — the cleanup thread
+        # used to exist only on the success path, so failed jobs leaked their
+        # generation_progress AND generation_owners entries for the worker's
+        # lifetime.
+        _schedule_generation_cleanup(job_id)
 
 
 @app.route('/api/generate', methods=['POST'])
@@ -10464,6 +10582,11 @@ def _warm_catalog_async():
             print(f"⚠️ Catalog warm-up failed: {exc}")
 
     threading.Thread(target=_run, daemon=True, name='catalog-warm').start()
+
+
+# P1 (memory): periodic TTL sweep of the module-level caches (see
+# _sweep_expired_caches). Daemon thread; dies with the worker.
+threading.Thread(target=_cache_sweeper_loop, daemon=True, name='cache-sweeper').start()
 
 
 # Warm catalog on import so Gunicorn/Azure workers also preload thin packs.

@@ -66,6 +66,9 @@ _semantic_scan_lock = threading.Lock()
 _SEMANTIC_SCAN_TTL_SEC = 45 * 60  # 45 minutes
 
 
+_SEMANTIC_SCAN_CACHE_MAX = 50  # entries; each holds a workspace's full dataset schemas
+
+
 def _get_workspace_scan_cached(workspace_id: str) -> dict:
     """Run Admin Scanner once per workspace and cache datasets by id."""
     now = time.time()
@@ -88,6 +91,16 @@ def _get_workspace_scan_cached(workspace_id: str) -> dict:
     print(f"   cached {len(by_id)} dataset schemas for workspace {workspace_id[:8]}…")
 
     with _semantic_scan_lock:
+        # P1 (memory): the cache used to grow without bound (TTL checked on
+        # read only, no eviction) — one full schema set per distinct
+        # workspace, retained for the worker's lifetime on an OOM-prone SKU.
+        if len(_semantic_scan_cache) >= _SEMANTIC_SCAN_CACHE_MAX:
+            oldest = sorted(
+                _semantic_scan_cache,
+                key=lambda k: _semantic_scan_cache[k].get('ts', 0),
+            )[: len(_semantic_scan_cache) - _SEMANTIC_SCAN_CACHE_MAX + 1]
+            for stale in oldest:
+                _semantic_scan_cache.pop(stale, None)
         _semantic_scan_cache[workspace_id] = {'ts': time.time(), 'by_id': by_id}
     return by_id
 

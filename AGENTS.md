@@ -355,9 +355,10 @@ reverse impact analysis, field usage, unused fields, model details.
   in the repo, then re-run the script. Only people who run it get it —
   nothing org-wide is touched.
 - **Team sharing (in-repo sessions)**: `opencode.jsonc` in the repo root
-  registers the server at project level, so colleagues get it automatically
-  when they open the repo
-  (project config wins over a same-named global entry). Per-machine
+  deliberately does NOT register the server (a same-named project entry would
+  shadow the global hosted one inside this repo — see the file's own
+  comment). Registration is per-machine via `scripts/setup-mcp.ps1`, the
+  pip package (`pbi-cc-setup`), or the hosted global entry. Per-machine
   prerequisites: app Python deps plus `mcp`
   (`pip install -r requirements.txt -r requirements-dev.txt`) and a local
   `.env` with Power BI/SharePoint credentials — without it the catalog mode

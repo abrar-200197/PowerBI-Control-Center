@@ -68,7 +68,7 @@ Same as local extract / web app (no secrets in git):
 | `SHAREPOINT_*` client override | Optional separate Graph app |
 | `CATALOG_REPO_ROOT` | Path containing `run_catalog_extract.py` if non-default |
 | `CATALOG_EXTRACT_VERBOSE` | `true` / `false` (default true) |
-| `USAGE_LOOKBACK_DAYS` | default 30 |
+| `USAGE_LOOKBACK_DAYS` | default 60 |
 | `AzureWebJobsStorage` | Required by Functions runtime |
 
 Copy from `local.settings.json.example` into Azure Portal → Configuration.

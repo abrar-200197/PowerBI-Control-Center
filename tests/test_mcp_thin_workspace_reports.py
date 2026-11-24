@@ -137,6 +137,22 @@ def _teardown():
         os.environ["MCP_ALLOWED_WORKSPACE_IDS"] = _ORIG_ENV
 
 
+try:
+    import pytest as _pytest
+
+    @_pytest.fixture(autouse=True, scope="module")
+    def _thin_stub_env_module():
+        """Under bare `pytest tests/` the stub must still be installed — the
+        file used to run _setup() only standalone, so a bare pytest run
+        exercised the REAL CatalogService (and the repo .env) and failed."""
+        _setup()
+        yield
+        _teardown()
+except ImportError:
+    # Standalone runner installs the stub explicitly below.
+    pass
+
+
 def test_thin_workspace_reports():
     out = server.get_workspace_reports("ws-1")
     assert out["success"] is True, out
