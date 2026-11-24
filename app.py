@@ -7155,8 +7155,11 @@ def crash_test_report(report_id):
         # P1 (double scan): hand the analyzer the scan we already ran for the
         # metadata above — its schema extraction reuses it instead of starting
         # a SECOND multi-minute Admin scan of the same workspace.
-        if scan_result:
-            analyzer.set_scan_result(scan_result)
+        # P0 fix: ALWAYS hand it over, including None — a failed/timed-out scan
+        # must be recorded as "attempted and failed" so the analyzer reports
+        # the schema as unavailable instead of silently starting a second
+        # full Admin scan that will usually fail the same way.
+        analyzer.set_scan_result(scan_result)
 
         # ⭐ NEW: Pass visual field bindings to analyzer if available
         if visual_field_bindings:

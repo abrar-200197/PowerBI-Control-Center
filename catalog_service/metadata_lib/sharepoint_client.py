@@ -423,6 +423,7 @@ class SharePointClient:
                     "Content-Range": f"bytes {start}-{end}/{size}",
                 }
                 # upload URL is pre-authenticated — do not send bearer
+                chunk_uploaded = False
                 for attempt in range(1, config.MAX_RETRIES + 1):
                     r = requests.put(upload_url, headers=headers, data=chunk, timeout=600)
                     if r.status_code in (200, 201, 202):
@@ -431,6 +432,7 @@ class SharePointClient:
                                 result = r.json()
                             except Exception:
                                 result = {"status": "ok"}
+                        chunk_uploaded = True
                         break
                     if r.status_code == 429:
                         time.sleep(float(r.headers.get("Retry-After", 5)))
@@ -438,6 +440,16 @@ class SharePointClient:
                     if attempt == config.MAX_RETRIES:
                         raise RuntimeError(f"Chunk upload failed {r.status_code}: {r.text[:400]}")
                     time.sleep(config.RETRY_BASE_DELAY_SEC * attempt)
+                if not chunk_uploaded:
+                    # P0 data integrity: 429-exhaustion used to fall through the
+                    # retry loop and silently SKIP this chunk (the offset
+                    # advanced and the session returned success-shaped output),
+                    # publishing a truncated blob after clean_before_upload had
+                    # already deleted the previous copy. Fail loudly instead.
+                    raise RuntimeError(
+                        f"Chunk upload failed after {config.MAX_RETRIES} attempts "
+                        f"(bytes {start}-{end}/{size}); aborting upload session"
+                    )
                 start = end + 1
                 logger.info("  uploaded %s / %s bytes", min(start, size), size)
 

@@ -422,6 +422,10 @@ class VisualMetadataExtractor:
 
                     # Get the visual config (can be a string or dict)
                     config = container.get('config', '{}')
+                    if config is None:
+                        # P0: a null config used to raise AttributeError below
+                        # and abort ALL remaining pages of the report.
+                        continue
 
                     # Parse the config JSON if it's a string
                     if isinstance(config, str):
@@ -441,7 +445,13 @@ class VisualMetadataExtractor:
                     visual_title = None
                     vc_objects = single_visual.get('vcObjects', {})
                     if vc_objects:
-                        title_obj = vc_objects.get('title', [{}])[0] if isinstance(vc_objects.get('title'), list) else {}
+                        _title_list = vc_objects.get('title')
+                        if isinstance(_title_list, list) and _title_list:
+                            title_obj = _title_list[0]
+                        else:
+                            # P0: an empty-list title used to raise IndexError
+                            # below and abort ALL remaining pages of the report.
+                            title_obj = {}
                         title_props = title_obj.get('properties', {})
                         title_text = title_props.get('text', {})
                         if isinstance(title_text, dict):
@@ -549,7 +559,13 @@ class VisualMetadataExtractor:
                                             'name': column_name,
                                             'displayName': native_ref or column_name,
                                             'table': table_name,
-                                            'type': 'Column',
+                                            # HierarchyLevel, not 'Column': the LEVEL
+                                            # name often differs from the underlying
+                                            # column (e.g. 'Fiscal Year' over
+                                            # CalendarYear) and cannot validate
+                                            # against a columns/measures-only schema
+                                            # (P0: false 'missing field' Criticals).
+                                            'type': 'HierarchyLevel',
                                             'role': role_name
                                         })
                                         field_names_seen.add(column_name)
@@ -685,7 +701,8 @@ class VisualMetadataExtractor:
             print(f"   ✅ Extracted fields from {visuals_with_fields}/{total_visuals} visuals")
 
         except Exception as e:
-            print(f"   ⚠️ Error extracting fields from definition: {e}")
+            print(f"   ⚠️ Error extracting fields from definition "
+                  f"(remaining pages/visuals of this report were SKIPPED): {e}")
             import traceback
             traceback.print_exc()
 
@@ -847,6 +864,12 @@ class VisualMetadataExtractor:
         export_result['method'] = 'report_definition_export+playwright_render_scan'
         export_result['render_scan_performed'] = True
         export_result['success'] = True
+        # P1 fix: carry the final canvas-scan summary from the Playwright pass
+        # — it used to be dropped here, so the UI's canvas panel showed
+        # defaults even though the per-page errors were merged.
+        canvas_scan = playwright_result.get('canvas_scan')
+        if canvas_scan:
+            export_result['canvas_scan'] = canvas_scan
         return export_result
 
     def get_embed_token(self, workspace_id: str, report_id: str) -> Dict:
@@ -1498,7 +1521,7 @@ class VisualMetadataExtractor:
                                                                         // be missed entirely (reported as unused).
                                                                         fieldName = field.hierarchyLevel || field.hierarchy || '';
                                                                         tableName = field.table || '';
-                                                                        fieldType = 'Column';
+                                                                        fieldType = 'HierarchyLevel';
                                                                     }} else if (field.$schema && field.$schema.includes('#hierarchy')) {{
                                                                         // Whole hierarchy reference (rare in data wells)
                                                                         fieldName = field.hierarchy || '';

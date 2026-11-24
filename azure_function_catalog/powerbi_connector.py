@@ -769,9 +769,14 @@ def merge_refresh_candidates(*sources, prefer_keys=None):
 
     if best is not None:
         base['last_refreshed'] = best.get('last_refreshed')
-        # Prefer status / source labels from the same winner
-        if best.get('last_refresh_status'):
-            base['last_refresh_status'] = best.get('last_refresh_status')
+        # Prefer status / source labels from the same winner.
+        # P1 fix: an explicit 'Access Denied' (set on 401/403 while reading the
+        # refresh history) must NOT be overwritten by a timestamped content
+        # fallback's 'Unverified' — the permission failure is the actionable
+        # signal owners need.
+        if str(base.get('last_refresh_status') or '') != 'Access Denied':
+            if best.get('last_refresh_status'):
+                base['last_refresh_status'] = best.get('last_refresh_status')
         if best.get('refresh_source'):
             base['refresh_source'] = best.get('refresh_source')
         if best.get('history_refresh_type'):
@@ -1114,6 +1119,13 @@ def resolve_dataset_refresh_info(
                 'refresh_note': picked.get('refresh_note'),
                 'refresh_source': picked.get('refresh_source') or 'scheduled',
                 'history_refresh_type': picked.get('history_refresh_type'),
+                # Mirror-drift fix (P0 2026-11-24): the root copy carries the
+                # refresh-window fields; without them the Function published
+                # null refreshStartTime/EndTime/Duration whenever the
+                # scheduled-history candidate won the merge.
+                'refresh_start_time': picked.get('refresh_start_time'),
+                'refresh_end_time': picked.get('refresh_end_time'),
+                'refresh_duration_seconds': picked.get('refresh_duration_seconds'),
             }
             if picked.get('last_refreshed'):
                 print(

@@ -12,6 +12,7 @@ Designed for scheduled runs (e.g. every 6 hours):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -737,6 +738,7 @@ def _fetch_activity_day(
     excluded_events = 0
     url: Optional[str] = first_url
     retries_429 = 0
+    incomplete_reason: Optional[str] = None
 
     while url and pages < 500:
         pages += 1
@@ -744,12 +746,14 @@ def _fetch_activity_day(
             resp = requests.get(url, headers=headers, timeout=max(HTTP_TIMEOUT, 60))
         except requests.RequestException as exc:
             logger.warning("Activity day %s request error: %s", day, exc)
+            incomplete_reason = f"request error: {exc}"
             break
 
         if resp.status_code == 429:
             retries_429 += 1
             if retries_429 > 8:
                 logger.warning("Activity day %s too many 429s", day)
+                incomplete_reason = "HTTP 429 exhausted"
                 break
             wait = float(resp.headers.get("Retry-After", min(30, 2 * retries_429)))
             time.sleep(wait)
@@ -762,11 +766,13 @@ def _fetch_activity_day(
                 "Activity Events forbidden (%s) for %s: %s",
                 resp.status_code, day, (resp.text or "")[:240],
             )
+            incomplete_reason = f"HTTP {resp.status_code}"
             break
         if resp.status_code != 200:
             logger.warning(
                 "Activity day %s HTTP %s: %s", day, resp.status_code, (resp.text or "")[:240]
             )
+            incomplete_reason = f"HTTP {resp.status_code}"
             break
 
         data = resp.json() or {}
@@ -807,6 +813,10 @@ def _fetch_activity_day(
         else:
             url = None
 
+    if url and incomplete_reason is None:
+        # Loop exited on the page cap with a continuation still pending.
+        incomplete_reason = "pagination page cap reached with continuation pending"
+
     logger.info(
         "Activity day %s: pages=%s view_events=%s excluded=%s unique_reports=%s",
         day, pages, sum(report_views.values()), excluded_events, len(report_views),
@@ -817,6 +827,11 @@ def _fetch_activity_day(
         "pages": pages,
         "eventCount": sum(report_views.values()),
         "excludedEventCount": excluded_events,
+        # P0 data integrity: a partial day MUST be flagged so the caller does
+        # not persist it as complete (it would never be retried and would
+        # silently undercount views for the whole lookback window).
+        "incomplete": incomplete_reason is not None,
+        "incompleteReason": incomplete_reason,
     }
 
 
@@ -841,8 +856,14 @@ def build_usage_snapshot_incremental(
     headers = auth.headers()
     exclude_users = resolve_usage_exclude_users(auth)
     exclude_groups = list(getattr(cfg, "USAGE_EXCLUDE_GROUP_NAMES", None) or [])
-    # Stable fingerprint so membership/config changes trigger full rebuild
-    exclude_fp = "|".join(sorted(exclude_groups)) + f"#n={len(exclude_users)}"
+    # Stable fingerprint so membership/config changes trigger full rebuild.
+    # P0 fix: hash the member list itself — the old count-based fingerprint
+    # (#n=len) missed same-count roster swaps (one member leaves, another
+    # joins), silently keeping the stale roster applied to historical days.
+    exclude_user_fp = hashlib.sha256(
+        "|".join(sorted(exclude_users)).encode("utf-8")
+    ).hexdigest()[:16]
+    exclude_fp = "|".join(sorted(exclude_groups)) + f"#u={exclude_user_fp}"
 
     state = _empty_usage_state() if force_full else load_usage_state(state_path)
     prev_fp = str(state.get("excludeFingerprint") or "")
@@ -890,6 +911,17 @@ def build_usage_snapshot_incremental(
                 day = futs[fut]
                 try:
                     payload = fut.result()
+                    if payload.get("incomplete"):
+                        # P0 data integrity: never persist a partial/failed day
+                        # as complete — the incremental picker only fetches days
+                        # NOT in state, so a persisted partial day would never
+                        # be retried (silent undercount for the whole window).
+                        # Dropping it makes the next run re-fetch it.
+                        logger.warning(
+                            "Usage day %s INCOMPLETE (%s) - not persisted; will retry next run",
+                            day, payload.get("incompleteReason"),
+                        )
+                        continue
                     state.setdefault("days", {})[day] = {
                         "report_views": payload.get("report_views") or {},
                         "last_viewed": payload.get("last_viewed") or {},

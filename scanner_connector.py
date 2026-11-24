@@ -259,13 +259,21 @@ class PowerBIScanner:
         # P1 (double scan): honor a pre-fetched scan result before starting a
         # new multi-minute Admin scan.
         data = scan_data if scan_data is not None else self.run_scan(workspace_id=workspace_id)
-        
+
         if not data or "workspaces" not in data:
+            # P0 data integrity: return the stable shape but mark WHY it is
+            # empty, so consumers can warn instead of silently validating
+            # against a zero-table schema.
+            model["schema_warning"] = (
+                "Scanner scan unavailable - dataset schema could not be retrieved"
+            )
             return model
 
+        found_dataset = False
         for ws in data["workspaces"]:
             for ds in ws.get("datasets", []):
                 if ds.get("id") == dataset_id:
+                    found_dataset = True
                     print(f"   🔍 Found dataset in scan results")
                     print(f"      Dataset has {len(ds.get('tables', []))} tables")
 
@@ -379,6 +387,19 @@ class PowerBIScanner:
                                         "table": expr_name,
                                         "expression": expr_text
                                     })
+
+        if not found_dataset:
+            # P0 data integrity: the scan succeeded but this dataset is not in
+            # the scanned workspace(s) — a cross-workspace dataset binding (a
+            # normal Power BI pattern) or incomplete scan coverage. The empty
+            # model used to be indistinguishable from a real empty model,
+            # silently skipping all schema validation.
+            model["schema_warning"] = (
+                f"Dataset {dataset_id} not found in the scanned workspace(s) - "
+                "cross-workspace dataset binding or incomplete scan coverage; "
+                "schema validation is skipped for this run"
+            )
+            print(f"   ⚠️ {model['schema_warning']}")
 
         print(f"   ✅ Scanner model found: {len(model['tables'])} table(s), "
               f"{sum(len(v) for v in model['columns'].values())} columns, "

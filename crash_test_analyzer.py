@@ -89,8 +89,14 @@ class CrashTestAnalyzer:
         fetch report metadata. Passing that result here lets the schema
         extraction reuse it instead of starting a SECOND multi-minute Admin
         scan for the same workspace.
+
+        P0 fix: passing None now records that a scan WAS attempted and failed
+        (or timed out) — the analyzer then reports the schema as unavailable
+        rather than starting a second full Admin scan that will usually fail
+        the same way.
         """
         self._prefetched_scan = scan_result
+        self._scan_was_attempted = True
 
     def set_visual_field_bindings(self, visual_field_bindings):
         """
@@ -422,14 +428,26 @@ class CrashTestAnalyzer:
             # parses it without starting a second multi-minute Admin scan.
             from scanner_connector import PowerBIScanner
 
-            scanner = PowerBIScanner()
-            model = scanner.get_dataset_model(
-                self.dataset_id,
-                workspace_id=self.workspace_id,
-                scan_data=getattr(self, '_prefetched_scan', None),
-            )
+            # P0 (double-scan guard): a None pre-fetched scan with
+            # _scan_was_attempted set means the caller's scan already failed or
+            # timed out — do NOT start a second multi-minute scan here.
+            if getattr(self, '_prefetched_scan', None) is None and getattr(self, '_scan_was_attempted', False):
+                model = None
+            else:
+                scanner = PowerBIScanner()
+                model = scanner.get_dataset_model(
+                    self.dataset_id,
+                    workspace_id=self.workspace_id,
+                    scan_data=getattr(self, '_prefetched_scan', None),
+                )
 
-            if model:
+            # P0 data integrity: an empty model with a schema_warning means the
+            # scan could not see this dataset (cross-workspace binding or scan
+            # failure). Treat it exactly like a missing schema — record the
+            # explicit warning instead of silently validating against a
+            # zero-table schema.
+            schema_warning = model.get('schema_warning') if isinstance(model, dict) else None
+            if model and not schema_warning:
                 # Extract schema
                 tables = model.get('tables', [])
                 columns = model.get('columns', {})
@@ -450,7 +468,7 @@ class CrashTestAnalyzer:
                 self.warnings.append({
                     'category': 'Schema Analysis',
                     'severity': 'Warning',
-                    'description': 'Dataset schema unavailable',
+                    'description': schema_warning or 'Dataset schema unavailable',
                     'recommendation': 'Enable Scanner API permissions for detailed analysis'
                 })
 
@@ -928,6 +946,11 @@ class CrashTestAnalyzer:
                         or ''
                     )
                     field_type = field.get('type') or 'Column'
+                    if field_type == 'Hierarchy':
+                        # Whole-hierarchy references are structural; the schema
+                        # carries only columns/measures so they can never
+                        # validate (P0: false 'missing field' Criticals).
+                        continue
                     if not field_name or field_name in ('Unknown', '[No Title]'):
                         missing_fields.append({
                             'table': table_name or 'Unknown',
@@ -940,6 +963,11 @@ class CrashTestAnalyzer:
 
                     verified = self._verify_field_missing(table_name, field_name)
                     if verified is True:
+                        if field_type == 'HierarchyLevel':
+                            # A hierarchy LEVEL name can differ from the
+                            # underlying column (renamed level) — treat as
+                            # unverified, not a missing-field Critical (P0).
+                            continue
                         missing_fields.append({
                             'table': table_name or 'Unknown',
                             'field': field_name,

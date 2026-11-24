@@ -927,13 +927,17 @@ Understanding these technical details is essential for troubleshooting, optimiza
                     for run in para.runs:
                         run.font.size = Pt(9)
             
-            # after table, provide descriptions for any extras
-            for rel in relationships:
-                extra_info = {k:v for k,v in rel.items() if k not in base_cols}
-                if extra_info:
-                    self.doc.add_paragraph(f"\nRelationship '{rel.get('name', '')}' additional details:", style='List Bullet')
-                    for k,v in extra_info.items():
-                        self.doc.add_paragraph(f"{k}: {v}", style='List Bullet')
+        # after table, provide descriptions for any extras.
+        # P0 fix (2026-11-24): this loop used to be indented INSIDE the row
+        # loop above, re-emitting every relationship's extra details once per
+        # row (N relationships -> N^2 paragraphs per document). It must run
+        # ONCE, after the table is complete.
+        for rel in relationships:
+            extra_info = {k:v for k,v in rel.items() if k not in base_cols}
+            if extra_info:
+                self.doc.add_paragraph(f"\nRelationship '{rel.get('name', '')}' additional details:", style='List Bullet')
+                for k,v in extra_info.items():
+                    self.doc.add_paragraph(f"{k}: {v}", style='List Bullet')
         
         self.doc.add_paragraph()
         
