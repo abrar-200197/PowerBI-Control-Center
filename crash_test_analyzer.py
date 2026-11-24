@@ -561,6 +561,12 @@ class CrashTestAnalyzer:
                 return False
 
             # Store visual metadata
+            # NOTE (P1 review 2026-11-24): in enhanced mode this intentionally
+            # REPLACES any frontend-supplied bindings (set via
+            # set_visual_field_bindings) with the backend extraction result —
+            # the SP-export view is authoritative for schema validation.
+            # Frontend-only bindings still apply in standard mode and when the
+            # enhanced extraction fails (fallback path above).
             self.visual_metadata = result.get('pages', [])
             self.visual_analysis_meta['method'] = result.get('method')
             self.visual_analysis_meta['total_pages'] = result.get('totalPages') or len(self.visual_metadata)

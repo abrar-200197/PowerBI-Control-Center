@@ -1373,7 +1373,16 @@ class CatalogService:
                 self._ensure_thin_impact_pack(idx)
             except Exception as exc:
                 logger.warning("impact report pack rebuild failed: %s", exc)
-            pack = (_memory.get("ui_impact_reports.json") or {}).get("data") or {}
+            # Consume the freshly built heavy pack from memory and DROP it
+            # (same retention rule impact_report_detail applies) — previously
+            # the ~33 MB pack was retained until the next TTL-expired read.
+            # The disk re-read fallback also covers the force-refresh pop race
+            # (a concurrent heavy get_json could pop the entry between the
+            # rebuild and this read, which used to serve transient empty rows).
+            with _lock:
+                rebuilt = (_memory.get("ui_impact_reports.json") or {}).get("data")
+                _memory.pop("ui_impact_reports.json", None)
+            pack = rebuilt or self.get_json("ui_impact_reports.json") or {}
         rows = list(pack.get("rows") or [])
         if allowed_workspace_ids is not None:
             rows = [
