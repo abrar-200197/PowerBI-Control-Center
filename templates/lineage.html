@@ -2245,13 +2245,13 @@
                         </div>
 
                         <div style="display: flex; flex-direction: column; gap: 8px; min-width: 160px;">
-                            <button onclick="exploreDirectQueryDatasetLineage('${escapeHtml(model.workspaceName)}', '${escapeHtml(model.databaseName)}', '${escapeHtml(model.name)}')"
+                            <button onclick="exploreDirectQueryDatasetLineage('${escapeHtml(jsEsc(model.workspaceName))}', '${escapeHtml(jsEsc(model.databaseName))}', '${escapeHtml(jsEsc(model.name))}')"
                                     style="background: #10B981; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 700; transition: background 0.2s; white-space: nowrap; box-shadow: 0 2px 4px rgba(16, 185, 129, 0.3);"
                                     onmouseover="this.style.background='#059669'"
                                     onmouseout="this.style.background='#10B981'">
                                 🔍 Explore Lineage
                             </button>
-                            <button onclick="viewASModelDetails('${escapeHtml(model.name)}', '${escapeHtml(model.xmlaEndpoint)}', '${escapeHtml(model.databaseName)}', '${escapeHtml(model.workspaceName)}')"
+                            <button onclick="viewASModelDetails('${escapeHtml(jsEsc(model.name))}', '${escapeHtml(jsEsc(model.xmlaEndpoint))}', '${escapeHtml(jsEsc(model.databaseName))}', '${escapeHtml(jsEsc(model.workspaceName))}')"
                                     style="background: #F59E0B; color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.2s; white-space: nowrap;"
                                     onmouseover="this.style.background='#D97706'"
                                     onmouseout="this.style.background='#F59E0B'">
@@ -2314,7 +2314,7 @@
                 <div data-dataset-id="${escapeHtml(dataset.id)}" data-dataset-name="${escapeHtml(dataset.name)}" style="background: ${bgColor}; border-left: 4px solid ${borderColor}; border-radius: 6px; padding: 14px 16px; display: flex; align-items: center; gap: 16px; cursor: pointer; transition: all 0.2s;"
                      onmouseover="this.style.background='${isPrimary ? '#EBF8FF' : '#F3E8FF'}'; this.style.transform='translateX(4px)';"
                      onmouseout="this.style.background='${bgColor}'; this.style.transform='translateX(0)';"
-                     onclick="exploreDatasetLineage('${escapeHtml(dataset.id)}', '${escapeHtml(dataset.name)}', ${isPrimary})">
+                     onclick="exploreDatasetLineage('${escapeHtml(jsEsc(dataset.id))}', '${escapeHtml(jsEsc(dataset.name))}', ${isPrimary})">
                     <div style="font-size: 28px;">${iconBadge}</div>
                     <div style="flex: 1;">
                         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
@@ -2431,7 +2431,7 @@
                 const sqlTableLinks = sqlSourceTables.map((tableName, idx) => {
                     const tableId = `composite-table-${queryIndex}-${idx}`;
                     return `<span style="color: #3182CE; cursor: pointer; text-decoration: underline;"
-                                  onclick="expandCompositeTable('${escapeHtml(tableName)}', '${tableId}')"
+                                  onclick="expandCompositeTable('${escapeHtml(jsEsc(tableName))}', '${tableId}')"
                                   title="Click to view lineage from composite model dataset">
                                 ${escapeHtml(tableName)}
                             </span>`;
@@ -2501,11 +2501,11 @@
                 tableMeasures.forEach(m => {
                     measuresText += `// ${m.name}\\n${m.expression || 'N/A'}\\n\\n`;
                 });
-                const escapedMeasures = measuresText.replace(/`/g, '\\`').replace(/\$/g, '\\$');
+                const escapedMeasures = escapeHtml(measuresText);
 
                 html += `<td style="max-width: 400px; min-width: 200px;">
                     <div style="display: flex; flex-direction: column; gap: 8px;">
-                        <div id="${queryId}" data-expanded="false" data-sql="${escapedMeasures.replace(/"/g, '&quot;')}"
+                        <div id="${queryId}" data-expanded="false" data-sql="${escapedMeasures}"
                              style="font-family: 'Consolas', 'Monaco', monospace;
                                     font-size: 11px;
                                     background: #FFF9DB;
@@ -2542,7 +2542,7 @@
 
             if (columns.length > 0) {
                 html += `<td style="text-align: center; vertical-align: middle;">
-                    <button class="btn-column-info" onclick="showQueryColumns(event, '${escapeHtml(modelTableName)}', '${queryKey}')" title="View Column Info for ${escapeHtml(modelTableName)}">
+                    <button class="btn-column-info" onclick="showQueryColumns(event, '${escapeHtml(jsEsc(modelTableName))}', '${escapeHtml(jsEsc(queryKey))}')" title="View Column Info for ${escapeHtml(modelTableName)}">
                         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                             <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.2" fill="none"/>
                             <line x1="2" y1="5.5" x2="14" y2="5.5" stroke="currentColor" stroke-width="1"/>
@@ -2561,7 +2561,7 @@
                 // Show EDW info for the first SQL source table
                 const firstSqlTable = sqlSourceTables[0];
                 html += `<td style="text-align: center; vertical-align: middle;">
-                    <button class="btn-sql-source" onclick="openSqlSource(event, '${escapeHtml(serverName)}', '${escapeHtml(query.queryName)}', '${escapeHtml(firstSqlTable)}')" title="View EDW Info for ${escapeHtml(firstSqlTable)}">
+                    <button class="btn-sql-source" onclick="openSqlSource(event, '${escapeHtml(jsEsc(serverName))}', '${escapeHtml(jsEsc(query.queryName))}', '${escapeHtml(jsEsc(firstSqlTable))}')" title="View EDW Info for ${escapeHtml(firstSqlTable)}">
                         <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                             <ellipse cx="8" cy="4" rx="6" ry="2.5" stroke="currentColor" stroke-width="1.2" fill="none"/>
                             <path d="M2 4v8c0 1.38 2.69 2.5 6 2.5s6-1.12 6-2.5V4" stroke="currentColor" stroke-width="1.2" fill="none"/>
@@ -2844,6 +2844,15 @@
         return String(text).replace(/[&<>"']/g, m => map[m]);
     }
 
+    // JS-string-literal escaping for inline handler args (P0 XSS fix):
+    // escapeHtml alone is NOT enough inside onclick="fn('${...}')" because
+    // browsers decode attribute entities BEFORE parsing the handler JS, so a
+    // data value containing a single quote can terminate the JS string and
+    // break out. Always compose as escapeHtml(jsEsc(value)).
+    function jsEsc(text) {
+        return String(text ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    }
+
     // Store table columns data globally
     window.tableColumnsData = {};
 
@@ -2978,7 +2987,10 @@
         if (isExpanded) {
             // Collapse
             const shortQuery = fullSql.substring(0, 80);
-            queryDiv.innerHTML = `<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #2D3748;">${shortQuery}...</div>`;
+            // P0 XSS fix: dataset.sql returns the entity-DECODED stored text,
+            // so it must be re-escaped before touching innerHTML (stored
+            // SQL/M can contain <, quotes — attacker-influenceable).
+            queryDiv.innerHTML = `<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #2D3748;">${escapeHtml(shortQuery)}...</div>`;
             queryDiv.style.maxHeight = '60px';
             queryDiv.style.cursor = 'pointer';
             queryDiv.style.background = '#F7FAFC';
@@ -2993,7 +3005,7 @@
                                               line-height: 1.5;
                                               color: #2D3748;
                                               user-select: text;
-                                              cursor: text;">${fullSql}</pre>`;
+                                              cursor: text;">${escapeHtml(fullSql)}</pre>`;
             queryDiv.style.maxHeight = '400px';
             queryDiv.style.overflowY = 'auto';
             queryDiv.style.cursor = 'default';
@@ -3310,12 +3322,12 @@
     }
 
     function buildTableCard(table, index, workspaceId) {
-        // Two-layer escape for inline handler args (P0 XSS fix): jsEsc makes
+        // Two-layer escape for inline handler args (P0 XSS fix) — jsEsc makes
         // the value safe as a JS string literal (backslash + quote), then
         // escapeHtml makes it safe inside the double-quoted HTML attribute —
         // entities are decoded by the browser BEFORE the handler JS parses,
-        // so both layers are required.
-        const jsEsc = (s) => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        // so both layers are required. jsEsc is now file-scope (shared with
+        // the other onclick sites).
         const wsArg = escapeHtml(jsEsc(workspaceId));
         const dsArg = escapeHtml(jsEsc(table.dataset_name || ''));
         const tnArg = escapeHtml(jsEsc(table.table_name || ''));
@@ -3801,36 +3813,36 @@
                             <td style="padding: 16px 12px;">
                                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
                                     <span style="background: ${visualColor}; color: white; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">
-                                        ${visualIcon} ${match.visual_type}
+                                        ${visualIcon} ${escapeHtml(match.visual_type)}
                                     </span>
                                     ${match.is_alias ? '<span style="background: #FEF3C7; color: #92400E; padding: 3px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;">ALIAS</span>' : ''}
                                 </div>
                                 <div style="font-size: 14px; font-weight: 600; color: #2D3748;">
-                                    ${match.visual_title}
+                                    ${escapeHtml(match.visual_title)}
                                 </div>
                                 ${match.matched_fields && match.matched_fields.length > 0 ? `
                                     <div style="font-size: 11px; color: #718096; margin-top: 4px;">
-                                        🔗 ${match.matched_fields.join(', ')}
+                                        🔗 ${escapeHtml(match.matched_fields.join(', '))}
                                     </div>
                                 ` : ''}
                             </td>
                             <td style="padding: 16px 12px; background: #FEF3C7; font-weight: 600; color: #92400E;">
                                 <a href="${reportLink}" target="_blank" style="color: #92400E; text-decoration: none; font-weight: 600;">
-                                    ${report.report_name} ↗
+                                    ${escapeHtml(report.report_name)} ↗
                                 </a>
                                 <div style="font-size: 11px; color: #78350F; margin-top: 4px;">
-                                    ${report.dataset_name}
+                                    ${escapeHtml(report.dataset_name)}
                                 </div>
                             </td>
                             <td style="padding: 16px 12px; color: #4A5568;">
-                                📄 ${pageName}
+                                📄 ${escapeHtml(pageName)}
                             </td>
                             <td style="padding: 16px 12px; font-family: 'Courier New', monospace; font-size: 12px; color: #2D3748;">
-                                ${tableColumn}
-                                ${match.column_dataType ? `<div style="font-size: 10px; color: #718096; margin-top: 4px; font-family: sans-serif;">Type: ${match.column_dataType}</div>` : ''}
+                                ${escapeHtml(tableColumn)}
+                                ${match.column_dataType ? `<div style="font-size: 10px; color: #718096; margin-top: 4px; font-family: sans-serif;">Type: ${escapeHtml(match.column_dataType)}</div>` : ''}
                             </td>
                             <td style="padding: 16px 12px; color: #718096;">
-                                ${match.match_type || 'Field'}
+                                ${escapeHtml(match.match_type || 'Field')}
                             </td>
                         </tr>`;
                 });
@@ -5269,7 +5281,7 @@ ${escapeHtml(daxExpression)}</code>
             <div style="background: #F7FAFC; border: 1px solid #CBD5E0; border-radius: 6px; padding: 16px; margin-bottom: 16px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                     <h4 style="margin: 0; font-size: 14px; font-weight: 600; color: #2D3748;">Power Query (M) Expression</h4>
-                    <button onclick="copyToClipboard(${JSON.stringify(model.mExpression)}, 'M expression')"
+                    <button onclick="copyToClipboard(window.asModelsData[${modelIndex}].mExpression, 'M expression')"
                             style="background: #4299E1; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
                         📋 Copy
                     </button>

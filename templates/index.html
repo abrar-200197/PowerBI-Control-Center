@@ -1365,7 +1365,9 @@
                 if (!item || !item.id) return item?.text || 'Find report by name…';
                 const name = item.reportName || item.text || '';
                 const ws = item.workspaceName || '';
-                return ws ? `${name} · ${ws}` : name;
+                // P0 XSS fix: escape the selected chip — the identity
+                // escapeMarkup below disables Select2's default escaping.
+                return ws ? `${escapeHtml(name)} · ${escapeHtml(ws)}` : escapeHtml(name);
             },
             escapeMarkup: function (m) { return m; },
         });
@@ -4391,13 +4393,13 @@
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
                         <div style="background: #F7FAFC; padding: 12px; border-radius: 6px; border-left: 3px solid #4299E1;">
                             <div style="font-weight: 600; color: #2D3748; margin-bottom: 4px;">📄 Report A</div>
-                            <div style="color: #4A5568; font-size: 14px;">${reportAName}</div>
-                            ${workspaceAName ? `<div style="color: #94A3B8; font-size: 12px; margin-top: 4px;">📁 ${workspaceAName}</div>` : ''}
+                            <div style="color: #4A5568; font-size: 14px;">${escapeHtml(reportAName)}</div>
+                            ${workspaceAName ? `<div style="color: #94A3B8; font-size: 12px; margin-top: 4px;">📁 ${escapeHtml(workspaceAName)}</div>` : ''}
                         </div>
                         <div style="background: #F7FAFC; padding: 12px; border-radius: 6px; border-left: 3px solid #4299E1;">
                             <div style="font-weight: 600; color: #2D3748; margin-bottom: 4px;">📄 Report B</div>
-                            <div style="color: #4A5568; font-size: 14px;">${reportBName}</div>
-                            ${workspaceBName ? `<div style="color: #94A3B8; font-size: 12px; margin-top: 4px;">📁 ${workspaceBName}</div>` : ''}
+                            <div style="color: #4A5568; font-size: 14px;">${escapeHtml(reportBName)}</div>
+                            ${workspaceBName ? `<div style="color: #94A3B8; font-size: 12px; margin-top: 4px;">📁 ${escapeHtml(workspaceBName)}</div>` : ''}
                         </div>
                     </div>
 
@@ -4441,13 +4443,13 @@
                         ${(comp.identical_tables || []).length > 0 ? `
                         <div style="margin-bottom: 8px;">
                             <strong style="color: #2D3748;">🗃️ Common Tables:</strong>
-                            <span style="color: #4A5568;">${(comp.identical_tables || []).slice(0, 5).join(', ')}${(comp.identical_tables || []).length > 5 ? ` (+${(comp.identical_tables || []).length - 5} more)` : ''}</span>
+                            <span style="color: #4A5568;">${escapeHtml((comp.identical_tables || []).slice(0, 5).join(', '))}${(comp.identical_tables || []).length > 5 ? ` (+${(comp.identical_tables || []).length - 5} more)` : ''}</span>
                         </div>
                         ` : ''}
                         ${(comp.identical_pages || []).length > 0 ? `
                         <div style="margin-bottom: 8px;">
                             <strong style="color: #2D3748;">📑 Common Pages:</strong>
-                            <span style="color: #4A5568;">${(comp.identical_pages || []).slice(0, 3).join(', ')}${(comp.identical_pages || []).length > 3 ? ` (+${(comp.identical_pages || []).length - 3} more)` : ''}</span>
+                            <span style="color: #4A5568;">${escapeHtml((comp.identical_pages || []).slice(0, 3).join(', '))}${(comp.identical_pages || []).length > 3 ? ` (+${(comp.identical_pages || []).length - 3} more)` : ''}</span>
                         </div>
                         ` : ''}
                         ${(comp.identical_visuals || []).length > 0 ? `
