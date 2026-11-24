@@ -2478,7 +2478,7 @@
             const sortedReports = [...list].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
             sortedReports.forEach((report) => {
-                const optionText = report.datasetId ? report.name : `${report.name} (No dataset)`;
+                const optionText = report.datasetId ? report.name : `${report.name} (No semantic model)`;
                 const option = new Option(optionText, report.id, false, false);
                 option.disabled = !report.datasetId;
                 select.append(option);
@@ -2555,7 +2555,7 @@
         const reports = reportsToShow;
 
         if (!reports || reports.length === 0) {
-            tableDiv.innerHTML = '<div class="no-data">📊 No reports found in workspace</div>';
+            tableDiv.innerHTML = '<div class="no-data">📊 No reports found in workspace<br><span style="font-size:12px;color:var(--text-muted);">Check the spelling, clear any filters, or pick another workspace.</span></div>';
             if (exportBtn) exportBtn.style.display = 'none';
             if (decommissionBtn) decommissionBtn.style.display = 'none';
             if (decommissionDownloadBtn) decommissionDownloadBtn.style.display = 'none';
@@ -2725,7 +2725,7 @@
                                     title="Export PBIX/RDL and save under SharePoint Report Decommission Activity (latest batch)">
                                     Download
                                 </button>` : ''}
-                            ` : '<span style="color: #999;">No dataset</span>'}
+                            ` : '<span style="color: #999;">No semantic model</span>'}
                         </div>
                     </td>
                 </tr>
@@ -2856,7 +2856,7 @@
         if (status === 'not refreshable') return `<span class="cell-muted"${titleAttr}>Not refreshable</span>`;
         if (status === 'access denied') return `<span class="badge badge-danger"${titleAttr}>Access denied</span>`;
         if (status === 'error') return `<span class="badge badge-danger"${titleAttr}>Error</span>`;
-        if (status === 'no dataset') return `<span class="cell-muted"${titleAttr}>No dataset</span>`;
+        if (status === 'no dataset') return `<span class="cell-muted"${titleAttr}>No semantic model</span>`;
         return `<span class="cell-muted"${titleAttr}>—</span>`;
     }
 
@@ -2957,7 +2957,7 @@
         // Find the report to get dataset_id
         const report = reports.find(r => r.id === reportId);
         if (!report || !report.datasetId) {
-            showAlert('error', 'Cannot generate documentation: Dataset ID not found for this report');
+            showAlert('error', 'Cannot generate documentation: Semantic model ID not found for this report');
             return;
         }
 
@@ -3887,17 +3887,17 @@
         const exportText = exportLines.join('\n');
 
         const modalHtml = `
-          <div class="ct-backdrop" role="dialog" aria-modal="true" aria-label="Crash test results" onclick="if(event.target===this)this.remove()">
+          <div class="ct-backdrop" role="dialog" aria-modal="true" aria-label="Crash test results" aria-labelledby="ct-title" onclick="if(event.target===this)closeCrashTestModal()">
             <div class="ct-modal">
               <div class="ct-head">
                 <div style="min-width:0">
                   <div class="ct-kicker">Crash test results</div>
-                  <h2>${esc(reportName)}</h2>
+                  <h2 id="ct-title">${esc(reportName)}</h2>
                 </div>
                 <div class="ct-head-actions">
                   <a href="${esc(reportLink)}" target="_blank" rel="noopener">Open report</a>
                   <button type="button" data-copy-text="${esc(exportText)}" onclick="copyCrashTestResults(this)">Copy results</button>
-                  <button type="button" onclick="this.closest('.ct-backdrop').remove()">Close</button>
+                  <button type="button" onclick="closeCrashTestModal()">Close</button>
                 </div>
               </div>
               <div class="ct-summary">
@@ -3914,6 +3914,27 @@
           </div>`;
 
         document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+        // a11y: move focus into the dialog; Escape closes; the originating
+        // button regains focus when the dialog is removed.
+        window._crashModalTrigger = document.activeElement;
+        const ctBackdrops = document.querySelectorAll('.ct-backdrop');
+        const ctBackdrop = ctBackdrops[ctBackdrops.length - 1];
+        if (ctBackdrop) {
+            const ctCloseBtn = ctBackdrop.querySelector('.ct-head-actions button:last-child');
+            if (ctCloseBtn) { try { ctCloseBtn.focus(); } catch (e) { /* ignore */ } }
+            ctBackdrop.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Escape') closeCrashTestModal();
+            });
+        }
+    }
+
+    function closeCrashTestModal() {
+        const bd = document.querySelector('.ct-backdrop');
+        if (bd) bd.remove();
+        if (window._crashModalTrigger && document.contains(window._crashModalTrigger)) {
+            try { window._crashModalTrigger.focus(); } catch (e) { /* ignore */ }
+        }
     }
 
     // Export Decommissioning Report (Server-generated Excel with enhanced metadata)
