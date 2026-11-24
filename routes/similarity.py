@@ -148,10 +148,23 @@ def analyze_report_similarity(workspace_id):
         # For global scan, aggregate data from multiple workspace scans
         all_scan_data = {'workspaces': []}
 
+        # UX: surface operational limits in the response so the UI can show
+        # them (previously the 10-workspace cap was completely silent).
+        analysis_notes = []
+
+        # UX: surface operational limits in the response so the UI can show
+        # them (previously the 10-workspace cap was completely silent).
+        analysis_notes = []
+
         if is_global:
             # Limit to first 10 workspaces for performance (can be adjusted)
+            total_accessible = len(workspaces_to_scan)
             workspaces_to_scan = workspaces_to_scan[:10]
             print(f"   ⚠️  Limiting global scan to first {len(workspaces_to_scan)} workspaces for performance")
+            analysis_notes.append(
+                f"Cross-workspace analysis scanned the first {len(workspaces_to_scan)} of "
+                f"{total_accessible} accessible workspaces (performance cap)."
+            )
 
             for ws_id in workspaces_to_scan:
                 try:
@@ -370,14 +383,15 @@ def analyze_report_similarity(workspace_id):
             'workspace_id': workspace_id,
             'total_reports': len(reports_data),
             'similar_pairs': len(comparisons),
-            'comparisons': comparisons
+            'comparisons': comparisons,
+            'notes': analysis_notes
         })
 
     except Exception as e:
         print(f"❌ Error in similarity analysis: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to analyze report similarity: ' + str(e)}), 500
 
 
 
@@ -1091,7 +1105,7 @@ def export_similarity_analysis():
         similarity_logger.error(f"Error in export: {str(e)}", exc_info=True)
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to recommended action: ' + str(e)}), 500
 
 
 
@@ -1480,7 +1494,7 @@ def get_similarity_analysis():
         similarity_logger.error(f"Error in similarity analysis: {str(e)}", exc_info=True)
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to load full scan ws: ' + str(e)}), 500
 
 
 def _similarity_catalog_workspace(workspace_id):

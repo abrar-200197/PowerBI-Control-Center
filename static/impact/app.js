@@ -607,7 +607,7 @@ async function loadData(forceRefresh = false) {
 
     $("#loadState")?.classList.add("hidden");
     $("#appContent")?.classList.remove("hidden");
-    setView("tables");
+    restoreFromHash();
     if (reloadBtn && !reloadBtn.classList.contains("hidden")) {
       reloadBtn.disabled = false;
       reloadBtn.textContent = "Reload";
@@ -921,10 +921,13 @@ async function openReportSourcesDrawer(reportId) {
     $("#reportDrawerKpis").innerHTML = `<div class="muted small">Loading…</div>`;
   }
   $("#reportDrawerBody").innerHTML = `<div class="muted small" style="padding:12px">Loading all sources…</div>`;
+  window._reportDrawerReportId = reportId;
   $("#reportDrawer")?.classList.remove("hidden");
   $("#reportDrawer")?.setAttribute("aria-hidden", "false");
   $("#drawerBackdrop")?.classList.remove("hidden");
   document.body.classList.add("drawer-open");
+  window._lastDrawerFocus = document.activeElement;
+  $("#closeReportDrawer")?.focus();
 
   try {
     const res = await fetchJsonNoCache(
@@ -956,12 +959,39 @@ async function openReportSourcesDrawer(reportId) {
       `<div class="error-state" style="margin:8px"><strong>Failed to load sources</strong>
        <div class="small" style="margin-top:6px">${escapeHtml(e.message || String(e))}</div></div>`;
   }
-  loadReportColumnUsage(reportId);
+  resetReportColumnUsage();
+}
+
+// UX: the gated column-usage query used to auto-fire on EVERY report drawer
+// open, spending the single heavy-gate slot while users were just browsing.
+// It now loads only when the user explicitly expands the section.
+function resetReportColumnUsage() {
+  const body = $("#reportColumnUsageBody");
+  const toggle = $("#reportColumnUsageToggle");
+  if (body) { body.hidden = true; body.innerHTML = ""; }
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "Show column usage (runs a catalog query)";
+  }
+}
+
+function toggleReportColumnUsage() {
+  const body = $("#reportColumnUsageBody");
+  const toggle = $("#reportColumnUsageToggle");
+  if (!body) return;
+  if (!body.hidden) {
+    body.hidden = true;
+    toggle?.setAttribute("aria-expanded", "false");
+    return;
+  }
+  toggle?.setAttribute("aria-expanded", "true");
+  if (window._reportDrawerReportId) loadReportColumnUsage(window._reportDrawerReportId);
 }
 
 async function loadReportColumnUsage(reportId) {
   const el = $("#reportColumnUsageBody");
   if (!el) return;
+  el.hidden = false;
   el.innerHTML = `<div class="muted small" style="padding:12px">Loading column usage… (first load can take a while while the catalog loads)</div>`;
   try {
     const res = await fetchJsonNoCache(
@@ -992,6 +1022,15 @@ async function loadReportColumnUsage(reportId) {
       </div>`
     ).join("");
   } catch (e) {
+    if (/Another heavy catalog query is running/i.test(String(e && e.message || e))) {
+      // Heavy-gate busy (503): the server's own message says retry in ~30 s -
+      // honor it with an explicit retry affordance instead of a generic failure.
+      el.innerHTML = `<div class="muted small" style="padding:12px">The catalog server is busy with another heavy query.
+        <button id="colUsageRetryBtn" class="btn ghost sm" type="button" style="margin:0 6px">Retry</button>
+        <span class="muted small">(retry in ~30 s)</span></div>`;
+      $("#colUsageRetryBtn")?.addEventListener("click", () => loadReportColumnUsage(reportId));
+      return;
+    }
     el.innerHTML = `<div class="error-state" style="margin:8px"><strong>Failed to load column usage</strong>
        <div class="small" style="margin-top:6px">${escapeHtml(e.message || String(e))}</div></div>`;
   }
@@ -1285,6 +1324,10 @@ function renderFieldDrawerReports() {
 function closeFieldDrawer() {
   $("#fieldDrawer")?.classList.add("hidden");
   $("#fieldDrawer")?.setAttribute("aria-hidden", "true");
+  if (window._lastDrawerFocus && document.contains(window._lastDrawerFocus)) {
+    try { window._lastDrawerFocus.focus(); } catch (_) { /* ignore */ }
+    window._lastDrawerFocus = null;
+  }
   if ($("#drawer")?.classList.contains("hidden") && $("#reportDrawer")?.classList.contains("hidden")) {
     $("#drawerBackdrop")?.classList.add("hidden");
     document.body.classList.remove("drawer-open");
@@ -1577,6 +1620,10 @@ function renderUnusedTable() {
 function closeReportDrawer() {
   $("#reportDrawer")?.classList.add("hidden");
   $("#reportDrawer")?.setAttribute("aria-hidden", "true");
+  if (window._lastDrawerFocus && document.contains(window._lastDrawerFocus)) {
+    try { window._lastDrawerFocus.focus(); } catch (_) { /* ignore */ }
+    window._lastDrawerFocus = null;
+  }
   // Only hide backdrop if other drawers are also closed
   if ($("#drawer")?.classList.contains("hidden") && $("#fieldDrawer")?.classList.contains("hidden")) {
     $("#drawerBackdrop")?.classList.add("hidden");
@@ -1672,6 +1719,11 @@ async function openDrawer(tableKey) {
   const row = state.rows.find((r) => r.tableKey === tableKey);
   if (!row) return;
   state.selectedKey = tableKey;
+  try {
+    const p = new URLSearchParams(location.hash.replace(/^#/, ""));
+    p.set("view", "tables"); p.set("table", tableKey);
+    history.replaceState(null, "", "#" + p.toString());
+  } catch (_) { /* ignore */ }
   const physical = isPhysical(row);
   const sourceLabel = [
     row.schema && row.table ? `${row.schema}.${row.table}` : row.table,
@@ -1702,6 +1754,8 @@ async function openDrawer(tableKey) {
   $("#reportDrawer").classList.add("hidden");
   $("#drawerBackdrop").classList.remove("hidden");
   $("#drawer").setAttribute("aria-hidden", "false");
+  window._lastDrawerFocus = document.activeElement;
+  $("#closeDrawer")?.focus();
 
   // Detail blast radius — one object from server (never full index in browser)
   const gridRc = Number(row.reportCount) || 0;
@@ -1923,6 +1977,10 @@ function renderDrawerReports() {
 function closeDrawer() {
   $("#drawer")?.classList.add("hidden");
   $("#drawer")?.setAttribute("aria-hidden", "true");
+  if (window._lastDrawerFocus && document.contains(window._lastDrawerFocus)) {
+    try { window._lastDrawerFocus.focus(); } catch (_) { /* ignore */ }
+    window._lastDrawerFocus = null;
+  }
   const fieldDrawerClosed = !$("#fieldDrawer") || $("#fieldDrawer").classList.contains("hidden");
   const reportDrawerClosed = !$("#reportDrawer") || $("#reportDrawer").classList.contains("hidden");
   if (
@@ -3326,6 +3384,18 @@ function setView(name, opts) {
   const allowed = new Set(["tables", "reports", "fields", "unused", "lookup", "lineage"]);
   if (!allowed.has(name)) name = "tables";
 
+  // UX: encode the view in the URL hash so refresh / Back / shared links
+  // keep the investigation context (previously a refresh wiped everything).
+  try {
+    const p = new URLSearchParams(location.hash.replace(/^#/, ""));
+    const prevView = p.get("view");
+    if (prevView && prevView !== name) { p.delete("table"); p.delete("report"); p.delete("field"); }
+    if (p.get("view") !== name) {
+      p.set("view", name);
+      history.replaceState(null, "", "#" + p.toString());
+    }
+  } catch (_) { /* ignore */ }
+
   document.querySelectorAll(".nav-item, .section-tab").forEach((b) => {
     const on = b.dataset.view === name;
     b.classList.toggle("active", on);
@@ -3370,9 +3440,16 @@ function setView(name, opts) {
       .then(() => applyUnusedFilters())
       .catch((e) => {
         const tb = $("#unusedFieldsTable tbody");
-        if (tb) {
-          tb.innerHTML = `<tr><td colspan="5" class="muted">Failed to load unused fields: ${escapeHtml(e.message || String(e))}</td></tr>`;
+        if (!tb) return;
+        if (/Another heavy catalog query is running/i.test(String(e && e.message || e))) {
+          tb.innerHTML = `<tr><td colspan="5" class="muted">The catalog server is busy with another heavy query. <button id="unusedRetryBtn" class="btn ghost sm" type="button">Retry</button> <span class="muted small">(~30 s)</span></td></tr>`;
+          $("#unusedRetryBtn")?.addEventListener("click", () => {
+            showTableLoadingRow("#unusedFieldsTable tbody", 5, "Loading unused columns & measures…");
+            ensureUnusedRows(false).then(() => applyUnusedFilters()).catch(() => {});
+          });
+          return;
         }
+        tb.innerHTML = `<tr><td colspan="5" class="muted">Failed to load unused fields: ${escapeHtml(e.message || String(e))}</td></tr>`;
       });
   }
   if (name === "fields") {
@@ -3400,6 +3477,22 @@ function wire() {
   }
 
   document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+
+  // a11y: sortable headers respond to click but were keyboard-inaccessible.
+  // Make them reachable and activate them with Enter/Space (same sort logic).
+  ["#impactTable", "#reportSourcesTable", "#fieldUsageTable", "#unusedFieldsTable"].forEach((sel) => {
+    document.querySelectorAll(sel + " thead th").forEach((th) => {
+      th.setAttribute("tabindex", "0");
+      th.setAttribute("role", "button");
+      th.setAttribute("aria-label", (th.textContent || "").trim() + " - activate to sort");
+    });
+  });
+  document.addEventListener("keydown", (e) => {
+    if ((e.key === "Enter" || e.key === " ") && e.target && e.target.tagName === "TH" && e.target.getAttribute("role") === "button") {
+      e.preventDefault();
+      e.target.click();
+    }
+  });
   ["searchInput", "minReports", "resolutionFilter", "dataClassFilter", "subSourceFilter"].forEach((id) => {
     const el = $(`#${id}`);
     if (!el) return;
@@ -3590,6 +3683,7 @@ function wire() {
     setTimeout(() => { if ($("#copyFieldReportsBtn")) $("#copyFieldReportsBtn").textContent = "Copy names"; }, 1200);
   });
   $("#closeFieldDrawer")?.addEventListener("click", closeFieldDrawer);
+  $("#reportColumnUsageToggle")?.addEventListener("click", toggleReportColumnUsage);
   $("#copySourcesBtn")?.addEventListener("click", async () => {
     const names = (state.reportDrawerSources || [])
       .map((s) => [s.schema, s.table].filter(Boolean).join(".") || s.table || s.tableKey || "")
@@ -3690,6 +3784,43 @@ function wire() {
     }
   });
   $("#reloadBtn")?.addEventListener("click", forceFullRefresh);
+  // UX: visible Refresh (the only refresh affordance used to be a hidden button).
+  $("#catalogRefreshBtn")?.addEventListener("click", async () => {
+    const btn = $("#catalogRefreshBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Syncing…"; }
+    try {
+      // 1) Always refresh this page's own caches (thin packs + tab caches).
+      await forceFullRefresh();
+      // 2) Ask the server to publish a fresh extract. The route is heavy-gated:
+      //    a 503 means "busy" - surface the retry hint, never retry-spam.
+      const res = await fetch("/api/catalog/refresh", { method: "POST", credentials: "include" });
+      if (res.status === 503) {
+        setViewSubtitleHint("Catalog sync skipped — server busy, try again in ~30 s.");
+      } else if (res.status === 401) {
+        window.top.location.href = "/login";
+      } else if (res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setViewSubtitleHint(body.message || body.note || "Catalog synced — reload other tabs to see fresh data.");
+      } else {
+        setViewSubtitleHint("Catalog sync failed (HTTP " + res.status + ") — local cache was still refreshed.");
+      }
+    } catch (e) {
+      console.warn("catalog refresh failed", e);
+      setViewSubtitleHint("Catalog sync failed — the local cache was still refreshed.");
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Refresh"; }
+    }
+  });
+
+  function setViewSubtitleHint(text) {
+    const el = $("#viewSubtitle");
+    if (!el) return;
+    const original = el.textContent;
+    el.textContent = text;
+    clearTimeout(window._subtitleHintTimer);
+    window._subtitleHintTimer = setTimeout(() => { el.textContent = original; }, 8000);
+  }
+  window.setViewSubtitleHint = setViewSubtitleHint;
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if ($("#modelModal") && !$("#modelModal").classList.contains("hidden")) {
@@ -3722,6 +3853,26 @@ function forceFullRefresh() {
       ensureUnusedRows(true).then(applyUnusedFilters).catch(() => {});
     }
   });
+}
+
+/**
+ * UX: honor a deep-link hash (#view=...&table=...&report=...) on load instead
+ * of always forcing the Table impact view. Falls back to the default view.
+ */
+function restoreFromHash() {
+  let params = {};
+  try {
+    const raw = location.hash.replace(/^#/, "");
+    if (raw) new URLSearchParams(raw).forEach((v, k) => { params[k] = v; });
+  } catch (_) { /* ignore */ }
+  const allowed = ["tables", "reports", "fields", "unused", "lookup", "lineage"];
+  const view = allowed.includes(params.view) ? params.view : "tables";
+  setView(view);
+  if (view === "tables" && params.table) {
+    openDrawer(params.table);
+  } else if (view === "reports" && params.report) {
+    openReportSourcesDrawer(params.report);
+  }
 }
 
 /** Shows a centered spinner row inside a table body while its data pack loads. */

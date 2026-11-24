@@ -602,7 +602,7 @@ def api_decommissioned_publish_dataset_feed():
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api decommissioned publish dataset feed: ' + str(e)}), 500
 
 
 @decommission_bp.route('/api/decommissioned-reports/dashboard-embed-token')
@@ -1149,4 +1149,4 @@ def export_decommissioned_reports():
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to match: ' + str(e)}), 500

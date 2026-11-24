@@ -921,7 +921,7 @@ def debug_token():
     except Exception as e:
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to debug token: ' + str(e)
         })
 
 
@@ -1199,7 +1199,7 @@ def test_sso():
     except Exception as e:
         result['test_results']['user_token'] = {
             'status': 'ERROR',
-            'error': str(e)
+            'error': 'Failed to test sso: ' + str(e)
         }
 
     # Test 2: Try to get workspaces with service principal (for comparison)
@@ -1213,7 +1213,7 @@ def test_sso():
     except Exception as e:
         result['test_results']['service_principal'] = {
             'status': 'ERROR',
-            'error': str(e)
+            'error': 'Failed to test sso: ' + str(e)
         }
 
     # Determine which method is being used
@@ -1413,7 +1413,7 @@ def get_workspaces():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to get workspaces: ' + str(e)
         }), 500
 
 
@@ -1896,7 +1896,7 @@ def search_workspace_tables(workspace_id):
         print(f"❌ Error in table search: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to normalize for search: ' + str(e)}), 500
 
 
 @app.route('/api/workspace/table-columns/<workspace_id>/<dataset_name>/<table_name>')
@@ -1976,7 +1976,7 @@ def get_table_columns(workspace_id, dataset_name, table_name):
         print(f"❌ Error fetching table columns: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to get table columns: ' + str(e)}), 500
 
 
 @app.route('/api/workspace/table-search/export', methods=['POST'])
@@ -2047,7 +2047,7 @@ def export_table_search():
         print(f"❌ Error exporting table search: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to export table search: ' + str(e)}), 500
 
 
 @app.route('/api/workspace/deep-content-search/export', methods=['POST'])
@@ -2124,7 +2124,7 @@ def export_deep_search():
         print(f"❌ Error exporting deep search: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to export deep search: ' + str(e)}), 500
 
 
 @app.route('/api/workspace/content-search/<workspace_id>')
@@ -2453,7 +2453,7 @@ def search_workspace_content(workspace_id):
         print(f"❌ Error in content search: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to normalize for search: ' + str(e)}), 500
 
 
 # Global progress tracker for deep search
@@ -3049,7 +3049,7 @@ def deep_content_search(workspace_id):
         print(f"❌ Error in optimized deep search: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to normalize field name: ' + str(e)}), 500
 
 @app.route('/api/clear-cache', methods=['POST'])
 @login_required
@@ -3094,7 +3094,7 @@ def clear_cache():
 
     except Exception as e:
         print(f"❌ Error clearing cache: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to clear cache: ' + str(e)}), 500
 
 @app.route('/api/datasets')
 @login_required
@@ -3151,7 +3151,7 @@ def get_datasets():
         print(f"❌ Error fetching datasets: {str(e)}")
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to get datasets: ' + str(e)
         }), 500
     except Exception as e:
         print(f"❌ Error: {str(e)}")
@@ -3159,7 +3159,7 @@ def get_datasets():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to get datasets: ' + str(e)
         }), 500
 
 # --- Catalog fast-path helpers (restored 2026-11-23) ---
@@ -4567,7 +4567,7 @@ def get_reports():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to get folder sort key: ' + str(e)
         }), 500
 
 @app.route('/api/export-inactive-reports/<workspace_id>')
@@ -5369,7 +5369,7 @@ def decommission_list_candidates(workspace_id):
         print(f"❌ Error listing decommission candidates: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to days since: ' + str(e)}), 500
 
 
 def _usage_cache_path(workspace_id: str) -> str:
@@ -5940,7 +5940,7 @@ def get_report_usage(workspace_id):
             pass
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to fetch day activities: ' + str(e)
         }), 500
 
 
@@ -6729,7 +6729,7 @@ def get_reports_metadata(workspace_id):
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to people coverage: ' + str(e)
         }), 500
 
 
@@ -6803,7 +6803,7 @@ def get_dataset_lineage():
 
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to get dataset lineage: ' + str(e)
         }), 500
 
 
@@ -7534,7 +7534,7 @@ def get_report_details(report_id):
         print(f"❌ Error fetching report details: {str(e)}")
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to get report details: ' + str(e)
         }), 500
     finally:
         # P1: drop this thread's user-delegated override — gunicorn reuses
@@ -8984,7 +8984,7 @@ def get_lineage():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to run visual scan: ' + str(e)
         }), 500
 
 
@@ -9511,7 +9511,7 @@ def get_visual_lineage(report_id):
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to get visual lineage: ' + str(e)
         }), 500
 
 
@@ -9645,7 +9645,7 @@ def get_lineage_debug():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to get lineage debug: ' + str(e)
         }), 500
 
 
@@ -10496,7 +10496,7 @@ def _generate_documentation_background(workspace_id, report_id, dataset_id, repo
             'progress': 0,
             'status': f'Error: {str(e)[:50]}',
             'complete': True,
-            'error': str(e)
+            'error': 'Failed to generate documentation background: ' + str(e)
         }
         # P0 fix: schedule cleanup on the ERROR path too — the cleanup thread
         # used to exist only on the success path, so failed jobs leaked their

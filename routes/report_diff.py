@@ -176,6 +176,6 @@ def api_compare_report_differences():
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api compare report differences: ' + str(e)}), 500
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

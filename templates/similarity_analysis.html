@@ -612,25 +612,25 @@
 
     <!-- Analysis Type Selection -->
     <div class="analysis-types" role="tablist" aria-label="Analysis type">
-        <div class="analysis-card active" onclick="selectAnalysisType('reports')" id="card-reports" role="tab" aria-selected="true">
+        <div class="analysis-card active" onclick="selectAnalysisType('reports')" id="card-reports" role="tab" tabindex="0" aria-selected="true">
             <div class="analysis-card-icon">▣</div>
             <div class="analysis-card-title">Report similarity</div>
             <div class="analysis-card-desc">Similar datasets, tables, or measures</div>
         </div>
 
-        <div class="analysis-card" onclick="selectAnalysisType('visuals')" id="card-visuals" role="tab">
+        <div class="analysis-card" onclick="selectAnalysisType('visuals')" id="card-visuals" role="tab" tabindex="0" aria-selected="false">
             <div class="analysis-card-icon">▤</div>
             <div class="analysis-card-title">Visual similarity</div>
             <div class="analysis-card-desc">Shared fields or visual patterns</div>
         </div>
 
-        <div class="analysis-card" onclick="selectAnalysisType('measures')" id="card-measures" role="tab">
+        <div class="analysis-card" onclick="selectAnalysisType('measures')" id="card-measures" role="tab" tabindex="0" aria-selected="false">
             <div class="analysis-card-icon">ƒ</div>
             <div class="analysis-card-title">Measure similarity</div>
             <div class="analysis-card-desc">Similar DAX formulas</div>
         </div>
 
-        <div class="analysis-card" onclick="selectAnalysisType('tables')" id="card-tables" role="tab">
+        <div class="analysis-card" onclick="selectAnalysisType('tables')" id="card-tables" role="tab" tabindex="0" aria-selected="false">
             <div class="analysis-card-icon">▥</div>
             <div class="analysis-card-title">Table similarity</div>
             <div class="analysis-card-desc">Similar structures or sources</div>
@@ -662,6 +662,10 @@
                     <span id="analyzeBtn">Analyze</span>
                 </button>
             </div>
+            <div class="control-group" id="analysisStatusGroup" style="flex: 0 0 auto; display: none; align-items: center; gap: 8px;">
+                <button id="cancelAnalysisBtn" class="btn btn-secondary" type="button" style="height:34px;">Cancel</button>
+                <span id="analysisElapsed" style="font-size:12px;color:var(--text-muted);"></span>
+            </div>
         </div>
     </div>
 
@@ -689,11 +693,11 @@
     </div>
 
     <!-- Detail Modal -->
-    <div id="detailModal" class="detail-modal">
+    <div id="detailModal" class="detail-modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <div class="detail-modal-content">
             <div class="detail-modal-header">
                 <h2 id="modalTitle">Similarity Details</h2>
-                <button class="detail-modal-close" onclick="closeDetailModal()">&times;</button>
+                <button class="detail-modal-close" onclick="closeDetailModal()" aria-label="Close">&times;</button>
             </div>
             <div class="detail-modal-body" id="modalBody">
                 <!-- Content will be populated by JavaScript -->
@@ -711,6 +715,28 @@ let allWorkspaces = [];
 // Load workspaces on page load
 document.addEventListener('DOMContentLoaded', function() {
     loadWorkspaces();
+});
+
+// UX: cancel an in-flight analysis (AbortController) and warn before
+// navigating away with results only in memory.
+function cancelAnalysis() {
+    if (window._analysisAbort) {
+        try { window._analysisAbort.abort(); } catch (e) { /* ignore */ }
+    }
+}
+window.addEventListener('beforeunload', (e) => {
+    if (window._analysisAbort) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+    }
+});
+// Keyboard access for the analysis-type cards (role=tab divs)
+document.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.classList && e.target.classList.contains('analysis-card')) {
+        e.preventDefault();
+        e.target.click();
+    }
 });
 
 async function loadWorkspaces() {
@@ -780,8 +806,13 @@ function selectAnalysisType(type) {
     // Update UI
     document.querySelectorAll('.analysis-card').forEach(card => {
         card.classList.remove('active');
+        card.setAttribute('aria-selected', 'false');
     });
-    document.getElementById(`card-${type}`).classList.add('active');
+    const activeCard = document.getElementById(`card-${type}`);
+    if (activeCard) {
+        activeCard.classList.add('active');
+        activeCard.setAttribute('aria-selected', 'true');
+    }
 
     currentAnalysisType = type;
     // Export normalizer maps report-pair fields; exporting other modes
@@ -829,6 +860,25 @@ async function runAnalysis() {
     const analyzeBtn = document.getElementById('analyzeBtn');
     const analyzeGoBtn = document.getElementById('analyzeGoBtn');
     if (analyzeGoBtn) analyzeGoBtn.disabled = true;   // double-submit guard
+
+    // Honest wait + cancel: the server enriches each report sequentially
+    // (per-report pages API calls), so runs can take minutes.
+    const analysisController = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    window._analysisAbort = analysisController;
+    const statusGroup = document.getElementById('analysisStatusGroup');
+    const elapsedEl = document.getElementById('analysisElapsed');
+    if (statusGroup) statusGroup.style.display = 'flex';
+    const analysisStartedAt = Date.now();
+    const analysisTicker = setInterval(() => {
+        if (elapsedEl) elapsedEl.textContent = Math.round((Date.now() - analysisStartedAt) / 1000) + 's elapsed';
+    }, 1000);
+    const stopAnalysisUi = () => {
+        clearInterval(analysisTicker);
+        if (elapsedEl) elapsedEl.textContent = '';
+        if (statusGroup) statusGroup.style.display = 'none';
+        window._analysisAbort = null;
+        if (analyzeGoBtn) analyzeGoBtn.disabled = false;
+    };
     const typeLabel = ({
         reports: 'reports',
         visuals: 'visuals',
@@ -855,7 +905,7 @@ async function runAnalysis() {
             url = `/api/similarity-analysis?workspace_id=${encodeURIComponent(workspaceId)}&type=${encodeURIComponent(currentAnalysisType)}&threshold=${encodeURIComponent(threshold)}`;
         }
 
-        let response = await fetch(url, { credentials: 'same-origin' });
+        let response = await fetch(url, { credentials: 'same-origin', signal: analysisController ? analysisController.signal : undefined });
         let result = await response.json();
         if (redirectIfSessionExpired(result)) return;
 
@@ -864,7 +914,7 @@ async function runAnalysis() {
             console.warn('Deep report similarity failed/empty, falling back to multi-type', result.error || result);
             response = await fetch(
                 `/api/similarity-analysis?workspace_id=${encodeURIComponent(workspaceId)}&type=reports&threshold=${encodeURIComponent(threshold)}`,
-                { credentials: 'same-origin' }
+                { credentials: 'same-origin', signal: analysisController ? analysisController.signal : undefined }
             );
             result = await response.json();
             useDeepReportEndpoint = false;
@@ -892,11 +942,15 @@ async function runAnalysis() {
         displayResults(currentResults, currentResults._format, currentResults._notes);
     } catch (error) {
         console.error('Analysis error:', error);
-        alert('Failed to run analysis: ' + (error.message || error));
+        if (error && error.name === 'AbortError') {
+            alert('Analysis cancelled.');
+        } else {
+            alert('Failed to run analysis: ' + (error.message || error));
+        }
         document.getElementById('emptyState').style.display = 'block';
     } finally {
+        stopAnalysisUi();
         analyzeBtn.innerHTML = 'Analyze';
-        if (analyzeGoBtn) analyzeGoBtn.disabled = false;
     }
 }
 
@@ -1323,7 +1377,10 @@ function showGenericMatchDetails(match, title, rows) {
     });
     html += `</div>`;
     document.getElementById('modalBody').innerHTML = html;
+    window._simLastFocus = document.activeElement;
     document.getElementById('detailModal').style.display = 'flex';
+    const simCloseBtn = document.querySelector('#detailModal .detail-modal-close');
+    if (simCloseBtn) { try { simCloseBtn.focus(); } catch (e) { /* ignore */ } }
 }
 
 function showDeepReportMatchDetails(match) {
@@ -1398,7 +1455,10 @@ function showDeepReportMatchDetails(match) {
     `;
 
     document.getElementById('modalBody').innerHTML = html;
+    window._simLastFocus = document.activeElement;
     document.getElementById('detailModal').style.display = 'block';
+    const simCloseBtn = document.querySelector('#detailModal .detail-modal-close');
+    if (simCloseBtn) { try { simCloseBtn.focus(); } catch (e) { /* ignore */ } }
 }
 
 function renderLogicMatchedRow(logicMatched) {
@@ -1564,6 +1624,9 @@ function renderSimilarMeasures(measures) {
 
 function closeDetailModal() {
     document.getElementById('detailModal').style.display = 'none';
+    if (window._simLastFocus && document.contains(window._simLastFocus)) {
+        try { window._simLastFocus.focus(); } catch (e) { /* ignore */ }
+    }
 }
 
 // Close modal when clicking outside
@@ -1596,40 +1659,51 @@ function exportToExcel() {
     exportResults();
 }
 
-function exportResults() {
+async function exportResults() {
     const workspaceId = document.getElementById('workspaceSelect').value;
 
-    // Create a form to POST the data
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = '/api/similarity-analysis/export';
-    form.style.display = 'none';
+    // UX: previously a hidden form POST navigated the tab - a server error
+    // landed on a raw JSON page and pressing Back destroyed the in-memory
+    // analysis results. fetch+blob keeps the page (and results) intact.
+    const btn = document.querySelector('.export-buttons button');
+    const prevHtml = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = 'Exporting…'; }
 
-    // Add workspace_id
-    const wsInput = document.createElement('input');
-    wsInput.name = 'workspace_id';
-    wsInput.value = workspaceId;
-    form.appendChild(wsInput);
+    try {
+        const form = new FormData();
+        form.append('workspace_id', workspaceId);
+        form.append('format', 'excel');
+        form.append('results', JSON.stringify(currentResults));
 
-    // Add format (Excel is the only supported export format)
-    const formatInput = document.createElement('input');
-    formatInput.name = 'format';
-    formatInput.value = 'excel';
-    form.appendChild(formatInput);
+        console.log('   ✅ Submitting export request...');
+        const resp = await fetch('/api/similarity-analysis/export', { method: 'POST', body: form });
+        if (!resp.ok) {
+            let errMsg = `Export failed (HTTP ${resp.status})`;
+            try {
+                const errBody = await resp.json();
+                if (errBody.redirect) { window.location.href = errBody.redirect; return; }
+                errMsg = errBody.error || errMsg;
+            } catch (_) { /* non-JSON error body */ }
+            throw new Error(errMsg);
+        }
 
-    // Add results as JSON
-    const resultsInput = document.createElement('input');
-    resultsInput.name = 'results';
-    resultsInput.value = JSON.stringify(currentResults);
-    form.appendChild(resultsInput);
-
-    // Submit the form
-    document.body.appendChild(form);
-    console.log('   ✅ Submitting export request...');
-    form.submit();
-
-    // Clean up
-    setTimeout(() => document.body.removeChild(form), 1000);
+        const blob = await resp.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const cd = resp.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        a.download = (m && m[1]) ? m[1].replace(/['"]/g, '') : 'similarity_analysis.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+    } catch (error) {
+        console.error('Export error:', error);
+        alert('Export failed: ' + (error.message || error));
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = prevHtml; }
+    }
 }
 </script>
 {% endblock %}

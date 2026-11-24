@@ -170,7 +170,7 @@ def api_catalog_status():
         st['success'] = True
         return jsonify(st)
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog status: ' + str(e)}), 500
 
 
 def _perform_catalog_refresh() -> dict:
@@ -307,7 +307,7 @@ def api_catalog_refresh():
         code = int(body.pop('_http', 200)) if isinstance(body, dict) else 200
         return jsonify(body), code
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog refresh: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/refresh-internal', methods=['POST'])
@@ -344,7 +344,7 @@ def api_catalog_refresh_internal():
         return jsonify(body), code
     except Exception as e:
         print(f"❌ catalog refresh-internal failed: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog refresh internal: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/data/<path:name>')
@@ -448,7 +448,7 @@ def api_catalog_impact_tables():
         resp.headers['X-Data-Source'] = 'server-thin'
         return resp
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact tables: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/table')
@@ -518,7 +518,7 @@ def api_catalog_impact_table_detail():
         entry['aclApplied'] = acl_applied
         return jsonify({'success': True, 'table': entry})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact table detail: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/reports/search')
@@ -567,7 +567,7 @@ def api_catalog_reports_search():
         resp.headers['Cache-Control'] = 'private, max-age=60'
         return resp
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog reports search: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/reports')
@@ -616,7 +616,7 @@ def api_catalog_impact_reports():
         resp.headers['X-Data-Source'] = 'server-thin'
         return resp
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact reports: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/report')
@@ -642,7 +642,7 @@ def api_catalog_impact_report_detail():
             return jsonify({'success': False, 'error': f'No sources for report {report_id}'}), 404
         return jsonify({'success': True, 'report': detail})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact report detail: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/fields')
@@ -678,7 +678,7 @@ def api_catalog_impact_fields():
         resp.headers['X-Data-Source'] = 'server-thin'
         return resp
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact fields: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/field-detail')
@@ -701,7 +701,7 @@ def api_catalog_impact_field_detail():
             return jsonify({'success': False, 'error': f'No usage found for field {field_key}'}), 404
         return jsonify({'success': True, 'field': detail})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact field detail: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/unused-fields')
@@ -747,7 +747,7 @@ def api_catalog_impact_unused_fields():
         resp.headers['X-Data-Source'] = 'server-thin'
         return resp
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact unused fields: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/report-column-usage')
@@ -782,7 +782,7 @@ def api_catalog_report_column_usage():
             return jsonify({'success': False, 'error': f'No column usage data found for report {report_id}'}), 404
         return jsonify({'success': True, 'data': detail})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog report column usage: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/lookup')
@@ -811,7 +811,7 @@ def api_catalog_impact_lookup():
             hits = filtered
         return jsonify({'success': True, 'table': table, 'count': len(hits), 'results': hits})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact lookup: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/model-details')
@@ -873,7 +873,7 @@ def api_catalog_impact_model_details():
         resp.headers['X-Data-Source'] = 'catalog-impact-model'
         return resp
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact model details: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/home-summary')
@@ -921,7 +921,7 @@ def api_home_summary():
         print(f"❌ home-summary error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api home summary: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/home-summary/details')
@@ -962,7 +962,7 @@ def api_home_summary_details():
         print(f"❌ home-summary/details error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api home summary details: ' + str(e)}), 500
 
 
 @catalog_bp.route('/api/catalog/impact/top')
@@ -978,4 +978,4 @@ def api_catalog_impact_top():
         return jsonify({'success': True, 'count': len(rows), 'tables': rows,
                         'generatedAt': (catalog_service.get_impact_index() or {}).get('generatedAt')})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to api catalog impact top: ' + str(e)}), 500

@@ -582,7 +582,7 @@ def get_semantic_models():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to model from dataset: ' + str(e)
         }), 500
 
 
@@ -759,7 +759,7 @@ def get_semantic_model_details():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to schema incomplete: ' + str(e)
         }), 500
 
 
@@ -877,7 +877,7 @@ def semantic_model_health_check():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to semantic model health check: ' + str(e)
         }), 500
 
 
@@ -996,5 +996,5 @@ def semantic_model_documentation():
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': 'Failed to semantic model documentation: ' + str(e)
         }), 500

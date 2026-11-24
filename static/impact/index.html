@@ -42,6 +42,7 @@
           <span id="viewSubtitle" class="muted small tab-subtitle">Search every source table → reports / datasets / workspaces</span>
           <button id="exportCsvBtn" class="btn secondary sm" type="button">Export CSV</button>
           <button id="exportFilteredBtn" class="btn primary sm" type="button">Export filtered</button>
+          <button id="catalogRefreshBtn" class="btn secondary sm" type="button" title="Re-pull the latest catalog data; also asks the server to publish a fresh extract">Refresh</button>
         </div>
       </div>
       <!-- Hidden stubs kept for JS that still references these ids -->
@@ -49,7 +50,7 @@
       <button id="reloadBtn" type="button" class="hidden" aria-hidden="true" tabindex="-1"></button>
       <h1 id="viewTitle" class="hidden" aria-hidden="true">Table impact</h1>
 
-      <div id="loadState" class="load-state">
+      <div id="loadState" class="load-state" role="status" aria-live="polite">
         <div class="spinner"></div>
         <div>
           <strong>Loading impact index…</strong>
@@ -57,7 +58,7 @@
         </div>
       </div>
 
-      <div id="errorState" class="error-state hidden"></div>
+      <div id="errorState" class="error-state hidden" role="alert" aria-live="assertive"></div>
 
       <div id="appContent" class="hidden">
         <!-- Hidden stubs so older JS hooks stay safe if called -->
@@ -295,7 +296,7 @@
             </div>
             <p class="muted small" style="margin:-4px 0 12px">Type the <strong>EDW/source name</strong> (FactSales) or a <strong>Power BI renamed name</strong> (Sales). Matches both when lineage was resolved.</p>
             <div class="lookup-box">
-              <input id="lookupInput" type="search" placeholder="e.g. FactSales or Sales" />
+              <input id="lookupInput" type="search" placeholder="e.g. FactSales or Sales" aria-label="Table name to look up" />
               <button id="lookupBtn" class="btn primary" type="button">Find affected reports</button>
             </div>
             <div id="lookupResults"></div>
@@ -377,7 +378,7 @@
           <h3>Reports that would be affected</h3>
           <button id="copyReportsBtn" class="btn ghost sm">Copy names</button>
         </div>
-        <input id="drawerReportFilter" type="search" placeholder="Filter reports…" class="drawer-search" />
+        <input id="drawerReportFilter" type="search" placeholder="Filter reports…" class="drawer-search" aria-label="Filter affected reports" />
         <div id="drawerReports" class="drawer-list"></div>
       </div>
       <div class="drawer-section">
@@ -408,7 +409,7 @@
           <button id="copySourcesBtn" class="btn ghost sm" type="button">Copy names</button>
         </div>
         <p class="muted small" style="margin:0 0 8px">SQL, Excel, SharePoint, files, and model tables from lineage — everything bound through the report’s dataset(s).</p>
-        <input id="reportDrawerSourceFilter" type="search" placeholder="Filter sources…" class="drawer-search" />
+        <input id="reportDrawerSourceFilter" type="search" placeholder="Filter sources…" class="drawer-search" aria-label="Filter report sources" />
         <div id="reportDrawerBody" class="drawer-list"></div>
       </div>
       <div class="drawer-section">
@@ -418,7 +419,8 @@
           A table with many unused fields may be a candidate to trim or split for this report — but other
           reports may still need those fields, so this is a design signal, not a safe-to-delete list.
         </p>
-        <div id="reportColumnUsageBody" class="drawer-list"></div>
+        <button id="reportColumnUsageToggle" class="btn ghost sm" type="button" aria-expanded="false">Show column usage (runs a catalog query)</button>
+        <div id="reportColumnUsageBody" class="drawer-list" hidden></div>
       </div>
     </aside>
     <!-- FIELD USAGE DRAWER (which reports use this column / measure) -->
@@ -441,7 +443,7 @@
           <button id="copyFieldReportsBtn" class="btn ghost sm" type="button">Copy names</button>
         </div>
         <p class="muted small" style="margin:0 0 8px">Reuse an existing report/measure instead of rebuilding it — check here before adding a new one.</p>
-        <input id="fieldDrawerReportFilter" type="search" placeholder="Filter reports…" class="drawer-search" />
+        <input id="fieldDrawerReportFilter" type="search" placeholder="Filter reports…" class="drawer-search" aria-label="Filter reports using this field" />
         <div id="fieldDrawerBody" class="drawer-list"></div>
       </div>
     </aside>
