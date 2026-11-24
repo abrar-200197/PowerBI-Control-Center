@@ -18,6 +18,47 @@
             } catch (e) { /* ignore */ }
         })();
     </script>
+    <script>
+        /* ============================================================
+           Shared UI helpers - single source of truth for every page.
+           Previously escapeHtml existed as 7 divergent per-page copies
+           (one page still shipped the old quote-UNSAFE textContent form)
+           and notifications were 4 different systems plus native alert().
+           UX enhancement foundation: keep these canonical versions here.
+           ============================================================ */
+        function escapeHtml(text) {
+            // Quote-safe version (P0 XSS fix): escapes quotes so escaped
+            // values are safe inside HTML attributes, not only text nodes.
+            if (text === null || text === undefined) return '';
+            var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+            return String(text).replace(/[&<>"']/g, function (m) { return map[m]; });
+        }
+        function showAlert(type, message, ms) {
+            var container = document.getElementById('alertContainer');
+            if (!container) { console.log('[alert ' + type + ']', message); return; }
+            var alertClass = type === 'success' ? 'alert-success' :
+                             type === 'error' ? 'alert-error' :
+                             type === 'warning' ? 'alert-warning' : 'alert-info';
+            var el = document.createElement('div');
+            el.className = 'alert ' + alertClass;
+            el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+            el.textContent = message;
+            var fallback = type === 'error' ? 20000 : type === 'success' ? 10000 : 5000;
+            var duration = (typeof ms === 'number' && ms > 0) ? ms : fallback;
+            container.appendChild(el);
+            setTimeout(function () { el.remove(); }, duration);
+        }
+        /* Session-expiry redirect: /api/* 401 JSON carries redirect:'/login'
+           but only 2 fetch sites honored it. Call after response.json():
+           if (redirectIfSessionExpired(data)) return; */
+        function redirectIfSessionExpired(data) {
+            if (data && data.redirect) {
+                window.location.href = data.redirect;
+                return true;
+            }
+            return false;
+        }
+    </script>
     <style>
         :root {
             --bg-page: #F7F9FC;
@@ -30,7 +71,9 @@
             --bg-nav-active: #F6C343;
             --text: #2D3748;
             --text-strong: #1A202C;
-            --text-muted: #718096;
+            /* UX: #718096 was ~4.0:1 on white - below WCAG AA 4.5:1 for the
+               10-11px labels/th it colors. slate-500 (#64748B) = ~4.76:1. */
+            --text-muted: #64748B;
             --text-on-sidebar: #E2E8F0;
             --text-on-active: #1A202C;
             --border: #E2E8F0;
@@ -818,7 +861,7 @@
             {% with messages = get_flashed_messages(with_categories=true) %}
                 {% if messages %}
                     {% for category, message in messages %}
-                        <div class="alert alert-{{ category }}">{{ message }}</div>
+                        <div class="alert alert-{{ category }}" role="{{ 'alert' if category == 'error' else 'status' }}">{{ message }}</div>
                     {% endfor %}
                 {% endif %}
             {% endwith %}

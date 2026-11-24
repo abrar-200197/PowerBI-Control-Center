@@ -173,6 +173,24 @@ app.config['SESSION_COOKIE_NAME'] = 'pbi_session'
 # rejections, and a runaway body is still rejected before it fills temp disk.
 app.config['MAX_CONTENT_LENGTH'] = 3500 * 1024 * 1024
 
+
+@app.errorhandler(413)
+def _upload_too_large(error):
+    """UX: return the route's JSON error shape for oversize bodies.
+
+    Werkzeug's default 413 is an HTML page the upload page cannot parse
+    (the client does resp.json()), so a >3500 MB combined upload surfaced
+    as a cryptic parse error. The per-file checks in routes/report_diff.py
+    remain the friendly primary path; this only catches the process-wide
+    backstop. Full detail stays in the server log via the werkzeug logger.
+    """
+    return jsonify({
+        'success': False,
+        'error': 'Upload too large. Each PBIP export file must be under 1700 MB, '
+                 'and the combined request under 3500 MB. Trim the export or split the comparison.'
+    }), 413
+
+
 # Server-side session store (Flask-Session).
 # Local: prefer %TEMP% (or FLASK_SESSION_DIR). Sessions under OneDrive paths often
 # fail to read back the OAuth "state" → endless /login loop.

@@ -89,16 +89,16 @@
         </div>
         <div class="compare-actions">
             <button class="btn btn-primary" id="compareBtn" onclick="runComparison()">Compare</button>
-            <span class="status-msg" id="statusMsg"></span>
+            <span class="status-msg" id="statusMsg" aria-live="polite"></span>
         </div>
     </div>
 
     <div id="resultsCard" style="display:none;">
-        <div class="tabs">
-            <button class="tab-btn active" data-tab="measures" onclick="switchTab('measures')">Measures</button>
-            <button class="tab-btn" data-tab="powerQuery" onclick="switchTab('powerQuery')">Power Query</button>
-            <button class="tab-btn" data-tab="relationships" onclick="switchTab('relationships')">Relationships</button>
-            <button class="tab-btn" data-tab="visuals" onclick="switchTab('visuals')">Visuals</button>
+        <div class="tabs" role="tablist" aria-label="Difference categories">
+            <button class="tab-btn active" role="tab" aria-selected="true" data-tab="measures" onclick="switchTab('measures')">Measures</button>
+            <button class="tab-btn" role="tab" aria-selected="false" data-tab="powerQuery" onclick="switchTab('powerQuery')">Power Query</button>
+            <button class="tab-btn" role="tab" aria-selected="false" data-tab="relationships" onclick="switchTab('relationships')">Relationships</button>
+            <button class="tab-btn" role="tab" aria-selected="false" data-tab="visuals" onclick="switchTab('visuals')">Visuals</button>
         </div>
         <div class="tab-panel active" id="panel-measures"></div>
         <div class="tab-panel" id="panel-powerQuery"></div>
@@ -118,13 +118,14 @@ document.getElementById('versionB').addEventListener('change', (e) => {
 });
 
 function switchTab(name) {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+    document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === name);
+        b.setAttribute('aria-selected', b.dataset.tab === name ? 'true' : 'false');
+    });
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `panel-${name}`));
 }
 
-function escapeHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
+// escapeHtml now lives in base.html (single shared copy).
 
 function renderBucket(title, items, renderItem) {
     if (!items || !items.length) return '';
@@ -334,6 +335,15 @@ async function runComparison() {
     const btn = document.getElementById('compareBtn');
     if (!fileA || !fileB) {
         statusEl.textContent = 'Please select both zip files.';
+        statusEl.className = 'status-msg error';
+        return;
+    }
+    // Early size feedback (the server-side check remains authoritative).
+    // Same limit text as the server so the user sees one consistent rule.
+    const MAX_UPLOAD_BYTES = 1700 * 1024 * 1024;
+    const tooBig = [fileA, fileB].filter(f => f.size > MAX_UPLOAD_BYTES);
+    if (tooBig.length) {
+        statusEl.textContent = 'File too large: ' + tooBig.map(f => `${f.name} (${(f.size / (1024 * 1024)).toFixed(0)} MB)`).join(', ') + '. Each file must be under 1700 MB.';
         statusEl.className = 'status-msg error';
         return;
     }

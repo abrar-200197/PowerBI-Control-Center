@@ -231,12 +231,26 @@
                 });
 
                 $(select).select2({ width: '100%' });
+            } else if (redirectIfSessionExpired(data)) {
+                return;
+            } else {
+                throw new Error(data.error || 'Failed to load workspaces');
             }
         } catch (error) {
             console.error('Error loading workspaces:', error);
+            const select = document.getElementById('workspaceSelect');
+            if (select) select.innerHTML = '<option value="">Error loading workspaces</option>';
+            document.getElementById('orphaned-container').innerHTML = `
+                <div class="idle-state">
+                    <div class="idle-icon" aria-hidden="true">⚠️</div>
+                    <p><strong>Could not load the workspace list.</strong></p>
+                    <p style="margin-top:6px;font-size:12px;opacity:.85;">${escapeHtml(String((error && error.message) || error))}</p>
+                    <button type="button" class="btn btn-secondary" style="margin-top:10px;" onclick="loadWorkspaces()">Retry</button>
+                </div>`;
         }
     }
 
+    let _orphanedSeq = 0;   // response guard: drop stale scans after quick switches
     async function loadOrphanedReports() {
         const workspaceId = document.getElementById('workspaceSelect').value;
 
@@ -252,6 +266,10 @@
         }
 
         currentWorkspaceId = workspaceId;
+        const mySeq = ++_orphanedSeq;
+        // Prevent a second concurrent scan while one is running
+        const wsSelect = document.getElementById('workspaceSelect');
+        if (wsSelect) wsSelect.disabled = true;
 
         // Show loading
         document.getElementById('orphaned-container').innerHTML = `
@@ -265,17 +283,23 @@
             const response = await fetch(`/api/orphaned-reports/${workspaceId}`);
             const data = await response.json();
 
+            if (redirectIfSessionExpired(data)) return;
+            if (mySeq !== _orphanedSeq) return; // stale response, a newer switch won
+
             if (data.success) {
                 displayResults(data);
             } else {
                 throw new Error(data.error || 'Failed to find unowned reports');
             }
         } catch (error) {
+            if (mySeq !== _orphanedSeq) return;
             console.error('Error:', error);
             document.getElementById('orphaned-container').innerHTML = `
                 <div style="padding: 40px; text-align: center; color: #EF4444;">
                     ❌ Error: ${escapeHtml(error.message)}
                 </div>`;
+        } finally {
+            if (wsSelect) wsSelect.disabled = false;
         }
     }
 
@@ -337,7 +361,9 @@
             html += `
                 <tr>
                     <td>${index + 1}</td>
-                    <td><strong>${escapeHtml(report.report_name)}</strong></td>
+                    <td><strong>${report.report_id
+                        ? `<a href="https://app.powerbi.com/groups/${currentWorkspaceId}/reports/${report.report_id}" target="_blank" rel="noopener" title="Open in Power BI service">${escapeHtml(report.report_name)}</a>`
+                        : escapeHtml(report.report_name)}</strong></td>
                     <td style="font-size:12px;">${escapeHtml(report.created_by || '—')}</td>
                     <td style="font-size:12px;">${escapeHtml(report.modified_by || '—')}</td>
                     <td style="font-size:12px;">${escapeHtml(report.dataset_owner || '—')}</td>
@@ -354,17 +380,7 @@
         document.getElementById('orphaned-container').innerHTML = html;
     }
 
-    function escapeHtml(text) {
-        if (!text) return '';
-        const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
-        };
-        return text.toString().replace(/[&<>"']/g, m => map[m]);
-    }
+    // escapeHtml now lives in base.html (single shared, quote-safe copy).
 
     // Initialize
     document.addEventListener('DOMContentLoaded', () => {

@@ -81,6 +81,7 @@ stages:
                 tests/test_mcp_user_acl.py \
                 tests/test_mcp_thin_workspace_reports.py \
                 tests/test_mcp_flask_proxy.py \
+                tests/test_ux_413.py \
                 test_crash_test_render_scan.py \
                 azure_function_catalog/test_decide_mode.py \
                 ; do

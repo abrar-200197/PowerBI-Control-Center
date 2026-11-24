@@ -813,7 +813,7 @@
 
 {% block content %}
 <div class="page-shell">
-    <div id="alertContainer"></div>
+    <div id="alertContainer" aria-live="polite"></div>
 
     <!-- Filter Status Header (IDs preserved for JS) -->
     <div id="filterStatusHeader" class="catalog-filter-banner">
@@ -835,17 +835,17 @@
 
     <div class="controls">
         <div class="controls-left">
-            <select id="workspaceSelect" onchange="onWorkspaceChange()">
+            <select id="workspaceSelect" aria-label="Workspace" onchange="onWorkspaceChange()">
                 <option value="">Loading workspaces...</option>
             </select>
-            <select id="folderSelect" style="display: none;">
+            <select id="folderSelect" aria-label="Folder filter" style="display: none;">
                 <option value="">All Folders</option>
             </select>
-            <select id="reportSelect" onchange="onReportChange()">
+            <select id="reportSelect" aria-label="Report" onchange="onReportChange()">
                 <option value="">Select a report...</option>
             </select>
             <!-- Reverse search last: report name → workspace (catalog thin API) -->
-            <select id="findReportSelect">
+            <select id="findReportSelect" aria-label="Find report">
                 <option value=""></option>
             </select>
             <span id="statusFilterBadge" style="display: none;"></span>
@@ -1475,9 +1475,14 @@
         if (!folderId) {
             filtered = base.slice();
         } else if (!anyMapped) {
-            // Membership not loaded yet — show all with a quiet notice; do NOT call live API
+            // Membership not loaded yet — show all with a visible notice; do NOT call live API
             console.warn('📂 Folder membership not ready — showing all reports (catalog). Retry after refresh.');
             filtered = base.slice();
+            if (!window._folderPendingWarned) {
+                window._folderPendingWarned = true;
+                showAlert('warning', '📂 Folder filter is not applied yet — the folder map is still loading. Showing all reports; reselect the folder in a moment.', 10000);
+                setTimeout(() => { window._folderPendingWarned = false; }, 30000);
+            }
         } else if (folderId === '__ROOT__') {
             filtered = base.filter((r) => !resolveReportFolderId(r));
         } else {
@@ -1632,6 +1637,9 @@
                 console.log('⏭️ Stale loadReports response ignored');
                 return;
             }
+
+            // Session expired → server sends redirect:'/login' (shared helper)
+            if (redirectIfSessionExpired(result)) return;
 
             if (result.success) {
                 const opsFromCatalog = !!result.opsFromCatalog;
@@ -3006,9 +3014,32 @@
 
             // Start polling for progress updates
             const progressInterval = setInterval(async () => {
+                // UX fix: the poll used to loop forever when the progress
+                // endpoint kept failing (server restart, or the 5-minute job
+                // cleanup returning 404) — the row spun forever with no error.
+                // 60 consecutive failures (~30 s of continuous failure) gives
+                // up loudly; a single transient blip resets the counter.
+                let pollFailures = 0;
+                const giveUp = () => {
+                    clearInterval(progressInterval);
+                    console.error('Documentation progress polling failed repeatedly; stopping.');
+                    showAlert('error', 'Lost track of the documentation job (it may have expired or the server restarted). Please start the generation again.', 20000);
+                    if (buttonContainer) {
+                        buttonContainer.innerHTML = `
+                            <div style="display: flex; align-items: center; gap: 6px; padding: 4px;">
+                                <span style="font-size: 16px; line-height: 1;">❌</span>
+                                <span style="font-size: 11px; font-weight: 600; color: #F56565;">Failed</span>
+                            </div>
+                        `;
+                    }
+                    setTimeout(() => {
+                        restoreGenerateButton(buttonContainer, reportId, reportName);
+                    }, 2000);
+                };
                 try {
                     const progressResponse = await fetch(`/api/generate/progress/${jobId}`);
                     if (progressResponse.ok) {
+                        pollFailures = 0;
                         const progressData = await progressResponse.json();
                         console.log(`Progress: ${progressData.progress}% - ${progressData.status}`);
                         updateProgressUI(buttonContainer, progressData.progress, progressData.status);
@@ -3040,9 +3071,18 @@
                                 await downloadGeneratedFile(jobId, reportName, buttonContainer, reportId);
                             }
                         }
+                    } else if (progressResponse.status === 401) {
+                        clearInterval(progressInterval);
+                        const errBody = await progressResponse.json().catch(() => ({}));
+                        window.location.href = errBody.redirect || '/login';
+                    } else {
+                        pollFailures++;
+                        if (pollFailures >= 60) giveUp();
                     }
                 } catch (error) {
                     console.error('Error fetching progress:', error);
+                    pollFailures++;
+                    if (pollFailures >= 60) giveUp();
                 }
             }, 500);  // Poll every 500ms
 
@@ -3092,7 +3132,7 @@
             a.click();
             document.body.removeChild(a);
 
-            showAlert('success', 'Documentation generated and downloaded successfully!');
+            showAlert('success', 'Documentation generated and downloaded successfully! Note: the server copy is kept for only about 5 minutes — if you need the file again later, generate it again (documents are not stored long-term).', 20000);
 
             // Restore button after a short delay
             setTimeout(() => {
@@ -3175,6 +3215,16 @@
         const workspaceName = (wsOpt && wsOpt.textContent)
             ? wsOpt.textContent.trim()
             : (currentWorkspaceId || 'Workspace');
+
+        // Consequential action: uploads the live report's file into the shared
+        // SharePoint decommission batch. The bulk flow already confirms; the
+        // single-row flow now matches it (UX consistency).
+        const confirmedArchive = window.confirm(
+            `Archive "${reportName}" to the SharePoint decommission batch for ${workspaceName}?\n\n` +
+            `The report file is exported from Power BI and stored under Report Decommission Activity. ` +
+            `Large reports may take several minutes.`
+        );
+        if (!confirmedArchive) return;
 
         const btn = document.querySelector(`.archive-btn[data-report-id="${reportId}"]`);
         const prevHtml = btn ? btn.innerHTML : '';
@@ -3261,43 +3311,9 @@
 
 
 
-    function showAlert(type, message) {
-        const container = document.getElementById('alertContainer');
-        if (!container) {
-            console.log(`[alert ${type}]`, message);
-            return;
-        }
-        const alertClass = type === 'success' ? 'alert-success' :
-                          type === 'error' ? 'alert-error' :
-                          type === 'warning' ? 'alert-warning' : 'alert-info';
-
-        const alert = document.createElement('div');
-        alert.className = `alert ${alertClass}`;
-        alert.textContent = message;
-        // Long errors (archive) need more reading time
-        const ms = type === 'error' ? 20000 : type === 'success' ? 10000 : 5000;
-
-        container.appendChild(alert);
-
-        setTimeout(() => {
-            alert.remove();
-        }, ms);
-    }
-
-    function escapeHtml(text) {
-        // Quote-safe version (P0 XSS fix): the old div.textContent/innerHTML
-        // trick left quotes unescaped, so values placed inside HTML
-        // attributes (onclick="...", hrefs) were injectable.
-        if (text === null || text === undefined) return '';
-        const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
-        };
-        return String(text).replace(/[&<>"']/g, m => map[m]);
-    }
+    // showAlert / escapeHtml now live in base.html (single shared copy;
+    // this page previously had its own divergent versions).
+    // showAlert here also honors an optional duration argument now.
 
     /**
      * Extract visual field bindings from embedded report using Power BI JavaScript SDK
@@ -3399,7 +3415,7 @@
             button.innerHTML = 'Testing…';
             button.title = 'Crash test running (often 60–120 seconds)';
         }
-        showAlert('info', 'Running crash test with visual detection. This may take 60–120 seconds…');
+        showAlert('info', 'Running crash test with visual detection. This may take 60–120 seconds… You can keep working — results open here when ready.', 150000);
 
         try {
             let visualFieldBindings = null;
@@ -3427,11 +3443,15 @@
                 body: JSON.stringify(requestBody)
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
+            const result = await response.json().catch(() => ({}));
 
-            const result = await response.json();
+            if (redirectIfSessionExpired(result)) return;
+
+            if (!response.ok || !result.success) {
+                // Show the server's actual message (ACL denial, heavy-gate
+                // busy, etc.) instead of a bare "HTTP 403: FORBIDDEN".
+                throw new Error(result.error || `HTTP ${response.status}: ${response.statusText}`);
+            }
 
             if (result.success) {
                 console.log('✅ Crash test completed', result);
@@ -3934,7 +3954,16 @@
             if (!response.ok) {
                 const errorText = await response.text();
                 console.error(`❌ Server error: ${errorText}`);
-                throw new Error(`HTTP ${response.status}: ${response.statusText}\n${errorText}`);
+                try {
+                    const errBody = JSON.parse(errorText);
+                    if (errBody.redirect) { window.location.href = errBody.redirect; return; }
+                    throw new Error(errBody.error || `Export failed (HTTP ${response.status}: ${response.statusText})`);
+                } catch (parseError) {
+                    if (parseError instanceof SyntaxError) {
+                        throw new Error(`Export failed (HTTP ${response.status}: ${response.statusText})`);
+                    }
+                    throw parseError;
+                }
             }
 
             // Get the blob from the response
@@ -4160,7 +4189,7 @@
                 'Last Refresh',
                 'Days Since Refresh',
                 'Refresh Status',
-                'Views (Last 7 Days)',
+                `Views (Last ${VIEW_LOOKBACK_DAYS} Days)`,
                 'Status'
             ]);
 
@@ -4235,7 +4264,7 @@
                 { wch: 20 },  // Last Refresh
                 { wch: 18 },  // Days Since Refresh
                 { wch: 15 },  // Refresh Status
-                { wch: 18 },  // Views (Last 7 Days)
+                { wch: 18 },  // Views (Last N Days per VIEW_LOOKBACK_DAYS)
                 { wch: 12 }   // Status
             ];
 

@@ -1232,7 +1232,7 @@
 
 {% block content %}
 <div class="page-shell">
-    <div id="alertContainer"></div>
+    <div id="alertContainer" aria-live="polite"></div>
 
     <div class="controls">
         <div class="controls-left">
@@ -1306,11 +1306,13 @@
     <div id="deepSearchResults" class="panel" style="display: none;">
         <div class="panel-head">
             <h2>Deep content search</h2>
+            <span id="deepSearchScope" style="font-size:11px;color:var(--text-muted);font-weight:400;"></span>
             <div style="display:flex;align-items:center;gap:10px;">
-                <div id="deepSearchStats" class="badge-count" style="display:none;"></div>
+                <div id="deepSearchStats" class="badge-count" style="display:none;" aria-live="polite"></div>
                 <button id="exportDeepSearchBtn" class="btn btn-secondary" onclick="exportDeepSearchToExcel()" style="display:none;" type="button">Export</button>
             </div>
         </div>
+        <div id="deepSearchStatusStrip" style="display:none;padding:8px 14px;font-size:12px;color:var(--text-muted);border-bottom:1px solid var(--border-soft);"></div>
         <div id="deepSearchContent" style="padding:12px 14px;"></div>
     </div>
 
@@ -1320,8 +1322,9 @@
     <div id="tableSearchResults" class="panel" style="display: none;">
         <div class="panel-head">
             <h2>Table dictionary results</h2>
+            <span id="tableSearchScope" style="font-size:11px;color:var(--text-muted);font-weight:400;"></span>
             <div style="display:flex;align-items:center;gap:10px;">
-                <div id="tableSearchStats" class="badge-count" style="display:none;"></div>
+                <div id="tableSearchStats" class="badge-count" style="display:none;" aria-live="polite"></div>
                 <button id="exportTableSearchBtn" class="btn btn-secondary" onclick="exportTableSearchToExcel()" style="display:none;" type="button">Export</button>
             </div>
         </div>
@@ -1476,7 +1479,6 @@
                 <div id="relationshipsHeader" class="relationships-header" style="display: none;">
                     <div class="header-column">
                         From: table (column)
-                        <span class="header-sort-icon">↕</span>
                     </div>
                     <div class="header-column header-relationship">
                         Relationship
@@ -1502,10 +1504,10 @@
 
     <!-- Modal for displaying table column details -->
     <div class="modal-overlay" id="modalOverlay" onclick="closeModal()"></div>
-    <div class="modal-container" id="modalContainer">
+    <div class="modal-container" id="modalContainer" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <div class="modal-header">
             <span id="modalTitle">Table Columns</span>
-            <button class="modal-close" onclick="closeModal()">&times;</button>
+            <button class="modal-close" onclick="closeModal()" aria-label="Close">&times;</button>
         </div>
         <div class="modal-body" id="modalBody">
             <!-- Column details will be populated here -->
@@ -1517,8 +1519,6 @@
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <!-- Select2 JS -->
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
-<!-- SheetJS for Excel export -->
-<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 
 <script>
     let currentWorkspaceId = null;
@@ -1530,7 +1530,6 @@
     let allFolders = [];  // NEW: Store available folders
     let reports = [];
     let datasets = [];  // NEW: Store datasets
-    let currentSearchResults = null; // Store search results for export
 
     // Initialize Select2 on page load
     window.addEventListener('DOMContentLoaded', function() {
@@ -1603,13 +1602,17 @@
             if (result.success) {
                 allWorkspaces = result.workspaces;
                 populateWorkspaceDropdown(allWorkspaces);
+            } else if (redirectIfSessionExpired(result)) {
+                return;
             } else {
-                showAlert('error', 'Failed to load workspaces: ' + result.error);
+                showAlert('error', 'Failed to load workspaces: ' + result.error, 20000);
             }
         } catch (error) {
             console.error('Error loading workspaces:', error);
-            // Don't show alert for initial load errors - just log them
-            // showAlert('error', 'Error loading workspaces: ' + error.message);
+            // Visible failure + one automatic retry (previously a silent
+            // console-only catch left the picker stuck on "Loading...").
+            showAlert('error', 'Could not load the workspace list: ' + error.message, 20000);
+            setTimeout(() => { if (!allWorkspaces.length) loadWorkspaces(); }, 3000);
         }
     }
 
@@ -1736,6 +1739,13 @@
             folderGroup.style.display = 'none';
         }
 
+        // UX: cross-context panels must not outlive their scope - stale
+        // cards here launched wrong-workspace lineage queries.
+        ['datasetsUsedSection', 'directQueryASSection', 'tableSearchResults', 'deepSearchResults'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+        });
+
         // Enable/disable search features based on workspace selection
         const tableSearchInput = document.getElementById('tableSearch');
         const tableSearchBtn = document.getElementById('tableSearchBtn');
@@ -1756,9 +1766,14 @@
                 document.getElementById('datasetSelect').disabled = true;
                 $('#reportSelect').empty().append(new Option('N/A - Use search features for cross-workspace discovery', '', true, true)).trigger('change');
                 $('#datasetSelect').empty().append(new Option('N/A - Select a specific workspace', '', true, true)).trigger('change');
-                document.getElementById('lineageTable').innerHTML = '<div class="no-data"><p>🌍 <strong>Cross-Workspace Search Mode</strong><br><br>Use "Table Dictionary Search" or "Deep Content Search" to find tables, fields, and visuals across all workspaces.<br><br>💡 <em>Tip: These searches will scan all ' + allWorkspaces.length + ' accessible workspaces.</em></p></div>';
+                document.getElementById('lineageTable').innerHTML = '<div class="no-data"><p>🌍 <strong>Cross-Workspace Search Mode</strong><br><br>Use "Table Dictionary Search" to find tables and columns across all workspaces.<br><br>💡 <em>Deep Content Search runs per workspace — pick a specific workspace for it. Searches scan all ' + allWorkspaces.length + ' accessible workspaces.</em></p></div>';
                 document.getElementById('visualLineageSection').style.display = 'none';
                 document.getElementById('datasetLineageSection').style.display = 'none';
+                // Truth-in-UI: deep content search is scanner-backed per
+                // workspace; ALL mode always ended in "Access denied".
+                contentSearchInput.disabled = true;
+                contentSearchInput.placeholder = 'Deep search runs per workspace — pick a specific one';
+                deepSearchBtn.disabled = true;
                 currentReportId = null;
                 currentDatasetId = null;
             } else {
@@ -1784,6 +1799,8 @@
             document.getElementById('visualLineageSection').style.display = 'none';
             currentReportId = null;
         }
+
+        probeDeepSearchStatus();
     }
 
     function onFolderChange() {
@@ -1807,6 +1824,12 @@
         currentAnalysisType = analysisTypeSelect.value;
 
         console.log(`🔄 Analysis type changed to: ${currentAnalysisType}`);
+
+        // Cross-context panels must not survive an analysis-type switch
+        ['datasetsUsedSection', 'directQueryASSection'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+        });
 
         const reportGroup = document.getElementById('reportSelectGroup');
         const datasetGroup = document.getElementById('datasetSelectGroup');
@@ -1882,6 +1905,7 @@
         const datasetSelect = $('#datasetSelect');
         datasetSelect.prop('disabled', true);
         datasetSelect.empty().append(new Option('Loading semantic models...', '', true, true)).trigger('change');
+        const wsAtCall = currentWorkspaceId;   // drop stale responses after quick switches
 
         try {
             const url = `/api/datasets?workspaceId=${currentWorkspaceId}`;
@@ -1890,6 +1914,9 @@
                 credentials: 'include'
             });
             const result = await response.json();
+
+            if (redirectIfSessionExpired(result)) return;
+            if (wsAtCall !== currentWorkspaceId) { console.log('   Stale loadDatasets response dropped'); return; }
 
             if (result.success) {
                 datasets = result.datasets;
@@ -1934,6 +1961,7 @@
         const reportSelect = $('#reportSelect');
         reportSelect.prop('disabled', true);
         reportSelect.empty().append(new Option('Loading reports...', '', true, true)).trigger('change');
+        const wsAtCall = currentWorkspaceId;   // drop stale responses after quick switches
 
         document.getElementById('lineageTable').innerHTML = '<div class="loading"><div class="spinner"></div><p>Loading reports...</p></div>';
 
@@ -1952,6 +1980,9 @@
                 credentials: 'include'
             });
             const result = await response.json();
+
+            if (redirectIfSessionExpired(result)) return;
+            if (wsAtCall !== currentWorkspaceId) { console.log('   Stale loadReports response dropped'); return; }
 
             if (result.success) {
                 reports = result.reports;
@@ -2159,6 +2190,8 @@
             });
             const result = await response.json();
 
+            if (redirectIfSessionExpired(result)) return;
+
             console.log('🔍 Full API Response:', result);
 
             if (result.success) {
@@ -2180,12 +2213,13 @@
                 // Load visual lineage in background
                 loadVisualLineage();
 
-                // Reset view selector - user must manually choose
-                document.getElementById('viewSelect').value = '';
-                // Hide all sections initially
-                document.getElementById('lineageTable').style.display = 'none';
-                document.getElementById('visualLineageSection').style.display = 'none';
-                document.getElementById('relationshipsSection').style.display = 'none';
+                // UX: default to the primary Report lineage view instead of
+                // hiding every section and forcing the user to discover the
+                // View dropdown after every report change. A view the user
+                // already picked while loading is preserved.
+                const viewSelectEl = document.getElementById('viewSelect');
+                if (!viewSelectEl.value) viewSelectEl.value = 'query';
+                onViewChange();
             } else {
                 showAlert('error', 'Failed to load lineage: ' + result.error);
                 tableDiv.innerHTML = '<div class="no-data"><p>❌ Failed to load query lineage</p></div>';
@@ -2245,12 +2279,10 @@
                         </div>
 
                         <div style="display: flex; flex-direction: column; gap: 8px; min-width: 160px;">
-                            <button onclick="exploreDirectQueryDatasetLineage('${escapeHtml(jsEsc(model.workspaceName))}', '${escapeHtml(jsEsc(model.databaseName))}', '${escapeHtml(jsEsc(model.name))}')"
-                                    style="background: #10B981; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 700; transition: background 0.2s; white-space: nowrap; box-shadow: 0 2px 4px rgba(16, 185, 129, 0.3);"
-                                    onmouseover="this.style.background='#059669'"
-                                    onmouseout="this.style.background='#10B981'">
-                                🔍 Explore Lineage
-                            </button>
+                            <!-- UX: the cross-workspace AS lineage endpoint does not exist
+                                 server-side; this button always failed with a misleading
+                                 "dataset may not be accessible" error. Connection Info
+                                 below covers what is knowable today. -->
                             <button onclick="viewASModelDetails('${escapeHtml(jsEsc(model.name))}', '${escapeHtml(jsEsc(model.xmlaEndpoint))}', '${escapeHtml(jsEsc(model.databaseName))}', '${escapeHtml(jsEsc(model.workspaceName))}')"
                                     style="background: #F59E0B; color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 0.2s; white-space: nowrap;"
                                     onmouseover="this.style.background='#D97706'"
@@ -2311,7 +2343,7 @@
             const iconBadge = isPrimary ? '⭐' : '🔗';
 
             html += `
-                <div data-dataset-id="${escapeHtml(dataset.id)}" data-dataset-name="${escapeHtml(dataset.name)}" style="background: ${bgColor}; border-left: 4px solid ${borderColor}; border-radius: 6px; padding: 14px 16px; display: flex; align-items: center; gap: 16px; cursor: pointer; transition: all 0.2s;"
+                <div data-dataset-id="${escapeHtml(dataset.id)}" data-dataset-name="${escapeHtml(dataset.name)}" role="button" tabindex="0" style="background: ${bgColor}; border-left: 4px solid ${borderColor}; border-radius: 6px; padding: 14px 16px; display: flex; align-items: center; gap: 16px; cursor: pointer; transition: all 0.2s;"
                      onmouseover="this.style.background='${isPrimary ? '#EBF8FF' : '#F3E8FF'}'; this.style.transform='translateX(4px)';"
                      onmouseout="this.style.background='${bgColor}'; this.style.transform='translateX(0)';"
                      onclick="exploreDatasetLineage('${escapeHtml(jsEsc(dataset.id))}', '${escapeHtml(jsEsc(dataset.name))}', ${isPrimary})">
@@ -2430,7 +2462,7 @@
                 // Make table names clickable to show composite model lineage
                 const sqlTableLinks = sqlSourceTables.map((tableName, idx) => {
                     const tableId = `composite-table-${queryIndex}-${idx}`;
-                    return `<span style="color: #3182CE; cursor: pointer; text-decoration: underline;"
+                    return `<span role="button" tabindex="0" style="color: #3182CE; cursor: pointer; text-decoration: underline;"
                                   onclick="expandCompositeTable('${escapeHtml(jsEsc(tableName))}', '${tableId}')"
                                   title="Click to view lineage from composite model dataset">
                                 ${escapeHtml(tableName)}
@@ -2814,34 +2846,66 @@
 
 
 
-    function showAlert(type, message) {
-        const alertContainer = document.getElementById('alertContainer');
-        const alertClass = type === 'error' ? 'alert-error' : 'alert-info';
-        const icon = type === 'error' ? '❌' : 'ℹ️';
+    // showAlert / escapeHtml now live in base.html (single shared copy).
+    // This page's old showAlert REPLACED the previous alert (sequential
+    // errors overwrote each other) and rendered success with an error icon.
 
-        const alertDiv = document.createElement('div');
-        alertDiv.className = `alert ${alertClass}`;
-        alertDiv.innerHTML = `${icon} ${escapeHtml(message)}`;
-
-        alertContainer.innerHTML = '';
-        alertContainer.appendChild(alertDiv);
-
-        // Auto-remove after 5 seconds
-        setTimeout(() => {
-            alertDiv.remove();
-        }, 5000);
+    // Modal focus management (a11y): move focus into the dialog on open and
+    // restore it to the triggering element on close.
+    function openLineageModalOverlay() {
+        const overlay = document.getElementById('modalOverlay');
+        const container = document.getElementById('modalContainer');
+        window._lineageLastFocus = document.activeElement;
+        overlay.style.display = 'block';
+        container.style.display = 'block';
+        const closeBtn = container.querySelector('.modal-close');
+        if (closeBtn) { try { closeBtn.focus(); } catch (e) { /* ignore */ } }
+    }
+    function closeLineageModalOverlay() {
+        document.getElementById('modalOverlay').style.display = 'none';
+        document.getElementById('modalContainer').style.display = 'none';
+        if (window._lineageLastFocus && document.contains(window._lineageLastFocus)) {
+            try { window._lineageLastFocus.focus(); } catch (e) { /* ignore */ }
+        }
     }
 
-    function escapeHtml(text) {
-        if (text === null || text === undefined) return '';
-        const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
+    // Keyboard access for the click-target divs/spans rendered as role=button
+    document.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.getAttribute && e.target.getAttribute('role') === 'button') {
+            e.preventDefault();
+            e.target.click();
+        }
+    });
+
+    // UX: surface an in-flight (or recently finished) deep content search
+    // after a reload or workspace switch - previously it was invisible.
+    let _deepStatusTimer = null;
+    function probeDeepSearchStatus() {
+        const strip = document.getElementById('deepSearchStatusStrip');
+        if (!strip) return;
+        if (_deepStatusTimer) { clearInterval(_deepStatusTimer); _deepStatusTimer = null; }
+        if (!currentWorkspaceId || currentWorkspaceId === 'ALL') { strip.style.display = 'none'; return; }
+        let ticks = 0, lastMsg = '';
+        const update = async () => {
+            ticks++;
+            try {
+                const resp = await fetch(`/api/workspace/deep-search-progress/${currentWorkspaceId}`, { credentials: 'include' });
+                const data = await resp.json();
+                const msg = data.progress || '';
+                if (msg && msg !== 'Processing...') {
+                    strip.textContent = `Deep content search status for this workspace: ${msg}`;
+                    strip.style.display = 'block';
+                    if (msg === lastMsg && ticks > 10) { clearInterval(_deepStatusTimer); _deepStatusTimer = null; }
+                    lastMsg = msg;
+                } else if (strip.style.display === 'block' && ticks > 10) {
+                    strip.style.display = 'none';
+                    clearInterval(_deepStatusTimer); _deepStatusTimer = null;
+                }
+            } catch (e) { /* ignore */ }
+            if (ticks > 90 && _deepStatusTimer) { clearInterval(_deepStatusTimer); _deepStatusTimer = null; }
         };
-        return String(text).replace(/[&<>"']/g, m => map[m]);
+        update();
+        _deepStatusTimer = setInterval(update, 2000);
     }
 
     // JS-string-literal escaping for inline handler args (P0 XSS fix):
@@ -2866,38 +2930,20 @@
         const modalTitle = document.getElementById('modalTitle');
         const modalBody = document.getElementById('modalBody');
 
-        modalTitle.textContent = `Source Details: ${tableName || queryName}`;
+        modalTitle.textContent = `EDW Info: ${tableName || queryName}`;
 
-        const metadataFields = [
-            { label: 'Object Type', value: '' },
-            { label: 'Source System', value: '' },
-            { label: 'Source Server', value: '' },
-            { label: 'Source DB', value: '' },
-            { label: 'Source Object', value: '' },
-            { label: 'Source Platform', value: '' },
-            { label: 'ETL Tool', value: '' },
-            { label: 'Job Name', value: '' },
-            { label: 'Job Server', value: '' },
-            { label: 'Refresh Rate', value: '' },
-            { label: 'Extract Query', value: '' }
-        ];
+        // Honest empty state: no EDW metadata source is wired up yet, so this
+        // modal used to always render eleven em-dash placeholder rows.
+        modalBody.innerHTML = `
+            <div class="no-data">
+                <p>No EDW metadata is available for this source yet.</p>
+                <p style="font-size: 12px; color: #718096; margin-top: 8px;">
+                    Server: ${escapeHtml(serverName || '—')} · Source table: ${escapeHtml(tableName || '—')}<br>
+                    Use the SQL preview above and the Column Info view for what the model knows today.
+                </p>
+            </div>`;
 
-        let html = '<table class="column-details-table">';
-        html += '<thead><tr><th style="width: 35%;">Field</th><th>Value</th></tr></thead>';
-        html += '<tbody>';
-        metadataFields.forEach(field => {
-            html += `<tr>
-                <td style="font-family: 'Segoe UI', sans-serif; font-weight: 600; color: #2D3748;">${escapeHtml(field.label)}</td>
-                <td style="color: #718096; font-style: italic;">${field.value || '—'}</td>
-            </tr>`;
-        });
-        html += '</tbody></table>';
-
-        modalBody.innerHTML = html;
-
-        // Show modal
-        modalOverlay.style.display = 'block';
-        modalContainer.style.display = 'block';
+        openLineageModalOverlay();
     }
 
     // Function to show table column details in modal
@@ -2972,8 +3018,7 @@
         modalBody.innerHTML = html;
 
         // Show modal
-        modalOverlay.style.display = 'block';
-        modalContainer.style.display = 'block';
+        openLineageModalOverlay();
     }
 
     // Function to toggle SQL query display
@@ -3124,18 +3169,13 @@
         html += '</tbody></table>';
         modalBody.innerHTML = html;
 
-        modalOverlay.style.display = 'block';
-        modalContainer.style.display = 'block';
+        openLineageModalOverlay();
     }
 
 
     // Function to close modal
     function closeModal() {
-        const modalOverlay = document.getElementById('modalOverlay');
-        const modalContainer = document.getElementById('modalContainer');
-
-        modalOverlay.style.display = 'none';
-        modalContainer.style.display = 'none';
+        closeLineageModalOverlay();
     }
 
     // Close modal on Escape key
@@ -3179,16 +3219,30 @@
             return;
         }
 
+        // Double-submit guard: two clicks launch two concurrent scans that
+        // race for the same results panel.
+        const searchGoBtn = document.getElementById('tableSearchBtn');
+        if (searchGoBtn) searchGoBtn.disabled = true;
+
         try {
             searchInput.style.borderColor = '#4299E1';
             resultsSection.style.display = 'block';
+
+            // Provenance: make the search scope explicit in the panel head
+            const wsSelEl = document.getElementById('workspaceSelect');
+            const wsLabel = (wsSelEl && wsSelEl.selectedIndex >= 0 && wsSelEl.options[wsSelEl.selectedIndex])
+                ? wsSelEl.options[wsSelEl.selectedIndex].textContent : currentWorkspaceId;
+            const scopeBits = ['Scope: ' + (currentWorkspaceId === 'ALL' ? 'ALL accessible workspaces' : wsLabel)];
+            if (currentFolderId && currentWorkspaceId !== 'ALL') scopeBits.push('filtered to selected folder');
+            const scopeEl = document.getElementById('tableSearchScope');
+            if (scopeEl) scopeEl.textContent = scopeBits.join(' · ');
 
             // Show enhanced loading message for cross-workspace search
             if (currentWorkspaceId === 'ALL') {
                 resultsContent.innerHTML = `<div class="loading">
                     <div class="spinner"></div>
                     <p>🌍 Searching across all ${allWorkspaces.length} workspaces...</p>
-                    <p style="font-size: 13px; color: #718096; margin-top: 8px;">This may take 30-60 seconds</p>
+                    <p style="font-size: 13px; color: #718096; margin-top: 8px;">This scans every workspace one at a time and can take several minutes — results appear here when ready.</p>
                 </div>`;
             } else {
                 resultsContent.innerHTML = '<div class="loading"><div class="spinner"></div><p>Searching tables...</p></div>';
@@ -3204,6 +3258,8 @@
             });
             const result = await response.json();
 
+            if (redirectIfSessionExpired(result)) return;
+
             if (result.success) {
                 displayTableSearchResults(result);
             } else {
@@ -3218,6 +3274,8 @@
             resultsContent.innerHTML = `<div class="no-data"><p style="color: #F56565;">❌ Search failed: ${error.message}</p></div>`;
             searchInput.style.borderColor = '#F56565';
             setTimeout(() => { searchInput.style.borderColor = '#E2E8F0'; }, 1500);
+        } finally {
+            if (searchGoBtn) searchGoBtn.disabled = false;
         }
     }
 
@@ -3272,7 +3330,7 @@
                             <thead style="background: #F7FAFC; border-bottom: 2px solid #E2E8F0;">
                                 <tr>
                                     <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Table Name</th>
-                                    <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; background: #FEF3C7;">📄 Report Name</th>
+                                    <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; background: #FEF3C7;">📄 Semantic model</th>
                                     <th style="padding: 14px 12px; text-align: center; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Columns</th>
                                     <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Used In</th>
                                     <th style="padding: 14px 12px; text-align: center; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Actions</th>
@@ -3300,7 +3358,7 @@
                         <thead style="background: #F7FAFC; border-bottom: 2px solid #E2E8F0;">
                             <tr>
                                 <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Table Name</th>
-                                <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; background: #FEF3C7;">📄 Report Name</th>
+                                <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; background: #FEF3C7;">📄 Semantic model</th>
                                 <th style="padding: 14px 12px; text-align: center; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Columns</th>
                                 <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Used In</th>
                                 <th style="padding: 14px 12px; text-align: center; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Actions</th>
@@ -3341,7 +3399,7 @@
         // Column 1: Table Name (with icon)
         row += `<td style="padding: 16px 12px; font-weight: 600; color: #2D3748;">📊 ${escapeHtml(table.table_name)}</td>`;
 
-        // Column 2: Report Names (highlighted with yellow background)
+        // Column 2: Semantic model names (highlighted with yellow background)
         row += `<td style="padding: 16px 12px; background: #FEF3C7; font-weight: 600; color: #92400E;">
             ${escapeHtml(table.dataset_name)}
         </td>`;
@@ -3629,12 +3687,28 @@
             return;
         }
 
+        if (currentWorkspaceId === 'ALL') {
+            // Truth-in-UI guard: deep search is scanner-backed per workspace.
+            showAlert('warning', 'Deep content search runs per workspace — pick a specific workspace to use it.', 10000);
+            return;
+        }
+
         try {
             // Disable button and show loading
             deepSearchBtn.disabled = true;
             deepSearchBtn.innerHTML = '⏳ Searching...';
             searchInput.style.borderColor = '#9F7AEA';
             resultsSection.style.display = 'block';
+            const statusStrip = document.getElementById('deepSearchStatusStrip');
+            if (statusStrip) statusStrip.style.display = 'none';
+            const wsSelEl2 = document.getElementById('workspaceSelect');
+            const wsLabel2 = (wsSelEl2 && wsSelEl2.selectedIndex >= 0 && wsSelEl2.options[wsSelEl2.selectedIndex])
+                ? wsSelEl2.options[wsSelEl2.selectedIndex].textContent : currentWorkspaceId;
+            const scopeBits2 = ['Scope: ' + wsLabel2];
+            if (currentFolderId) scopeBits2.push('filtered to selected folder');
+            if (currentReportId) scopeBits2.push('filtered to selected report');
+            const scopeEl2 = document.getElementById('deepSearchScope');
+            if (scopeEl2) scopeEl2.textContent = scopeBits2.join(' · ');
 
             // Enhanced loading message for cross-workspace search
             if (currentWorkspaceId === 'ALL') {
@@ -3676,6 +3750,8 @@
                 credentials: 'include'  // Include session cookie
             });
             const result = await response.json();
+
+            if (redirectIfSessionExpired(result)) return;
 
             if (result.success) {
                 displayDeepSearchResults(result);
@@ -3774,7 +3850,7 @@
                     <thead style="background: #F7FAFC; border-bottom: 2px solid #E2E8F0;">
                         <tr>
                             <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Visual / Field</th>
-                            <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; background: #FEF3C7;">📄 Report Name</th>
+                            <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; background: #FEF3C7;">📄 Semantic model</th>
                             <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Page</th>
                             <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Table.Column</th>
                             <th style="padding: 14px 12px; text-align: left; font-weight: 600; color: #2D3748; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Type</th>
@@ -3880,187 +3956,14 @@
             tableSearchInput.placeholder = 'Select a workspace first...';
             document.getElementById('tableSearchBtn').disabled = true;
             document.getElementById('tableSearchResults').style.display = 'none';
-            document.getElementById('exportSearchBtn').style.display = 'none';
 
             contentSearchInput.disabled = true;
             contentSearchInput.value = '';
             contentSearchInput.placeholder = 'Select a workspace first...';
-            document.getElementById('reportSearchResults').style.display = 'none';
             document.getElementById('deepSearchResults').style.display = 'none';
             deepSearchBtn.disabled = true;
         }
     };
-
-    // ============================================================================
-    // EXPORT SEARCH RESULTS TO EXCEL
-    // ============================================================================
-
-    function exportSearchToExcel() {
-        if (!currentSearchResults || !currentSearchResults.tables || currentSearchResults.tables.length === 0) {
-            alert('No search results to export');
-            return;
-        }
-
-        try {
-            const tables = currentSearchResults.tables;
-            const searchTerm = currentSearchResults.search_term || 'search';
-            const workspaceId = currentSearchResults.workspace_id;
-
-            // Get workspace name
-            const workspace = allWorkspaces.find(w => w.id === workspaceId);
-            const workspaceName = workspace ? workspace.name : 'Unknown Workspace';
-
-            console.log(`📊 Exporting ${tables.length} table(s) from search: "${searchTerm}"`);
-
-            // Flatten data: Each row = one column from one table
-            const exportData = [];
-
-            tables.forEach(table => {
-                const tableNative = table.native_source_name || table.table_name;
-                const tableDisplay = table.table_name;
-                const datasetName = table.dataset_name;
-                const reportNames = table.reports.map(r => r.name).join(', ') || 'Not used in any reports';
-
-                // Get datasource info
-                const datasourceText = table.datasources.map(ds => {
-                    if (ds.server && ds.server !== 'N/A') {
-                        return `${ds.datasourceType}: ${ds.server}${ds.database && ds.database !== 'N/A' ? ' / ' + ds.database : ''}`;
-                    } else if (ds.url && ds.url !== 'N/A') {
-                        return `${ds.datasourceType}: ${ds.url}`;
-                    } else {
-                        return ds.datasourceType;
-                    }
-                }).join('; ') || 'No datasource info';
-
-                // Check if this table was matched via columns
-                const isColumnMatch = table.matched_columns && table.matched_columns.length > 0;
-                const matchType = table.match_type || (isColumnMatch ? 'column' : 'table');
-
-                // If table has columns, create one row per column
-                if (table.columns && table.columns.length > 0) {
-                    // Sort columns: matched columns first
-                    const sortedColumns = [...table.columns].sort((a, b) => {
-                        const aMatched = table.matched_columns && table.matched_columns.some(
-                            mc => mc.name === a.name || mc.source_name === a.source_name
-                        );
-                        const bMatched = table.matched_columns && table.matched_columns.some(
-                            mc => mc.name === b.name || mc.source_name === b.source_name
-                        );
-
-                        if (aMatched && !bMatched) return -1;
-                        if (!aMatched && bMatched) return 1;
-                        return 0;
-                    });
-
-                    sortedColumns.forEach(col => {
-                        const isMatched = table.matched_columns && table.matched_columns.some(
-                            mc => mc.name === col.name || mc.source_name === col.source_name
-                        );
-
-                        // Build column name display (with source if different)
-                        let columnNameDisplay = col.name;
-                        if (col.source_name && col.source_name !== col.name) {
-                            columnNameDisplay = `${col.source_name} (as: ${col.name})`;
-                        }
-
-                        exportData.push({
-                            'Workspace': workspaceName,
-                            'Dataset': datasetName,
-                            'Table Name (Native)': tableNative,
-                            'Table Name (Display)': tableDisplay,
-                            'Column Name': columnNameDisplay,
-                            'Data Type': col.dataType || 'Unknown',
-                            'Column Status': col.isHidden ? 'Hidden' : 'Visible',
-                            'Matched Column': isMatched ? 'YES' : 'NO',
-                            'Match Type': matchType,
-                            'Reports Using Dataset': reportNames,
-                            'Data Source': datasourceText
-                        });
-                    });
-                } else {
-                    // Table with no columns - create single row
-                    exportData.push({
-                        'Workspace': workspaceName,
-                        'Dataset': datasetName,
-                        'Table Name (Native)': tableNative,
-                        'Table Name (Display)': tableDisplay,
-                        'Column Name': 'No columns',
-                        'Data Type': 'N/A',
-                        'Column Status': 'N/A',
-                        'Matched Column': 'N/A',
-                        'Match Type': matchType,
-                        'Reports Using Dataset': reportNames,
-                        'Data Source': datasourceText
-                    });
-                }
-            });
-
-            console.log(`   ✅ Flattened to ${exportData.length} row(s) for export`);
-
-            // Create worksheet
-            const ws = XLSX.utils.json_to_sheet(exportData);
-
-            // Set column widths
-            ws['!cols'] = [
-                { wch: 25 },  // Workspace
-                { wch: 30 },  // Dataset
-                { wch: 35 },  // Table Native
-                { wch: 30 },  // Table Display
-                { wch: 40 },  // Column Name
-                { wch: 15 },  // Data Type
-                { wch: 15 },  // Column Status
-                { wch: 12 },  // Matched Column
-                { wch: 12 },  // Match Type
-                { wch: 50 },  // Reports
-                { wch: 50 }   // Data Source
-            ];
-
-            // Apply styles to header row (bold + background)
-            const range = XLSX.utils.decode_range(ws['!ref']);
-            for (let col = range.s.c; col <= range.e.c; col++) {
-                const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
-                if (ws[cellAddress]) {
-                    ws[cellAddress].s = {
-                        font: { bold: true },
-                        fill: { fgColor: { rgb: "4A5568" } },
-                        alignment: { horizontal: "left", vertical: "center" }
-                    };
-                }
-            }
-
-            // Enable auto-filter on header row
-            ws['!autofilter'] = { ref: ws['!ref'] };
-
-            // Create workbook and add worksheet
-            const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, 'Table Search Results');
-
-            // Generate filename with timestamp
-            const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-            const safeSearchTerm = searchTerm.replace(/[^a-zA-Z0-9]/g, '_');
-            const filename = `TableSearch_${safeSearchTerm}_${timestamp}.xlsx`;
-
-            // Download file
-            XLSX.writeFile(wb, filename);
-
-            console.log(`   ✅ Exported to ${filename}`);
-
-            // Show success message
-            const exportBtn = document.getElementById('exportSearchBtn');
-            const originalText = exportBtn.innerHTML;
-            exportBtn.innerHTML = '✅ Exported!';
-            exportBtn.disabled = true;
-
-            setTimeout(() => {
-                exportBtn.innerHTML = originalText;
-                exportBtn.disabled = false;
-            }, 2000);
-
-        } catch (error) {
-            console.error('Export error:', error);
-            alert('Failed to export: ' + error.message);
-        }
-    }
 
     // ========================================
     // Visual Lineage Inline Functions
@@ -4190,7 +4093,7 @@
 
                 html += `
                     <div style="margin-bottom: 16px; border: 1px solid #E2E8F0; border-radius: 6px; overflow: hidden;">
-                        <div onclick="toggleVisualPage('${pageId}')" style="padding: 14px 20px; background: #F7FAFC; cursor: pointer; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #E2E8F0;">
+                        <div role="button" tabindex="0" onclick="toggleVisualPage('${pageId}')" style="padding: 14px 20px; background: #F7FAFC; cursor: pointer; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #E2E8F0;">
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <span id="${pageId}-icon" style="font-size: 12px; color: #4A5568;">▶</span>
                                 <strong style="color: #2D3748; font-size: 14px;">📄 ${escapeHtml(page.name)}</strong>
@@ -4570,7 +4473,7 @@ ${escapeHtml(daxExpression)}</code>
                                     style="font-size: 10px; padding: 4px 8px;">
                                 <span id="${queryId}-toggle-text">Expand</span>
                             </button>
-                            <button onclick="copySqlQuery('${queryId}')"
+                            <button id="${queryId}-copy-btn" onclick="copySqlQuery('${queryId}', '${queryId}-copy-btn')"
                                     class="btn-secondary"
                                     style="font-size: 10px; padding: 4px 8px;">
                                 📋 Copy DAX
@@ -4611,7 +4514,7 @@ ${escapeHtml(daxExpression)}</code>
                                     style="font-size: 10px; padding: 4px 8px;">
                                 <span id="${queryId}-toggle-text">Expand</span>
                             </button>
-                            <button onclick="copySqlQuery('${queryId}')"
+                            <button id="${queryId}-copy-btn" onclick="copySqlQuery('${queryId}', '${queryId}-copy-btn')"
                                     class="btn-secondary"
                                     style="font-size: 10px; padding: 4px 8px;">
                                 📋 Copy ${label}
@@ -4641,7 +4544,7 @@ ${escapeHtml(daxExpression)}</code>
                 console.log(`   📦 Stored columns for ${tableName}:`, formattedColumns.length);
 
                 html += `<td style="text-align: center; vertical-align: middle;">
-                    <button onclick="showDatasetTableColumns('${escapeHtml(tableName).replace(/'/g, "\\'")}', this)"
+                    <button onclick="showDatasetTableColumns('${escapeHtml(jsEsc(tableName))}', this)"
                             class="btn-column-info"
                             style="background: #4299E1; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                         ${columns.length} Column${columns.length !== 1 ? 's' : ''}
@@ -4759,7 +4662,7 @@ ${escapeHtml(daxExpression)}</code>
                                         <button onclick="toggleSqlQuery('${queryId}')" class="btn-secondary" style="font-size: 10px; padding: 4px 8px;">
                                             <span id="${queryId}-toggle-text">Expand</span>
                                         </button>
-                                        <button onclick="copySqlQuery('${queryId}')" class="btn-secondary" style="font-size: 10px; padding: 4px 8px;">
+                                        <button id="${queryId}-copy-btn" onclick="copySqlQuery('${queryId}', '${queryId}-copy-btn')" class="btn-secondary" style="font-size: 10px; padding: 4px 8px;">
                                             📋 Copy ${label}
                                         </button>
                                     </div>
@@ -4913,8 +4816,7 @@ ${escapeHtml(daxExpression)}</code>
         modalBody.innerHTML = html;
 
         // Show modal
-        modalOverlay.style.display = 'block';
-        modalContainer.style.display = 'block';
+        openLineageModalOverlay();
     }
 
     // Function to explore dataset lineage (Primary or Composite)
@@ -4927,8 +4829,7 @@ ${escapeHtml(daxExpression)}</code>
         const typeLabel = isPrimary ? 'Primary Dataset' : 'Composite Model';
         modalTitle.textContent = `🔍 ${typeLabel}: ${datasetName}`;
         modalBody.innerHTML = '<div style="padding: 40px; text-align: center;"><div class="spinner"></div><p style="margin-top: 16px;">Fetching complete lineage...</p></div>';
-        modalOverlay.style.display = 'block';
-        modalContainer.style.display = 'block';
+        openLineageModalOverlay();
 
         try {
             console.log(`📊 Exploring dataset lineage: ${datasetName} (${datasetId})`);
@@ -5105,8 +5006,7 @@ ${escapeHtml(daxExpression)}</code>
 
         modalTitle.textContent = `🔍 Exploring: ${displayName}`;
         modalBody.innerHTML = '<div style="padding: 40px; text-align: center;"><div class="spinner"></div><p style="margin-top: 16px;">Fetching complete lineage from Power BI dataset...</p></div>';
-        modalOverlay.style.display = 'block';
-        modalContainer.style.display = 'block';
+        openLineageModalOverlay();
 
         try {
             const url = `/api/directquery-dataset-lineage?workspace_name=${encodeURIComponent(workspaceName)}&dataset_name=${encodeURIComponent(datasetName)}`;
@@ -5262,8 +5162,7 @@ ${escapeHtml(daxExpression)}</code>
         `;
 
         modalBody.innerHTML = html;
-        modalOverlay.style.display = 'block';
-        modalContainer.style.display = 'block';
+        openLineageModalOverlay();
     }
 
     function viewASModelMExpression(modelIndex) {
@@ -5298,8 +5197,7 @@ ${escapeHtml(daxExpression)}</code>
         `;
 
         modalBody.innerHTML = html;
-        modalOverlay.style.display = 'block';
-        modalContainer.style.display = 'block';
+        openLineageModalOverlay();
     }
 
     function copyToClipboard(text, itemName) {
@@ -5324,8 +5222,7 @@ ${escapeHtml(daxExpression)}</code>
 
         modalTitle.textContent = `🔗 Composite Model Table: ${tableName}`;
         modalBody.innerHTML = '<div style="padding: 40px; text-align: center;"><div class="spinner"></div><p style="margin-top: 16px;">Loading lineage from referenced semantic model...</p></div>';
-        modalOverlay.style.display = 'block';
-        modalContainer.style.display = 'block';
+        openLineageModalOverlay();
 
         try {
             // Check if we already have composite model data

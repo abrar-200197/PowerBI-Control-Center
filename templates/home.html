@@ -1025,11 +1025,7 @@
 
 {% block extra_js %}
 <script>
-    function escapeHtml(text) {
-        if (text == null) return '';
-        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
-        return String(text).replace(/[&<>"']/g, m => map[m]);
-    }
+    // escapeHtml now lives in base.html (single shared copy).
 
     let workspaces = [];
     let totalReports = 0;
@@ -1455,12 +1451,28 @@
         const response = await fetch('/api/workspaces');
         const data = await response.json();
 
+        // Session expired → server sends redirect:'/login' (shared helper).
+        // Previously a failure here rendered a misleading "No workspaces
+        // found" state with zeroed KPIs, which users read as lost access.
+        if (redirectIfSessionExpired(data)) return;
+
         if (!data.success || !data.workspaces || data.workspaces.length === 0) {
-            document.getElementById('workspace-list').innerHTML = `
+            // Distinguish an API failure from a genuine "no access" result
+            // so users stop misdiagnosing permission errors as empty data.
+            const emptyHtml = (data && data.success === false && data.error)
+                ? `
+                <tr><td colspan="4" class="empty-state">
+                    <div class="empty-state-icon">!</div>
+                    <div>Could not load workspaces</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escapeHtml(data.error)}</div>
+                </td></tr>`
+                : `
                 <tr><td colspan="4" class="empty-state">
                     <div class="empty-state-icon"></div>
                     <div>No workspaces found</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">You may not have access to any Power BI workspaces. If this looks wrong, contact the Control Center administrators.</div>
                 </td></tr>`;
+            document.getElementById('workspace-list').innerHTML = emptyHtml;
             document.getElementById('total-workspaces').textContent = '0';
             document.getElementById('total-reports').textContent = '0';
             document.getElementById('inactive-reports').textContent = '0';

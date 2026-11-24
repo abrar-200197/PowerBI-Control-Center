@@ -658,7 +658,7 @@
             </div>
 
             <div class="control-group" style="flex: 0 0 auto;">
-                <button onclick="runAnalysis()" class="btn btn-primary" type="button" style="height:34px;">
+                <button id="analyzeGoBtn" onclick="runAnalysis()" class="btn btn-primary" type="button" style="height:34px;">
                     <span id="analyzeBtn">Analyze</span>
                 </button>
             </div>
@@ -714,6 +714,8 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 async function loadWorkspaces() {
+    const empty0 = document.getElementById('emptyState');
+    if (empty0 && !window._simEmptyHtml) window._simEmptyHtml = empty0.innerHTML;
     try {
         const response = await fetch('/api/workspaces');
         const result = await response.json();
@@ -743,9 +745,34 @@ async function loadWorkspaces() {
                 option.textContent = ws.name;
                 select.appendChild(option);
             });
+            // Retry succeeded - restore the original empty state
+            const emptyOk = document.getElementById('emptyState');
+            if (emptyOk && window._simEmptyHtml) emptyOk.innerHTML = window._simEmptyHtml;
+        } else if (redirectIfSessionExpired(result)) {
+            return;
+        } else {
+            throw new Error(result.error || 'Failed to load workspaces');
         }
     } catch (error) {
         console.error('Error loading workspaces:', error);
+        // Visible failure state with retry (was console-only; the select
+        // stayed on "Select workspace..." forever).
+        const select = document.getElementById('workspaceSelect');
+        if (select) select.innerHTML = '<option value="">Error loading workspaces</option>';
+        const empty = document.getElementById('emptyState');
+        if (empty) {
+            empty.textContent = '';
+            const t1 = document.createElement('div');
+            t1.className = 'empty-state-text'; t1.style.fontWeight = '650'; t1.style.marginBottom = '4px';
+            t1.textContent = 'Could not load the workspace list';
+            const t2 = document.createElement('div');
+            t2.className = 'empty-state-subtext'; t2.style.marginBottom = '10px';
+            t2.textContent = (error && error.message) ? String(error.message) : 'Network or session problem';
+            const retry = document.createElement('button');
+            retry.className = 'btn btn-secondary'; retry.textContent = 'Retry';
+            retry.addEventListener('click', loadWorkspaces);
+            empty.appendChild(t1); empty.appendChild(t2); empty.appendChild(retry);
+        }
     }
 }
 
@@ -757,10 +784,29 @@ function selectAnalysisType(type) {
     document.getElementById(`card-${type}`).classList.add('active');
 
     currentAnalysisType = type;
+    // Export normalizer maps report-pair fields; exporting other modes
+    // produced a silent all-blank workbook, so hide the button for them.
+    const exportBtn = document.querySelector('.export-buttons button');
+    if (exportBtn) exportBtn.style.display = (type === 'reports') ? '' : 'none';
     console.log('Selected analysis type:', type);
 }
 
 function onWorkspaceChange() {
+    const wsId = document.getElementById('workspaceSelect').value;
+    // Truth-in-UI: only the Reports card supports cross-workspace analysis;
+    // the others would always fail ACL with a misleading error.
+    const allMode = wsId === 'ALL';
+    ['card-visuals', 'card-measures', 'card-tables'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.style.opacity = allMode ? '0.45' : '';
+            el.style.pointerEvents = allMode ? 'none' : '';
+            el.title = allMode ? 'Cross-workspace analysis is available for Reports only' : '';
+        }
+    });
+    if (allMode && currentAnalysisType !== 'reports') {
+        selectAnalysisType('reports');
+    }
     // Reset results when workspace changes
     document.getElementById('resultsSection').style.display = 'none';
     document.getElementById('emptyState').style.display = 'block';
@@ -775,7 +821,14 @@ async function runAnalysis() {
         return;
     }
 
+    if (workspaceId === 'ALL' && currentAnalysisType !== 'reports') {
+        alert('Cross-workspace analysis is available for Reports only. Pick a specific workspace for visual, measure, or table analysis.');
+        return;
+    }
+
     const analyzeBtn = document.getElementById('analyzeBtn');
+    const analyzeGoBtn = document.getElementById('analyzeGoBtn');
+    if (analyzeGoBtn) analyzeGoBtn.disabled = true;   // double-submit guard
     const typeLabel = ({
         reports: 'reports',
         visuals: 'visuals',
@@ -804,6 +857,7 @@ async function runAnalysis() {
 
         let response = await fetch(url, { credentials: 'same-origin' });
         let result = await response.json();
+        if (redirectIfSessionExpired(result)) return;
 
         // Fallback: deep report API unavailable → multi-type reports
         if (useDeepReportEndpoint && (!result.success || (!(result.comparisons || []).length && result.error))) {
@@ -842,6 +896,7 @@ async function runAnalysis() {
         document.getElementById('emptyState').style.display = 'block';
     } finally {
         analyzeBtn.innerHTML = 'Analyze';
+        if (analyzeGoBtn) analyzeGoBtn.disabled = false;
     }
 }
 
@@ -1192,12 +1247,9 @@ function renderTableSimilarity(matches, noteHtml = '') {
     document.getElementById('resultsTitle').textContent = 'Table similarity';
 }
 
-function escapeHtml(text) {
-    if (text == null) return '';
-    const div = document.createElement('div');
-    div.textContent = String(text);
-    return div.innerHTML;
-}
+// escapeHtml now lives in base.html. IMPORTANT: this page previously shipped
+// the old quote-UNSAFE textContent/innerHTML form; the shared quote-safe
+// version closes that gap for every interpolation on this page.
 
 function showMatchDetails(match) {
     // Route modal content by match shape

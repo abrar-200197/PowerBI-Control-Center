@@ -258,7 +258,7 @@ html[data-theme="dark"] a.link{color:#63b3ed}
           <button type="button" class="btn btn-secondary" id="refreshBtn">Refresh</button>
         </div>
       </div>
-      <div class="note" id="noteBar">Loading archive inventory from SharePoint…</div>
+      <div class="note" id="noteBar" aria-live="polite">Loading archive inventory from SharePoint…</div>
     </div>
     <div class="table-wrap" id="tableHost">
       <div class="loading"><div class="spinner"></div>Scanning SharePoint decommission folders…</div>
@@ -317,11 +317,14 @@ function collapseAllGroups(){
 }
 
 async function loadData(force){
+  const rBtn=$('refreshBtn');
+  if(rBtn) rBtn.disabled=true;   // double-trigger guard: overlapping loads race
   $('tableHost').innerHTML='<div class="loading"><div class="spinner"></div>Scanning SharePoint…</div>';
   try{
     const url='/api/decommissioned-reports'+(force?'?refresh=1':'');
     const res=await fetch(url,{credentials:'include'});
     const data=await res.json();
+    if(redirectIfSessionExpired(data)) return;
     if(!data.success) throw new Error(data.error||'Failed to load');
     CACHE=data;
     fillWorkspaceFilter(data);
@@ -329,6 +332,8 @@ async function loadData(force){
   }catch(e){
     $('noteBar').textContent='Error: '+(e.message||e);
     $('tableHost').innerHTML='<div class="idle">❌ '+esc(e.message||e)+'</div>';
+  }finally{
+    if(rBtn) rBtn.disabled=false;
   }
 }
 
@@ -401,7 +406,9 @@ function render(){
   $('noteBar').textContent=CACHE.note||'SharePoint archive only — not live Power BI metadata.';
   if(!names.length){
     GROUP_NAMES={};
-    $('tableHost').innerHTML='<div class="idle">No decommissioned report files found'+(CACHE.basePath?' under '+esc(CACHE.basePath):'')+'.</div>';
+    $('tableHost').innerHTML = qActive
+      ? '<div class="idle">No matches for the current search/filters. Clear the search box to see the full inventory.</div>'
+      : '<div class="idle">No decommissioned report files found'+(CACHE.basePath?' under '+esc(CACHE.basePath):'')+'.</div>';
     return;
   }
 
@@ -698,12 +705,28 @@ async function syncDecommDatasetFeed(){
   const btn=$('ovSyncFeedBtn');
   const st=$('ovSyncStatus');
   const original=btn?btn.innerHTML:'Sync data';
+  // Consequential action: rebuilds the SharePoint inventory, overwrites the
+  // dataset feed and triggers a Power BI dataset refresh. Confirm first.
+  if(!window.confirm('Sync data rebuilds the archive inventory, uploads the dataset feed and triggers a Power BI dataset refresh (this can take 2+ minutes). Continue?')){
+    return;
+  }
   try{
     if(btn){btn.disabled=true;btn.innerHTML='Syncing…';}
     if(st){
       st.title='';
       st.textContent='1/3 Scanning archive → building Excel feed…';
     }
+    // Honest wait: the pipeline runs server-side while this status sits at
+    // 1/3 - show elapsed time so the wait doesn't look frozen. The ticker
+    // stops itself as soon as the status text moves past 1/3.
+    const syncStartedAt = Date.now();
+    var syncTicker = setInterval(() => {
+      if (!st || !document.contains(st) || !st.textContent || st.textContent.indexOf('1/3') !== 0) {
+        clearInterval(syncTicker);
+        return;
+      }
+      st.textContent = '1/3 Scanning archive → building Excel feed… (' + Math.round((Date.now() - syncStartedAt) / 1000) + 's elapsed)';
+    }, 1000);
     // Full path: rebuild inventory → upload _dataset_feed xlsx/csv → refresh PBI dataset (wait ~90s)
     const res=await fetch(
       '/api/decommissioned-reports/publish-dataset-feed?refresh_dataset=1&wait_refresh=1',

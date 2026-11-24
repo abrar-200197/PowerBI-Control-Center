@@ -490,11 +490,21 @@ async function loadJsonFile(path, label, opts = {}) {
   setLoadProgress(`Loading ${label}…`);
   const res = await fetchJsonNoCache(path, opts);
   if (!res.ok) {
+    if (res.status === 401) {
+      const authErr = new Error("Your session has expired.");
+      authErr.authExpired = true;
+      throw authErr;
+    }
     let detail = `${path} HTTP ${res.status}`;
     try {
       const errBody = await res.json();
-      if (errBody.detail) detail += ` — ${errBody.detail}`;
-      if (errBody.expectedPath) detail += ` (path: ${errBody.expectedPath})`;
+      // The catalog API returns { error, hint } - the old code looked for
+      // detail/expectedPath, so the 403 blocked-file hint never reached users.
+      if (errBody.error) detail = errBody.error + (errBody.hint ? ` — ${errBody.hint}` : "");
+      else {
+        if (errBody.detail) detail += ` — ${errBody.detail}`;
+        if (errBody.expectedPath) detail += ` (path: ${errBody.expectedPath})`;
+      }
     } catch (_) { /* ignore */ }
     throw new Error(detail);
   }
@@ -556,6 +566,11 @@ async function loadData(forceRefresh = false) {
         allowHttpCache: !forceRefresh,
       });
       if (!tres.ok) {
+        if (tres.status === 401) {
+          const authErr = new Error("Your session has expired.");
+          authErr.authExpired = true;
+          throw authErr;
+        }
         const errBody = await tres.json().catch(() => ({}));
         throw new Error(errBody.error || `impact/tables HTTP ${tres.status}`);
       }
@@ -569,13 +584,19 @@ async function loadData(forceRefresh = false) {
     const gen = tpack.generatedAt || summary?.generatedAt || "";
     const stats = tpack.stats || summary?.stats || {};
     const runMeta = $("#runMeta");
-    if (runMeta && !runMeta.classList.contains("hidden")) {
+    if (runMeta) {
+      // UX: catalog freshness was fetched on every load but never shown
+      // (this element was hard-hidden). Show "as of" + a staleness flag.
+      runMeta.classList.remove("hidden");
+      runMeta.removeAttribute("aria-hidden");
       const srcLabel = fromSession ? "Session cache" : (tpack.source === "server-thin" ? "Server (cached)" : "Server");
+      const stale = gen && (Date.now() - new Date(gen).getTime()) > 7 * 86400000;
       runMeta.innerHTML =
-        `Source: <strong>${srcLabel}</strong> · ` +
+        `Catalog as of: ` +
         `${fmt(stats.workspaceCount)} ws · ${fmt(stats.reportCount)} reports · ` +
         `${fmt(state.rows.length)} tables` +
-        (gen ? ` · ${new Date(gen).toLocaleString()}` : "");
+        (gen ? ` · generated ${new Date(gen).toLocaleString()}` : "") +
+        (stale ? ` · ⚠ data may be stale` : "");
     }
 
     populateSubSourceFilter();
@@ -602,13 +623,21 @@ async function loadData(forceRefresh = false) {
   } catch (err) {
     $("#loadState").classList.add("hidden");
     $("#errorState").classList.remove("hidden");
+    if (err && err.authExpired) {
+      // This page runs inside an iframe: it cannot navigate the parent to
+      // /login, so hand the user an explicit top-level sign-in link.
+      $("#errorState").innerHTML = `<div><strong>Session expired</strong>
+        <div class="small" style="margin-top:8px">Your sign-in session ended. Sign in again, then return to the Impact Explorer.</div>
+        <div style="margin-top:10px"><a href="/login" target="_top">Sign in again →</a></div></div>`;
+    } else {
     const aborted = err?.name === "AbortError";
     $("#errorState").innerHTML = `<div><strong>Failed to load impact data</strong>
-      <div class="small" style="margin-top:8px">${escapeHtml(aborted ? "Request timed out. Retry Reload." : err.message)}</div>
+      <div class="small" style="margin-top:8px">${escapeHtml(aborted ? "Request timed out." : err.message)}</div>
       <div class="small muted" style="margin-top:10px">
-        Server loads SharePoint into a disk cache; browser only calls thin APIs.<br/>
-        Ensure extract published latest/ and restart <code>python app.py</code>.
+        This screen reads the precomputed catalog. If this keeps failing, retry in a moment —
+        the catalog may be refreshing. Persistent failures: contact the Power BI Control Center admins.
       </div></div>`;
+    }
     if (reloadBtn) {
       reloadBtn.disabled = false;
       reloadBtn.textContent = "Reload";
@@ -667,7 +696,7 @@ function renderTable() {
   if (state.page > pages) state.page = pages;
   const start = (state.page - 1) * state.pageSize;
   const slice = state.filtered.slice(start, start + state.pageSize);
-  $("#resultCount").textContent = `${fmt(total)} tables · page ${state.page}/${pages}`;
+  $("#resultCount").textContent = `${fmt(total)} tables · tenant-wide · page ${state.page}/${pages}`;
   $("#pageInfo").textContent = `${fmt(start + 1)}–${fmt(Math.min(start + state.pageSize, total))} of ${fmt(total)}`;
   $("#prevPage").disabled = state.page <= 1;
   $("#nextPage").disabled = state.page >= pages;
@@ -842,7 +871,7 @@ function renderReportTable() {
   const start = (state.reportPage - 1) * state.pageSize;
   const slice = state.reportFiltered.slice(start, start + state.pageSize);
   if ($("#reportResultCount")) {
-    $("#reportResultCount").textContent = `${fmt(total)} reports · page ${state.reportPage}/${pages}`;
+    $("#reportResultCount").textContent = `${fmt(total)} reports · your access (ACL-scoped) · page ${state.reportPage}/${pages}`;
   }
   if ($("#reportPageInfo")) {
     $("#reportPageInfo").textContent =
@@ -1141,7 +1170,7 @@ function renderFieldTable() {
   const start = (state.fieldPage - 1) * state.pageSize;
   const slice = state.fieldFiltered.slice(start, start + state.pageSize);
   if ($("#fieldResultCount")) {
-    $("#fieldResultCount").textContent = `${fmt(total)} fields · page ${state.fieldPage}/${pages}`;
+    $("#fieldResultCount").textContent = `${fmt(total)} fields · your access (ACL-scoped) · page ${state.fieldPage}/${pages}`;
   }
   if ($("#fieldPageInfo")) {
     $("#fieldPageInfo").textContent =
@@ -1368,7 +1397,7 @@ function renderUnusedTable() {
   const rows = state.unusedFiltered;
   const total = rows.length;
   if ($("#unusedResultCount")) {
-    $("#unusedResultCount").textContent = `${fmt(total)} unused fields`;
+    $("#unusedResultCount").textContent = `${fmt(total)} unused fields · tenant-wide scan`;
   }
 
   // Group by workspace — this is O(n) over all filtered rows, so cache the
@@ -2273,7 +2302,7 @@ async function runLookup() {
     box.innerHTML = `<div class="muted">No matches for <strong>${escapeHtml(qRaw)}</strong>. Try the EDW name or a Power BI model name.</div>`;
     return;
   }
-  box.innerHTML = `<div class="callout" style="margin-bottom:12px">Search matches <strong>source names</strong> and <strong>renamed Power BI names</strong>. Open a hit to see every affected report.</div>` + hits.map((r) => {
+  box.innerHTML = `<div class="callout" style="margin-bottom:12px">Search matches <strong>source names</strong> and <strong>renamed Power BI names</strong>. Open a hit to see every affected report.${hits.length >= 30 ? " Showing the top 30 hits — refine your search to narrow the list." : ""}</div>` + hits.map((r) => {
     const aliases = (r.modelTableNames || []).slice(0, 6).join(", ");
     return `
     <div class="lookup-hit">
@@ -3105,7 +3134,8 @@ async function buildLineageFromTable(tableKey) {
       { title: "Workspace", nodes: [...workspaces.values()] },
     ],
     edges,
-    meta: `${sourceLabel} · ${models.length} model(s) · ${reports.length} report(s)`,
+    meta: `${sourceLabel} · showing ${models.length} of ${(t.datasets || []).length} model(s) · ${reports.length} report(s)` +
+      ((t.datasets || []).length > models.length ? " · caps applied — real blast radius may be larger" : ""),
   };
 }
 

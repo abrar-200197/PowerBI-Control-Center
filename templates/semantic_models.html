@@ -95,6 +95,7 @@
 {% endblock %}
 
 {% block content %}
+<div id="alertContainer" aria-live="polite"></div>
 <div class="page-shell">
     <div class="toolbar">
         <div class="field">
@@ -130,7 +131,7 @@
                 <tbody id="modelsTableBody"></tbody>
             </table>
         </div>
-        <div id="emptyState" class="empty-state" style="display:none;">No semantic models found in this workspace</div>
+        <div id="emptyState" class="empty-state" style="display:none;">No semantic models found in this workspace<br><span style="font-size:12px;color:var(--text-muted);">Try another workspace, or check that the catalog extract has run for this one.</span></div>
     </section>
 </div>
 
@@ -178,19 +179,32 @@
 
 {% block extra_js %}
 <script>
+let _smLastFocus = null;
 function openSmModal(id) {
   const el = document.getElementById(id);
-  if (el) el.classList.add('open');
+  if (!el) return;
+  _smLastFocus = document.activeElement;
+  el.classList.add('open');
+  // Move focus into the dialog (a11y) - first focusable control
+  const target = el.querySelector('.icon-btn, .sm-modal-foot .btn, button');
+  if (target) target.focus();
 }
 function closeSmModal(id) {
   const el = document.getElementById(id);
   if (el) el.classList.remove('open');
+  if (_smLastFocus && document.contains(_smLastFocus)) {
+    try { _smLastFocus.focus(); } catch (e) { /* ignore */ }
+  }
 }
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    const anyOpen = document.querySelectorAll('.sm-modal.open').length > 0;
     document.querySelectorAll('.sm-modal.open').forEach(m => m.classList.remove('open'));
     const frame = document.getElementById('lineageFrame');
     if (frame) frame.src = 'about:blank';
+    if (anyOpen && _smLastFocus && document.contains(_smLastFocus)) {
+      try { _smLastFocus.focus(); } catch (err) { /* ignore */ }
+    }
   }
 });
 </script>
@@ -247,6 +261,8 @@ document.addEventListener('keydown', (e) => {
             // Catalog-first API — no live refresh fan-out (that was the multi-minute hang)
             const response = await fetch(`/api/semantic-models?workspace_id=${encodeURIComponent(workspaceId)}`);
             const data = await response.json();
+
+            if (redirectIfSessionExpired(data)) return;
 
             if (!data.success) {
                 throw new Error(data.error || 'Failed to load semantic models');
@@ -374,8 +390,8 @@ document.addEventListener('keydown', (e) => {
                 <td>
                     <div class="act">
                     <button class="btn btn-secondary" onclick="showModelDetails('${safeId}')">Details</button>
-                    <button class="btn btn-secondary" onclick="runHealthCheck('${safeId}')">Health</button>
-                    <button class="btn btn-primary" onclick="downloadModelDocs('${safeId}')">Download</button>
+                    <button class="btn btn-secondary" data-health-id="${safeId}" onclick="runHealthCheck('${safeId}')">Health</button>
+                    <button class="btn btn-primary" data-docs-id="${safeId}" onclick="downloadModelDocs('${safeId}')">Download</button>
                     </div>
                 </td>
             `;
@@ -407,6 +423,8 @@ document.addEventListener('keydown', (e) => {
                 `/api/semantic-model-details?workspace_id=${encodeURIComponent(currentWorkspaceId)}&dataset_id=${encodeURIComponent(modelId)}&enrich=1`
             );
             const data = await response.json();
+
+            if (redirectIfSessionExpired(data)) return;
 
             if (!data.success) {
                 throw new Error(data.error || 'Failed to load details');
@@ -541,7 +559,25 @@ document.addEventListener('keydown', (e) => {
         document.getElementById('healthModalModelName').textContent = model.name;
 
         const content = document.getElementById('healthCheckContent');
-        content.innerHTML = '<div class="empty-state">Running health check…</div>';
+        content.innerHTML = `
+            <div class="empty-state" style="padding:28px 16px;">
+                <div class="loading-box" style="padding:0 0 8px;">Running health check…</div>
+                <div class="sm-item-meta" style="max-width:360px;margin:0 auto;text-align:center;" id="healthElapsed">
+                    This runs a live Admin scan of the workspace and can take a few minutes — results appear here when ready.
+                </div>
+            </div>`;
+        // Honest wait feedback: elapsed-seconds ticker until the result (or
+        // the error) replaces this element, which also stops the timer.
+        const healthStartedAt = Date.now();
+        const healthTimer = setInterval(() => {
+            const el = document.getElementById('healthElapsed');
+            if (!el) { clearInterval(healthTimer); return; }
+            el.textContent = `This runs a live Admin scan and can take a few minutes. Elapsed: ${Math.round((Date.now() - healthStartedAt) / 1000)}s`;
+        }, 1000);
+
+        // Double-submit guard: a second click would start another full scan.
+        const hBtn = document.querySelector(`[data-health-id="${modelId}"]`);
+        if (hBtn) hBtn.disabled = true;
 
         openSmModal('healthCheckModal');
 
@@ -563,7 +599,9 @@ document.addEventListener('keydown', (e) => {
             content.innerHTML = buildHealthCheckHTML(data);
 
         } catch (error) {
-            content.innerHTML = `<div class="alert alert-danger">Health check failed: ${error.message}</div>`;
+            content.innerHTML = `<div class="alert alert-danger">Health check failed: ${escapeHtml(error.message)}</div>`;
+        } finally {
+            if (hBtn) hBtn.disabled = false;
         }
     }
 
@@ -604,8 +642,14 @@ document.addEventListener('keydown', (e) => {
         const model = semanticModels.find(m => m.id === modelId);
         if (!model) return;
 
+        // Double-submit guard: a second click would start another full
+        // workspace scan plus another document build.
+        const dBtn = document.querySelector(`[data-docs-id="${modelId}"]`);
+        const prevDocsHtml = dBtn ? dBtn.innerHTML : '';
+        if (dBtn) { dBtn.disabled = true; dBtn.innerHTML = 'Preparing…'; }
+
         try {
-            showAlert('info', 'Generating documentation...');
+            showAlert('info', 'Generating documentation… this can take a few minutes for large models.', 120000);
 
             const response = await fetch(
                 `/api/semantic-model-documentation?workspace_id=${encodeURIComponent(currentWorkspaceId)}&dataset_id=${encodeURIComponent(modelId)}`
@@ -617,6 +661,7 @@ document.addEventListener('keydown', (e) => {
                 if (contentType.includes('application/json')) {
                     try {
                         const errData = await response.json();
+                        if (errData.redirect) { window.location.href = errData.redirect; return; }
                         errMsg = errData.error || errMsg;
                     } catch (_) { /* ignore parse failure, use default message */ }
                 }
@@ -638,27 +683,13 @@ document.addEventListener('keydown', (e) => {
 
         } catch (error) {
             showAlert('error', 'Failed to download documentation: ' + error.message);
+        } finally {
+            if (dBtn) { dBtn.disabled = false; dBtn.innerHTML = prevDocsHtml; }
         }
     }
 
-    function escapeHtml(text) {
-        // Quote-safe (P0 XSS fix): escapes quotes so escaped values are safe
-        // inside HTML attributes, not only text nodes.
-        if (text === null || text === undefined) return '';
-        const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
-        };
-        return String(text).replace(/[&<>"']/g, m => map[m]);
-    }
-
-    function showAlert(type, message) {
-        // You can implement this to show Bootstrap toasts or alerts
-        console.log(`[${type.toUpperCase()}] ${message}`);
-        alert(message);
-    }
+    // escapeHtml / showAlert now live in base.html (single shared copy).
+    // This page previously showed EVERY status - including successes and
+    // "Generating documentation..." - as a blocking native alert().
 </script>
 {% endblock %}
