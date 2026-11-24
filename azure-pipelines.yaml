@@ -39,6 +39,51 @@ stages:
               echo "Cache clear done"
             displayName: 'Clear Docker Cache'
 
+          # P2 gates (2026-11-24): catch dependency-resolution breaks BEFORE the
+          # Docker build/deploy — the 2026-11-23 httpx/mcp sidecar outage shipped
+          # because a dev machine's installed set masked the resolver conflict —
+          # and run the offline test suite (plain runners per repo convention).
+          # Placeholder identity values keep app.py importable without a real
+          # .env (msal validates the authority ALIAS at import; 'organizations'
+          # is a public alias, not a secret). test_connector_pagination is
+          # excluded: it performs live client-credentials auth.
+          - task: UsePythonVersion@0
+            displayName: 'Use Python 3.12 for offline checks'
+            inputs:
+              versionSpec: '3.12'
+
+          - script: |
+              set -euo pipefail
+              python scripts/check-deps-resolution.py
+            displayName: 'Dependency resolution check (clean venv + sidecar import)'
+
+          - script: |
+              set -euo pipefail
+              python -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
+              export TENANT_ID=organizations
+              export CLIENT_ID=placeholder-client-id
+              export CLIENT_SECRET=placeholder-client-secret
+              export OPENAI_API_KEY=placeholder-openai-key
+              for t in \
+                tests/test_apppy_undefined_names.py \
+                tests/test_catalog_fastpath_helpers.py \
+                tests/test_crash_lineage_field_keys.py \
+                tests/test_crash_schema_validation.py \
+                tests/test_expression_parser.py \
+                tests/test_pbir_field_walk.py \
+                tests/test_powerbi_token_scoping.py \
+                tests/test_webapp_acl.py \
+                tests/test_mcp_acl.py \
+                tests/test_mcp_user_acl.py \
+                tests/test_mcp_thin_workspace_reports.py \
+                tests/test_mcp_flask_proxy.py \
+                test_crash_test_render_scan.py \
+                ; do
+                echo "== $t =="
+                python "$t"
+              done
+            displayName: 'Offline test suite (no network / no SharePoint)'
+
           - script: |
               set -euo pipefail
               echo "Building Docker image (no cache)..."

@@ -140,32 +140,42 @@ class CatalogService:
         # may load the same file twice (acceptable — heavy files are already
         # serialized by the webapp/MCP gates, SharePoint tolerates parallel
         # GETs) and the last writer wins on the memory entry.
-        with _lock:
-            if not force_refresh:
+        # Fast-path memory hit under the lock (cheap dict lookups only).
+        if not force_refresh:
+            with _lock:
                 mem = _memory.get(name)
                 if mem and (time.time() - mem["loaded_at"]) < cfg.CATALOG_CACHE_TTL_SEC:
                     return mem["data"]
-                # Thin packs: serve disk mirror instantly (no Graph round-trip).
-                # SharePoint is revalidated in background-ish load only when forced
-                # or when disk is missing. Prevents Home/Impact hanging on SP 404.
-                if name in _THIN_UI_PACKS:
-                    disk_data = self._read_disk_json(name)
-                    if disk_data is not None:
-                        # Heavy-listed thin packs (ui_unused_fields_index ~104 MB,
-                        # ui_field_index ~34 MB, ui_impact_reports ~33 MB) are
-                        # served straight from the local mirror WITHOUT the
-                        # long-lived memory cache — same retention rule as the
-                        # SP load path below. The unconditional cache here
-                        # previously defeated the heavy-drop rule.
-                        if (not heavy) or keep_heavy:
-                            _memory[name] = {
-                                "data": disk_data,
-                                "loaded_at": time.time(),
-                                "source": "disk-mirror-fast",
-                            }
-                        else:
-                            _memory.pop(name, None)
-                        return disk_data
+
+        # Thin packs: read + parse the disk mirror OUTSIDE the process-wide
+        # lock — parsing the ~104/34/33 MB packs inside `with _lock:` stalled
+        # every other catalog call in the worker for up to ~2s per parse, and
+        # N concurrent readers serialized behind each other. Duplicate parses
+        # are acceptable (last writer wins on the memory entry); the re-check
+        # under the lock below prefers an entry a concurrent reader already
+        # installed.
+        if not force_refresh and name in _THIN_UI_PACKS:
+            disk_data = self._read_disk_json(name)
+            if disk_data is not None:
+                # Heavy-listed thin packs (ui_unused_fields_index ~104 MB,
+                # ui_field_index ~34 MB, ui_impact_reports ~33 MB) are
+                # served straight from the local mirror WITHOUT the
+                # long-lived memory cache — same retention rule as the
+                # SP load path below. The unconditional cache here
+                # previously defeated the heavy-drop rule.
+                with _lock:
+                    mem = _memory.get(name)
+                    if mem and (time.time() - mem["loaded_at"]) < cfg.CATALOG_CACHE_TTL_SEC:
+                        return mem["data"]
+                    if (not heavy) or keep_heavy:
+                        _memory[name] = {
+                            "data": disk_data,
+                            "loaded_at": time.time(),
+                            "source": "disk-mirror-fast",
+                        }
+                    else:
+                        _memory.pop(name, None)
+                return disk_data
         data, source = self._load_catalog_file(name, force_refresh=force_refresh)
         if data is not None:
             with _lock:
@@ -319,8 +329,17 @@ class CatalogService:
 
     # ---------------------------------------------------------- query helpers
     def list_workspaces_for_user(
-        self, allowed_workspace_ids: Optional[Set[str]] = None
+        self,
+        allowed_workspace_ids: Optional[Set[str]] = None,
+        allow_catalog_fallback: bool = True,
     ) -> List[Dict[str, Any]]:
+        """
+        allow_catalog_fallback=False (MCP sidecar mode): NEVER parse the heavy
+        ~284 MB workspace_catalog to recover a missing thin home pack —
+        return [] instead. The webapp keeps the default (True) and may rebuild.
+        """
+        if not allow_catalog_fallback:
+            return []
         cat = self.get_workspace_catalog()
         if not cat:
             return []
@@ -1284,14 +1303,23 @@ class CatalogService:
         }
 
     # -------------------------------------------------------------- impact thin
-    def impact_table_rows(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    def impact_table_rows(
+        self,
+        force_refresh: bool = False,
+        allow_catalog_fallback: bool = True,
+    ) -> List[Dict[str, Any]]:
         """
         Thin table list for Impact Explorer grid (no nested datasets/reports).
         Uses ui_impact_tables.json when present; else derives from impact_index.
+
+        allow_catalog_fallback=False (MCP sidecar mode): never parse the
+        ~50 MB impact_index.json to derive a missing thin pack — return [].
         """
         pack = self.get_json("ui_impact_tables.json", force_refresh=force_refresh)
         if pack and isinstance(pack.get("rows"), list):
             return pack["rows"]
+        if not allow_catalog_fallback:
+            return []
         return self._derive_impact_rows_from_index(force_refresh=force_refresh)
 
     def _derive_impact_rows_from_index(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
@@ -1887,8 +1915,12 @@ class CatalogService:
     def impact_top(self, n: int = 50) -> List[Dict[str, Any]]:
         return self.top_impact_tables(n=n)
 
-    def top_impact_tables(self, n: int = 15) -> List[Dict[str, Any]]:
-        rows = self.impact_table_rows()
+    def top_impact_tables(
+        self,
+        n: int = 15,
+        allow_catalog_fallback: bool = True,
+    ) -> List[Dict[str, Any]]:
+        rows = self.impact_table_rows(allow_catalog_fallback=allow_catalog_fallback)
         # Strip searchText for API brevity if present
         out = []
         for r in rows[:n]:

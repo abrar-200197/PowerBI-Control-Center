@@ -178,11 +178,31 @@ def _perform_catalog_refresh() -> dict:
     Shared body for interactive and machine catalog refresh.
     Force re-download of catalog artifacts from SharePoint into server memory/disk mirror.
     Also clears per-user /api/reports response cache so Report Catalog picks up new ops.
+
+    Heavy gate (P0, 2026-11-24): the refresh force-downloads EVERY catalog
+    artifact (including the ~284 MB workspace_catalog and the multi-hundred-MB
+    indexes), so it must serialize through the same route gate as the other
+    heavy endpoints instead of running concurrently with them in the worker.
+    Callers receive 503 + retry hint when a heavy query is already running;
+    the Function's notify sender retries (3 attempts with backoff).
     """
     catalog_service = _get_catalog_service()
     if not _catalog_available() or catalog_service is None:
         return {'success': False, 'error': 'Catalog not available', '_http': 503}
 
+    got_gate, result = _heavy_route_call(_do_catalog_refresh)
+    if not got_gate:
+        return {
+            'success': False,
+            'error': 'Another heavy catalog query is running; catalog refresh was not started — retry in ~30 seconds.',
+            '_http': 503,
+        }
+    return result
+
+
+def _do_catalog_refresh() -> dict:
+    """Heavy body of the catalog refresh (runs under _HEAVY_ROUTE_GATE)."""
+    catalog_service = _get_catalog_service()
     catalog_service.invalidate()
     # Prefer thin packs first (fast UI), then heavy files for report/model APIs
     home = catalog_service.get_json('ui_home_index.json', force_refresh=True)

@@ -40,8 +40,20 @@ def _repo_root() -> Path:
     return _ROOT
 
 
-def decide_mode(now: datetime | None = None) -> Tuple[str, List[str]]:
-    """Sunday 06:30 UTC → fresh; otherwise ops-only."""
+def decide_mode(
+    now: datetime | None = None,
+    past_due: bool = False,
+) -> Tuple[str, List[str]]:
+    """Sunday 06:00-06:59 UTC → fresh; otherwise ops-only.
+
+    P2 fix (2026-11-24): the fresh decision used to require minute 25-40
+    exactly, so a host restart/redeploy that fired the timer late (past_due)
+    after 06:40 silently ran --ops-only INSTEAD of the weekly fresh — and
+    succeeded, so nothing signalled the skip and field-usage/impact data went
+    stale for a week. Now the whole Sunday 06:00 hour runs fresh, and a
+    past-due SUNDAY invocation is treated as the missed weekly fresh (a
+    past-due firing on any other day stays ops-only).
+    """
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -49,13 +61,13 @@ def decide_mode(now: datetime | None = None) -> Tuple[str, List[str]]:
         now = now.astimezone(timezone.utc)
 
     is_sunday = now.weekday() == 6
-    is_six_thirty_window = now.hour == 6 and 25 <= now.minute <= 40
+    is_sunday_fresh_window = is_sunday and now.hour == 6
     verbose = os.getenv("CATALOG_EXTRACT_VERBOSE", "true").lower() in (
         "1", "true", "yes", "y",
     )
     extra: List[str] = ["-v"] if verbose else []
 
-    if is_sunday and is_six_thirty_window:
+    if is_sunday_fresh_window or (is_sunday and past_due):
         return "fresh", ["--fresh", *extra]
     return "ops-only", ["--ops-only", *extra]
 
@@ -116,7 +128,7 @@ def catalog_extract_timer(mytimer: func.TimerRequest) -> None:
     if mytimer.past_due:
         logger.warning("Timer is past due at %s", utc_now.isoformat())
 
-    mode, argv = decide_mode(utc_now)
+    mode, argv = decide_mode(utc_now, past_due=bool(getattr(mytimer, "past_due", False)))
     logger.info(
         "Catalog extract smart timer at %s UTC → mode=%s argv=%s",
         utc_now.strftime("%Y-%m-%d %H:%M:%S"),

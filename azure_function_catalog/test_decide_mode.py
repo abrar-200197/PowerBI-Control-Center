@@ -7,6 +7,14 @@ import types
 from datetime import datetime, timezone
 from pathlib import Path
 
+# UTF-8 stdout/stderr (repo pattern): the output uses unicode arrows that
+# crash cp1252 consoles otherwise.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass
+
 ROOT = Path(__file__).resolve().parent
 MOD_PATH = ROOT / "function_app.py"
 
@@ -21,6 +29,14 @@ def _load():
 
         class _FunctionApp:
             def timer_trigger(self, *a, **k):
+                def deco(fn):
+                    return fn
+
+                return deco
+
+            def function_name(self, *a, **k):
+                # Module-level decorator in function_app.py; without this the
+                # stub load failed with AttributeError before any case ran.
                 def deco(fn):
                     return fn
 
@@ -43,11 +59,23 @@ def main() -> int:
         # (utc datetime, expected mode)
         (datetime(2026, 8, 2, 6, 30, tzinfo=timezone.utc), "fresh"),   # Sunday
         (datetime(2026, 8, 2, 6, 35, tzinfo=timezone.utc), "fresh"),   # Sunday skew
+        # P2 2026-11-24: the fresh window is the whole Sunday 06:00 hour —
+        # a late slot (past the old 06:25-06:40 window) must still run fresh.
+        (datetime(2026, 8, 2, 6, 10, tzinfo=timezone.utc), "fresh"),
+        (datetime(2026, 8, 2, 6, 52, tzinfo=timezone.utc), "fresh"),
         (datetime(2026, 8, 2, 12, 30, tzinfo=timezone.utc), "ops-only"),  # Sunday noon
         (datetime(2026, 8, 2, 18, 30, tzinfo=timezone.utc), "ops-only"),
         (datetime(2026, 8, 2, 0, 30, tzinfo=timezone.utc), "ops-only"),
         (datetime(2026, 8, 3, 6, 30, tzinfo=timezone.utc), "ops-only"),  # Monday
         (datetime(2026, 8, 9, 6, 30, tzinfo=timezone.utc), "fresh"),   # next Sunday
+    ]
+    # Past-due firings (host restart/redeploy missed the slot): on SUNDAY they
+    # are treated as the missed weekly fresh; on any other day ops-only.
+    past_due_cases = [
+        (datetime(2026, 8, 2, 9, 14, tzinfo=timezone.utc), "fresh"),
+        (datetime(2026, 8, 2, 20, 45, tzinfo=timezone.utc), "fresh"),
+        (datetime(2026, 8, 3, 9, 14, tzinfo=timezone.utc), "ops-only"),  # Monday
+        (datetime(2026, 8, 6, 6, 30, tzinfo=timezone.utc), "ops-only"),  # Thursday
     ]
     fails = 0
     for when, expected in cases:
@@ -62,6 +90,16 @@ def main() -> int:
             fails += 1
         if expected == "ops-only" and "--ops-only" not in argv:
             print("  FAIL missing --ops-only flag")
+            fails += 1
+    for when, expected in past_due_cases:
+        mode, argv = mod.decide_mode(when, past_due=True)
+        ok = mode == expected
+        flag = "OK" if ok else "FAIL"
+        print(f"{flag} past_due {when.isoformat()} → {mode} {argv} (want {expected})")
+        if not ok:
+            fails += 1
+        if expected == "fresh" and "--fresh" not in argv:
+            print("  FAIL missing --fresh flag")
             fails += 1
     print(f"TOTAL_FAIL={fails}")
     return 1 if fails else 0

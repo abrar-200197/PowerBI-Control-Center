@@ -46,6 +46,8 @@ class _ThinStub:
     def __init__(self):
         # Records the allow_catalog_fallback value passed by the MCP tool.
         self.directory_fallback_flags = []
+        # Records allow_catalog_fallback for the thin-pack tools keyed by tool.
+        self.fallback_flags = {}
 
     def get_report_directory_rows(self, allowed_workspace_ids, allow_catalog_fallback=True):
         self.directory_fallback_flags.append(allow_catalog_fallback)
@@ -56,6 +58,11 @@ class _ThinStub:
 
     def get_workspace_catalog(self, force_refresh=False):
         raise AssertionError("sidecar attempted to load the ~284 MB workspace_catalog")
+
+    def get_json(self, name, force_refresh=False):
+        # No thin packs available in this stub: every tool must take its
+        # no-pack path (and pass allow_catalog_fallback=False).
+        return None
 
     def unused_fields_rows(self, force_refresh=False, allowed_workspace_ids=None):
         # Real CatalogService signature: (force_refresh, allowed_workspace_ids).
@@ -68,6 +75,22 @@ class _ThinStub:
         if allowed_workspace_ids is not None:
             rows = [r for r in rows if r.get("workspaceId") in allowed_workspace_ids]
         return {"rows": rows, "caveat": "test"}
+
+    def list_workspaces_for_user(self, allowed_workspace_ids=None, allow_catalog_fallback=True):
+        self.fallback_flags["list_workspaces"] = allow_catalog_fallback
+        if not allow_catalog_fallback:
+            return []
+        return [{"id": "ws-1", "name": "WS One", "reportCount": 2}]
+
+    def impact_table_rows(self, force_refresh=False, allow_catalog_fallback=True):
+        self.fallback_flags["top_impact_tables"] = allow_catalog_fallback
+        if not allow_catalog_fallback:
+            return []
+        return [{"tableKey": "t", "table": "T", "reportCount": 1}]
+
+    def top_impact_tables(self, n=15, allow_catalog_fallback=True):
+        rows = self.impact_table_rows(allow_catalog_fallback=allow_catalog_fallback)
+        return rows[:n]
 
     def field_usage_detail(self, field_key, allowed_workspace_ids):
         return {"fieldKey": field_key, "usedIn": []}
@@ -225,6 +248,20 @@ def test_search_reports_never_falls_back_to_catalog():
     )
 
 
+def test_sidecar_thin_tools_never_fall_back_to_heavy():
+    """P0 2026-11-24: list_workspaces and top_impact_tables must pass
+    allow_catalog_fallback=False — a missing thin pack must never trigger a
+    heavy workspace_catalog (~284 MB) / impact_index (~50 MB) parse in the
+    sidecar process."""
+    out = server.list_workspaces()
+    assert out["success"] is True and out["workspaces"] == [], out
+    out = server.top_impact_tables(n=5)
+    assert out["success"] is True and out["tables"] == [], out
+    stub = server._svc_singleton
+    assert stub.fallback_flags.get("list_workspaces") is False, stub.fallback_flags
+    assert stub.fallback_flags.get("top_impact_tables") is False, stub.fallback_flags
+
+
 if __name__ == "__main__":
     _setup()
     try:
@@ -237,6 +274,7 @@ if __name__ == "__main__":
         test_heavy_gate_gates_impact_and_model_tools()
         test_workspace_reports_never_falls_back_to_catalog()
         test_search_reports_never_falls_back_to_catalog()
+        test_sidecar_thin_tools_never_fall_back_to_heavy()
     finally:
         _teardown()
     print("All tests passed.")

@@ -151,8 +151,8 @@ def list_workspaces(acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, 
     Use to find a workspace_id before calling other tools. Fast path serves
     from the thin home pack (KB-scale, memory-cached); capacity/dataset
     detail fields are None there — use get_workspace_reports for
-    per-workspace detail. Falls back to the full catalog when the thin pack
-    is unavailable."""
+    per-workspace detail. If the thin pack is unavailable this returns []
+    (the sidecar never rebuilds the heavy catalog)."""
     try:
         s = _svc()
         allowed = _effective_ids(acl_workspace_ids)
@@ -183,7 +183,12 @@ def list_workspaces(acl_workspace_ids: Optional[List[str]] = None) -> Dict[str, 
                 "source": "thin-home-index",
                 "workspaces": rows,
             }
-        rows = s.list_workspaces_for_user(allowed)
+        rows = s.list_workspaces_for_user(
+            allowed,
+            # Sidecar rule (P0): a missing thin pack must NEVER trigger a
+            # ~284 MB workspace_catalog rebuild in the sidecar process.
+            allow_catalog_fallback=False,
+        )
         return {"success": True, "count": len(rows),
                 "aclFiltered": allowed is not None, "workspaces": rows}
     except Exception as exc:
@@ -284,7 +289,12 @@ def top_impact_tables(n: int = 15, acl_workspace_ids: Optional[List[str]] = None
     (most dependent datasets/reports/workspaces), sorted by reportCount.
     Tenant-wide by design (not filtered by MCP_ALLOWED_WORKSPACE_IDS)."""
     try:
-        rows = _svc().top_impact_tables(n=max(1, min(int(n), 100)))
+        rows = _svc().top_impact_tables(
+            n=max(1, min(int(n), 100)),
+            # Sidecar rule (P0): never parse the ~50 MB impact index to derive
+            # a missing thin pack — impact_table_rows returns [] instead.
+            allow_catalog_fallback=False,
+        )
         return {"success": True, "count": len(rows), "tables": rows}
     except Exception as exc:
         return _error(exc)

@@ -68,7 +68,7 @@ def test_allowlist_passed_to_service():
             # Force the list_workspaces_for_user fallback path (no thin pack).
             return None
 
-        def list_workspaces_for_user(self, allowed_workspace_ids):
+        def list_workspaces_for_user(self, allowed_workspace_ids=None, allow_catalog_fallback=True):
             captured["allowed"] = allowed_workspace_ids
             return [{"id": "ws-a", "name": "A"}, {"id": "ws-b", "name": "B"}]
 
