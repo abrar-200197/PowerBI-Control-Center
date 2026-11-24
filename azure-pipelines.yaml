@@ -59,7 +59,11 @@ stages:
 
           - script: |
               set -euo pipefail
-              python -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
+              # Runtime deps MUST be installed too: the offline tests import
+              # app.py (flask/msal/openai/...). requirements-dev alone only
+              # carries pytest/pyflakes/mcp.
+              python -m pip install --quiet --disable-pip-version-check \
+                -r requirements.txt -r requirements-dev.txt
               export TENANT_ID=organizations
               export CLIENT_ID=placeholder-client-id
               export CLIENT_SECRET=placeholder-client-secret
