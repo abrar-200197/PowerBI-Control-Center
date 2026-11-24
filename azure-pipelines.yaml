@@ -82,6 +82,7 @@ stages:
                 tests/test_mcp_thin_workspace_reports.py \
                 tests/test_mcp_flask_proxy.py \
                 test_crash_test_render_scan.py \
+                azure_function_catalog/test_decide_mode.py \
                 ; do
                 echo "== $t =="
                 python "$t"

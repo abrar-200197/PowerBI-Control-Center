@@ -89,7 +89,7 @@ batch folder in the *Report Decommission Activity* SharePoint tree.
 
 ### Usage tracking
 Admin Activity Events, `Activity eq 'ViewReport'`, lookback
-`USAGE_LOOKBACK_DAYS` (default 30), fetched per-day in parallel
+`USAGE_LOOKBACK_DAYS` (default 60), fetched per-day in parallel
 (10 workers), persisted as day buckets in `.usage_cache/usage_<ws>.json`;
 groups/users excluded via `USAGE_EXCLUDE_GROUP_NAMES` / `USAGE_EXCLUDE_USER_UPNS`.
 

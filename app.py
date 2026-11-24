@@ -165,10 +165,13 @@ app.config['SESSION_COOKIE_NAME'] = 'pbi_session'
 
 # P1 fix: bound multipart uploads at the Werkzeug layer (previously
 # unlimited). The only upload feature is the report-diff comparison, whose
-# own route cap is 1700 MB — the Flask cap sits just above it so the route's
-# per-file check and error message still govern normal rejections, while a
-# runaway multipart body is rejected before it fills the temp disk.
-app.config['MAX_CONTENT_LENGTH'] = 1800 * 1024 * 1024
+# per-file cap is 1700 MB. The Flask cap must cover the WORST LEGAL body
+# (two ~1700 MB files ~ 3400 MB): a cap between 1700 and 3400 MB would let
+# Werkzeug 413 a body the route itself accepts, with its generic HTML error
+# instead of the route's friendly per-file message. 3500 MB leaves margin
+# for multipart overhead; the per-file check still governs normal
+# rejections, and a runaway body is still rejected before it fills temp disk.
+app.config['MAX_CONTENT_LENGTH'] = 3500 * 1024 * 1024
 
 # Server-side session store (Flask-Session).
 # Local: prefer %TEMP% (or FLASK_SESSION_DIR). Sessions under OneDrive paths often
@@ -392,13 +395,30 @@ USAGE_CACHE_DIR = os.path.join(os.getcwd(), 'data', 'usage_cache')
 os.makedirs(USAGE_CACHE_DIR, exist_ok=True)
 
 
+def _entry_ts(entry):
+    """Numeric timestamp of a cache entry, or None when absent/malformed.
+    Coerces datetime values defensively (the usage_cache comment documents a
+    datetime shape) so one malformed entry can never abort a sweep cycle."""
+    ts = entry.get('timestamp') if isinstance(entry, dict) else None
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        return float(ts)
+    if hasattr(ts, 'timestamp') and callable(ts.timestamp):
+        try:
+            return float(ts.timestamp())
+        except Exception:
+            return None
+    return None
+
+
 def _sweep_expired_caches():
     """
     P1 (memory, 2026-11-24): cache TTLs are checked only on READ, so expired
     per-user/per-folder report lists and multi-MB scanner dataset models
     accumulated for the whole worker lifetime (this SKU has an OOM history).
-    Drops entries well past their TTL (4x grace — a read that races the
-    sweeper still finds its entry) and hard-caps the scanner model cache.
+    Drops entries well past their TTL (4x the 300s CACHE_DURATION = 20 min
+    grace — a read that races the sweeper still finds its entry; for
+    scanner_cache, whose own TTL is 600s, the effective grace is 2x) and
+    hard-caps the scanner model cache.
     """
     now = time.time()
     max_age = CACHE_DURATION * 4
@@ -407,7 +427,7 @@ def _sweep_expired_caches():
                   scanner_cache, usage_cache, workspace_folders_cache):
         for key in list(cache.keys()):
             entry = cache.get(key)
-            ts = entry.get('timestamp') if isinstance(entry, dict) else None
+            ts = _entry_ts(entry)
             if ts and (now - ts) > max_age:
                 cache.pop(key, None)
                 dropped += 1
@@ -6728,6 +6748,17 @@ def get_dataset_lineage():
                 'error': 'workspace_id and dataset_id are required'
             }), 400
 
+        # Get user token from session FIRST: an expired session must surface
+        # as 401, not as the ACL helper's misleading 403 (the helper's
+        # network-failure path returns set(), which reads like a denial).
+        # Matches the /api/lineage and /api/generate ordering.
+        user_token = session.get('access_token')
+        if not user_token:
+            return jsonify({
+                'success': False,
+                'error': 'Not authenticated'
+            }), 401
+
         # ACL (P0, fail-closed): SemanticModelLineage scans ONLY the supplied
         # workspace (a dataset_id from a different workspace fails with
         # "not found"), so gating this workspace_id closes the route — the
@@ -6736,14 +6767,6 @@ def get_dataset_lineage():
         allowed_ws = _user_allowed_workspace_ids()
         if workspace_id not in allowed_ws:
             return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
-
-        # Get user token from session
-        user_token = session.get('access_token')
-        if not user_token:
-            return jsonify({
-                'success': False,
-                'error': 'Not authenticated'
-            }), 401
 
         # Initialize Scanner API with service principal token
         scanner_service = PowerBIScanner()
