@@ -904,7 +904,7 @@
     <div id="alertContainer" aria-live="polite"></div>
     <!-- KPI cards act as tabs for the detail panel below -->
     <div class="kpi-strip" role="tablist" aria-label="Home metrics">
-        <button type="button" class="kpi is-active" role="tab" data-metric="workspaces" aria-selected="true" id="kpi-workspaces" title="Workspaces you can access">
+        <button type="button" class="kpi is-active" role="tab" data-metric="workspaces" aria-selected="true" id="kpi-workspaces" aria-controls="homeDetailPanel" title="Workspaces you can access">
             <div class="kpi-icon ws" aria-hidden="true"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Workspaces</div>
@@ -912,7 +912,7 @@
                 <div class="kpi-hint">Accessible to you</div>
             </div>
         </button>
-        <button type="button" class="kpi" role="tab" data-metric="reports" aria-selected="false" id="kpi-reports" title="Reports across your workspaces">
+        <button type="button" class="kpi" role="tab" data-metric="reports" aria-selected="false" id="kpi-reports" aria-controls="homeDetailPanel" title="Reports across your workspaces">
             <div class="kpi-icon rp" aria-hidden="true"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Reports</div>
@@ -920,7 +920,7 @@
                 <div class="kpi-hint">In your workspaces</div>
             </div>
         </button>
-        <button type="button" class="kpi" role="tab" data-metric="inactive" aria-selected="false" id="kpi-inactive" title="No successful refresh in 30+ days">
+        <button type="button" class="kpi" role="tab" data-metric="inactive" aria-selected="false" id="kpi-inactive" aria-controls="homeDetailPanel" title="No successful refresh in 30+ days">
             <div class="kpi-icon in" aria-hidden="true"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Inactive</div>
@@ -928,7 +928,7 @@
                 <div class="kpi-hint">No refresh in 30+ days</div>
             </div>
         </button>
-        <button type="button" class="kpi" role="tab" data-metric="orphaned" aria-selected="false" id="kpi-orphaned" title="Reports with no active owner">
+        <button type="button" class="kpi" role="tab" data-metric="orphaned" aria-selected="false" id="kpi-orphaned" aria-controls="homeDetailPanel" title="Reports with no active owner">
             <div class="kpi-icon or" aria-hidden="true"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Unowned</div>
@@ -936,7 +936,7 @@
                 <div class="kpi-hint">No active owner</div>
             </div>
         </button>
-        <button type="button" class="kpi" role="tab" data-metric="zero_views" aria-selected="false" id="kpi-zero-views" title="Zero views in the usage lookback window">
+        <button type="button" class="kpi" role="tab" data-metric="zero_views" aria-selected="false" id="kpi-zero-views" aria-controls="homeDetailPanel" title="Zero views in the usage lookback window">
             <div class="kpi-icon zv" aria-hidden="true"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Zero views</div>
@@ -944,7 +944,7 @@
                 <div class="kpi-hint" id="zero-views-hint">0 views · last 60 days</div>
             </div>
         </button>
-        <button type="button" class="kpi" role="tab" data-metric="failed_refresh" aria-selected="false" id="kpi-failed-refresh" title="Last refresh status is Failed">
+        <button type="button" class="kpi" role="tab" data-metric="failed_refresh" aria-selected="false" id="kpi-failed-refresh" aria-controls="homeDetailPanel" title="Last refresh status is Failed">
             <div class="kpi-icon fail" aria-hidden="true"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Refresh failed</div>
@@ -952,7 +952,7 @@
                 <div class="kpi-hint">Last refresh failed</div>
             </div>
         </button>
-        <button type="button" class="kpi" role="tab" data-metric="long_running" aria-selected="false" id="kpi-long-running" title="Top 100 longest refresh durations">
+        <button type="button" class="kpi" role="tab" data-metric="long_running" aria-selected="false" id="kpi-long-running" aria-controls="homeDetailPanel" title="Top 100 longest refresh durations">
             <div class="kpi-icon lr" aria-hidden="true"></div>
             <div class="kpi-body">
                 <div class="kpi-label">Long running reports</div>
@@ -1437,6 +1437,27 @@
         } finally {
             if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
         }
+    }
+
+    // Tab-list arrow navigation (a11y): Left/Right moves and activates tabs.
+    function _initHomeKpiA11y() {
+        const kpiStrip = document.querySelector('.kpi-strip');
+        if (!kpiStrip) return;
+        kpiStrip.addEventListener('keydown', (e) => {
+            if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+            const tabs = Array.from(kpiStrip.querySelectorAll('[role="tab"]'));
+            const idx = tabs.indexOf(document.activeElement);
+            if (idx === -1) return;
+            e.preventDefault();
+            const next = tabs[(idx + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+            next.focus();
+            next.click();
+        });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _initHomeKpiA11y);
+    } else {
+        _initHomeKpiA11y();
     }
 
     function showHomeAlert(type, message) {
@@ -1996,10 +2017,19 @@
             </tr>`;
         }).join('');
 
-        // Whole-row open (pills/links keep their own targets)
+        // Whole-row open (pills/links keep their own targets) - now also
+        // keyboard-operable (Enter/Space) with a visible focus target.
         tbody.querySelectorAll('tr[data-href]').forEach(tr => {
+            tr.setAttribute('tabindex', '0');
             tr.addEventListener('click', (e) => {
                 if (e.target.closest('a, button, input, select, textarea')) return;
+                const href = tr.getAttribute('data-href');
+                if (href) window.location.href = href;
+            });
+            tr.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                if (e.target.closest('a, button, input, select, textarea')) return;
+                e.preventDefault();
                 const href = tr.getAttribute('data-href');
                 if (href) window.location.href = href;
             });
@@ -2087,8 +2117,16 @@
         }).join('') + more;
 
         tbody.querySelectorAll('tr[data-href]').forEach((tr) => {
+            tr.setAttribute('tabindex', '0');
             tr.addEventListener('click', (e) => {
                 if (e.target.closest('a, button, input, select, textarea')) return;
+                const href = tr.getAttribute('data-href');
+                if (href) window.location.href = href;
+            });
+            tr.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                if (e.target.closest('a, button, input, select, textarea')) return;
+                e.preventDefault();
                 const href = tr.getAttribute('data-href');
                 if (href) window.location.href = href;
             });
