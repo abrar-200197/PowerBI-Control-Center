@@ -61,7 +61,7 @@ class PowerBIConnector:
         }
 
         try:
-            response = requests.post(url=url, data=data)
+            response = requests.post(url=url, data=data, timeout=(10, 30))
             response.raise_for_status()
             self.access_token = response.json().get("access_token")
             print("✅ Authentication successful!")
@@ -195,7 +195,7 @@ class PowerBIConnector:
             # 1. Get basic report info
             print("   → Getting report details...")
             url = f"{self.base_url}/groups/{workspace_id}/reports/{report_id}"
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             
             if response.status_code == 200:
                 report_data = response.json()
@@ -215,7 +215,7 @@ class PowerBIConnector:
             if metadata.get('dataset_id'):
                 print("   → Getting dataset details...")
                 dataset_url = f"{self.base_url}/datasets/{metadata['dataset_id']}"
-                dataset_response = requests.get(dataset_url, headers=self._get_headers())
+                dataset_response = requests.get(dataset_url, headers=self._get_headers(), timeout=(10, 60))
                 
                 if dataset_response.status_code == 200:
                     dataset_data = dataset_response.json()
@@ -232,7 +232,7 @@ class PowerBIConnector:
                 # 3. Get data sources
                 print("   → Getting data sources...")
                 ds_url = f"{self.base_url}/datasets/{metadata['dataset_id']}/datasources"
-                ds_response = requests.get(ds_url, headers=self._get_headers())
+                ds_response = requests.get(ds_url, headers=self._get_headers(), timeout=(10, 60))
                 
                 if ds_response.status_code == 200:
                     metadata['data_sources'] = ds_response.json().get('value', [])
@@ -244,7 +244,7 @@ class PowerBIConnector:
                 # 4. Get refresh schedule
                 print("   → Getting refresh schedule...")
                 refresh_url = f"{self.base_url}/datasets/{metadata['dataset_id']}/refreshSchedule"
-                refresh_response = requests.get(refresh_url, headers=self._get_headers())
+                refresh_response = requests.get(refresh_url, headers=self._get_headers(), timeout=(10, 60))
                 
                 if refresh_response.status_code == 200:
                     metadata['refresh_schedule'] = refresh_response.json()
@@ -257,7 +257,7 @@ class PowerBIConnector:
                 # 5. Get refresh history
                 print("   → Getting refresh history...")
                 history_url = f"{self.base_url}/datasets/{metadata['dataset_id']}/refreshes?$top=5"
-                history_response = requests.get(history_url, headers=self._get_headers())
+                history_response = requests.get(history_url, headers=self._get_headers(), timeout=(10, 60))
                 
                 if history_response.status_code == 200:
                     metadata['refresh_history'] = history_response.json().get('value', [])
@@ -271,7 +271,7 @@ class PowerBIConnector:
             # 6. Get report pages
             print("   → Getting report pages...")
             pages_url = f"{self.base_url}/groups/{workspace_id}/reports/{report_id}/pages"
-            pages_response = requests.get(pages_url, headers=self._get_headers())
+            pages_response = requests.get(pages_url, headers=self._get_headers(), timeout=(10, 60))
             
             if pages_response.status_code == 200:
                 metadata['pages'] = pages_response.json().get('value', [])
@@ -301,7 +301,7 @@ class PowerBIConnector:
         """Get refresh schedule for a dataset"""
         try:
             url = f"{self.base_url}/groups/{workspace_id}/datasets/{dataset_id}/refreshSchedule"
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
 
             if response.status_code == 200:
                 return response.json()
@@ -322,7 +322,7 @@ class PowerBIConnector:
         """Get refresh history for a dataset"""
         try:
             url = f"{self.base_url}/groups/{workspace_id}/datasets/{dataset_id}/refreshes?$top={top}"
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
 
             if response.status_code == 200:
                 return response.json().get('value', [])
@@ -343,7 +343,7 @@ class PowerBIConnector:
         """Get dataset information"""
         try:
             url = f"{self.base_url}/groups/{workspace_id}/datasets/{dataset_id}"
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
 
             if response.status_code == 200:
                 return response.json()

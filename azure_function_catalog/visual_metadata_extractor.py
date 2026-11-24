@@ -66,7 +66,7 @@ class VisualMetadataExtractor:
                 "client_secret": self.client_secret,
                 "scope": "https://analysis.windows.net/powerbi/api/.default"
             }
-            response = requests.post(url, data=data)
+            response = requests.post(url, data=data, timeout=(10, 30))
             response.raise_for_status()
             payload = response.json()
             self.access_token = payload["access_token"]
@@ -865,7 +865,7 @@ class VisualMetadataExtractor:
 
         def _do_request():
             headers = {"Authorization": f"Bearer {self.access_token}"}
-            return requests.post(url, headers=headers, json=body)
+            return requests.post(url, headers=headers, json=body, timeout=(10, 30))
 
         print(f"   🔐 Getting embed token...")
         response = _do_request()
@@ -1033,7 +1033,7 @@ class VisualMetadataExtractor:
 
             def _do_request():
                 headers = {"Authorization": f"Bearer {self.access_token}"}
-                return requests.get(url, headers=headers)
+                return requests.get(url, headers=headers, timeout=(10, 60))
 
             response = _do_request()
             if response.status_code in (401, 403) and not self.user_token:

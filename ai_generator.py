@@ -57,7 +57,7 @@ class PowerBIDataFetcher:
         }
 
         try:
-            response = requests.post(url=url, data=data)
+            response = requests.post(url=url, data=data, timeout=(10, 30))
             response.raise_for_status()
             self.access_token = response.json().get("access_token")
             print("   ✅ Service Principal access token obtained")
@@ -87,7 +87,7 @@ class PowerBIDataFetcher:
         print(f"   📊 Fetching report details for {report_id}...")
         url = f"{self.base_url}/groups/{self.group_id}/reports/{report_id}"
         try:
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             response.raise_for_status()
             data = response.json()
             print("   ✅ Report details retrieved")
@@ -112,7 +112,7 @@ class PowerBIDataFetcher:
         print(f"   📄 Fetching report pages...")
         url = f"{self.base_url}/groups/{self.group_id}/reports/{report_id}/pages"
         try:
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             response.raise_for_status()
             data = response.json()
             pages = data.get('value', [])
@@ -128,7 +128,7 @@ class PowerBIDataFetcher:
         print(f"   🗄️  Fetching dataset details...")
         url = f"{self.base_url}/groups/{self.group_id}/datasets/{dataset_id}"
         try:
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             response.raise_for_status()
             data = response.json()
             print("   ✅ Dataset details retrieved")
@@ -160,7 +160,7 @@ class PowerBIDataFetcher:
         print(f"   🔌 Fetching data sources...")
         url = f"{self.base_url}/groups/{self.group_id}/datasets/{dataset_id}/datasources"
         try:
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             response.raise_for_status()
             data = response.json()
             sources = data.get('value', [])
@@ -181,9 +181,9 @@ class PowerBIDataFetcher:
         group_url = f"{self.base_url}/groups/{self.group_id}/datasets/{dataset_id}"
         
         try:
-            response = requests.get(group_url, headers=self._get_headers())
+            response = requests.get(group_url, headers=self._get_headers(), timeout=(10, 60))
             if response.status_code != 200:
-                response = requests.get(url, headers=self._get_headers())
+                response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             
             response.raise_for_status()
             data = response.json()
@@ -212,9 +212,9 @@ class PowerBIDataFetcher:
         group_url = f"{self.base_url}/groups/{self.group_id}/datasets/{dataset_id}/datasources"
 
         try:
-            response = requests.get(group_url, headers=self._get_headers())
+            response = requests.get(group_url, headers=self._get_headers(), timeout=(10, 60))
             if response.status_code != 200:
-                response = requests.get(url, headers=self._get_headers())
+                response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
                 
             response.raise_for_status()
             data = response.json()
@@ -262,7 +262,7 @@ class PowerBIDataFetcher:
         print(f"   ⚙️ Fetching dataset parameters...")
         url = f"{self.base_url}/groups/{self.group_id}/datasets/{dataset_id}/parameters"
         try:
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             if response.status_code == 200:
                 data = response.json()
                 params = data.get('value', [])
@@ -288,7 +288,7 @@ class PowerBIDataFetcher:
         url2 = f"{self.base_url}/datasets/{dataset_id}/relationships"
         for url in (url1, url2):
             try:
-                response = requests.get(url, headers=self._get_headers())
+                response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
                 if response.status_code == 200:
                     data = response.json()
                     rels = data.get('value', []) if isinstance(data, dict) else []
@@ -310,7 +310,7 @@ class PowerBIDataFetcher:
         print(f"   📅 Fetching dataset refresh history (top {top})...")
         url = f"{self.base_url}/groups/{self.group_id}/datasets/{dataset_id}/refreshes?$top={top}"
         try:
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             response.raise_for_status()
             data = response.json()
             history = data.get('value', [])
@@ -324,7 +324,7 @@ class PowerBIDataFetcher:
     #     print(f"   📚 Fetching all reports in workspace...")
     #     url = f"{self.base_url}/groups/{self.group_id}/reports"
     #     try:
-    #         response = requests.get(url, headers=self._get_headers())
+    #         response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
     #         response.raise_for_status()
     #         data = response.json()
     #         reports = data.get('value', [])
@@ -339,7 +339,7 @@ class PowerBIDataFetcher:
         print(f"   📚 Fetching all reports in workspace...")
         url = f"{self.base_url}/groups/{self.group_id}/reports"
         try:
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             response.raise_for_status()
             data = response.json()
             reports = data.get('value', [])
@@ -354,7 +354,7 @@ class PowerBIDataFetcher:
         print(f"   📚 Fetching all datasets in workspace...")
         url = f"{self.base_url}/groups/{self.group_id}/datasets"
         try:
-            response = requests.get(url, headers=self._get_headers())
+            response = requests.get(url, headers=self._get_headers(), timeout=(10, 60))
             response.raise_for_status()
             data = response.json()
             datasets = data.get('value', [])

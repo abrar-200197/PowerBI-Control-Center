@@ -257,7 +257,7 @@ def analyze_report_similarity(workspace_id):
 
                 # Get pages
                 pages_url = f"https://api.powerbi.com/v1.0/myorg/groups/{report_ws_id}/reports/{report['id']}/pages"
-                pages_response = requests.get(pages_url, headers=headers)
+                pages_response = requests.get(pages_url, headers=headers, timeout=(10, 30))
                 if pages_response.status_code == 200:
                     pages = pages_response.json().get('value', [])
                     report['pages'] = pages
@@ -558,7 +558,7 @@ def export_similarity_analysis():
                 try:
                     report_ws_id = report.get('workspace_id', workspace_id)
                     pages_url = f"https://api.powerbi.com/v1.0/myorg/groups/{report_ws_id}/reports/{report['id']}/pages"
-                    pages_response = requests.get(pages_url, headers=headers)
+                    pages_response = requests.get(pages_url, headers=headers, timeout=(10, 30))
                     if pages_response.status_code == 200:
                         report['pages'] = pages_response.json().get('value', [])
                 except Exception as e:

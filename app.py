@@ -1093,7 +1093,7 @@ def test_sso():
     # Test 1: Try to get workspaces with user token
     try:
         headers = get_user_powerbi_headers()
-        response = requests.get('https://api.powerbi.com/v1.0/myorg/groups', headers=headers)
+        response = requests.get('https://api.powerbi.com/v1.0/myorg/groups', headers=headers, timeout=(10, 60))
 
         if response.status_code == 200:
             workspaces = response.json().get('value', [])
@@ -1201,7 +1201,7 @@ def get_workspaces():
                 }), 401
 
             headers = get_user_powerbi_headers()
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, timeout=(10, 60))
             response.raise_for_status()
 
             workspaces = response.json().get('value', [])
@@ -1381,7 +1381,7 @@ def search_workspace_tables(workspace_id):
         if is_global:
             print("   🌍 Cross-workspace search - fetching all accessible workspaces...")
             headers = {'Authorization': f'Bearer {user_token}', 'Content-Type': 'application/json'}
-            ws_response = requests.get('https://api.powerbi.com/v1.0/myorg/groups', headers=headers)
+            ws_response = requests.get('https://api.powerbi.com/v1.0/myorg/groups', headers=headers, timeout=(10, 60))
             if ws_response.status_code == 200:
                 all_workspaces = ws_response.json().get('value', [])
                 workspaces_to_scan = [ws['id'] for ws in all_workspaces]
@@ -1435,7 +1435,7 @@ def search_workspace_tables(workspace_id):
                     }
 
                     print(f"   📁 Fetching folders from Fabric API...")
-                    fabric_response = requests.get(fabric_url, headers=fabric_headers)
+                    fabric_response = requests.get(fabric_url, headers=fabric_headers, timeout=(10, 60))
 
                     if fabric_response.status_code == 200:
                         items = fabric_response.json().get('value', [])
@@ -2575,7 +2575,7 @@ def deep_content_search(workspace_id):
                 # may run in the background thread - no session access here).
                 headers = {'Authorization': f'Bearer {user_token}'} if user_token else {}
                 folders_url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/folders?recursive=true"
-                folders_response = requests.get(folders_url, headers=headers)
+                folders_response = requests.get(folders_url, headers=headers, timeout=(10, 60))
 
                 folder_hierarchy = {}
                 if folders_response.status_code == 200:
@@ -3032,7 +3032,7 @@ def get_datasets():
         url = f"{base_url}/groups/{workspace_id}/datasets"
 
         headers = get_user_powerbi_headers()
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=(10, 60))
         response.raise_for_status()
 
         datasets = response.json().get('value', [])
@@ -3924,7 +3924,7 @@ def get_reports():
                 base_url = "https://api.powerbi.com/v1.0/myorg"
                 url = f"{base_url}/groups/{workspace_id}/reports"
                 headers = get_user_powerbi_headers()
-                response = requests.get(url, headers=headers)
+                response = requests.get(url, headers=headers, timeout=(10, 60))
                 response.raise_for_status()
                 reports = response.json().get('value', [])
 
@@ -6721,7 +6721,7 @@ def get_workspace_summary(workspace_id):
         reports_url = f"{base_url}/groups/{workspace_id}/reports"
 
         headers = get_user_powerbi_headers()
-        reports_response = requests.get(reports_url, headers=headers)
+        reports_response = requests.get(reports_url, headers=headers, timeout=(10, 60))
         reports_response.raise_for_status()
 
         reports = reports_response.json().get('value', [])
@@ -8019,7 +8019,7 @@ def get_lineage():
 
         # Step 1: Get report details to find dataset ID
         report_url = f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}'
-        report_response = requests.get(report_url, headers=headers)
+        report_response = requests.get(report_url, headers=headers, timeout=(10, 60))
 
         if report_response.status_code != 200:
             return jsonify({
@@ -8048,7 +8048,7 @@ def get_lineage():
             else:
                 # Fetch workspaces if not cached
                 workspaces_url = 'https://api.powerbi.com/v1.0/myorg/groups'
-                workspaces_response = requests.get(workspaces_url, headers=headers)
+                workspaces_response = requests.get(workspaces_url, headers=headers, timeout=(10, 60))
                 if workspaces_response.status_code == 200:
                     workspaces_data = workspaces_response.json()
                     workspace_map = {ws['id']: ws['name'] for ws in workspaces_data.get('value', [])}
@@ -9456,7 +9456,7 @@ def get_lineage_debug():
 
         # Get report details to find dataset ID
         report_url = f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}'
-        report_response = requests.get(report_url, headers=headers)
+        report_response = requests.get(report_url, headers=headers, timeout=(10, 60))
 
         if report_response.status_code != 200:
             return jsonify({
