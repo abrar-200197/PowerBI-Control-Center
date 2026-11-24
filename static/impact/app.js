@@ -592,7 +592,7 @@ async function loadData(forceRefresh = false) {
       const srcLabel = fromSession ? "Session cache" : (tpack.source === "server-thin" ? "Server (cached)" : "Server");
       const stale = gen && (Date.now() - new Date(gen).getTime()) > 7 * 86400000;
       runMeta.innerHTML =
-        `Catalog as of: ` +
+        `Catalog as of (${srcLabel}): ` +
         `${fmt(stats.workspaceCount)} ws · ${fmt(stats.reportCount)} reports · ` +
         `${fmt(state.rows.length)} tables` +
         (gen ? ` · generated ${new Date(gen).toLocaleString()}` : "") +
@@ -1620,6 +1620,10 @@ function renderUnusedTable() {
 function closeReportDrawer() {
   $("#reportDrawer")?.classList.add("hidden");
   $("#reportDrawer")?.setAttribute("aria-hidden", "true");
+  try {
+    const p = new URLSearchParams(location.hash.replace(/^#/, ""));
+    if (p.has("report")) { p.delete("report"); history.replaceState(null, "", "#" + p.toString()); }
+  } catch (_) { /* ignore */ }
   if (window._lastDrawerFocus && document.contains(window._lastDrawerFocus)) {
     try { window._lastDrawerFocus.focus(); } catch (_) { /* ignore */ }
     window._lastDrawerFocus = null;
@@ -1977,6 +1981,10 @@ function renderDrawerReports() {
 function closeDrawer() {
   $("#drawer")?.classList.add("hidden");
   $("#drawer")?.setAttribute("aria-hidden", "true");
+  try {
+    const p = new URLSearchParams(location.hash.replace(/^#/, ""));
+    if (p.has("table")) { p.delete("table"); history.replaceState(null, "", "#" + p.toString()); }
+  } catch (_) { /* ignore */ }
   if (window._lastDrawerFocus && document.contains(window._lastDrawerFocus)) {
     try { window._lastDrawerFocus.focus(); } catch (_) { /* ignore */ }
     window._lastDrawerFocus = null;
