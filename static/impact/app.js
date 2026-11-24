@@ -2334,6 +2334,7 @@ async function runLookup() {
     .sort((a, b) => b.reportCount - a.reportCount)
     .slice(0, 30);
 
+  let lookupOutage = false;
   if (!hits.length) {
     try {
       const res = await fetchJsonNoCache(
@@ -2361,11 +2362,16 @@ async function runLookup() {
       }
     } catch (e) {
       console.warn("lookup API failed", e);
+      // UX (EB-17): an availability failure must not be reported as a
+      // "no matches" result - distinguish outage from a genuine miss.
+      lookupOutage = true;
     }
   }
 
   if (!hits.length) {
-    box.innerHTML = `<div class="muted">No matches for <strong>${escapeHtml(qRaw)}</strong>. Try the EDW name or a Power BI model name.</div>`;
+    box.innerHTML = lookupOutage
+      ? `<div class="muted">Could not verify "<strong>${escapeHtml(qRaw)}</strong>" against the catalog server (it may be busy or temporarily unavailable). This is not a confirmed "no matches" result &mdash; retry in a moment.</div>`
+      : `<div class="muted">No matches for <strong>${escapeHtml(qRaw)}</strong>. Try the EDW name or a Power BI model name.</div>`;
     return;
   }
   box.innerHTML = `<div class="callout" style="margin-bottom:12px">Search matches <strong>source names</strong> and <strong>renamed Power BI names</strong>. Open a hit to see every affected report.${hits.length >= 30 ? " Showing the top 30 hits — refine your search to narrow the list." : ""}</div>` + hits.map((r) => {
