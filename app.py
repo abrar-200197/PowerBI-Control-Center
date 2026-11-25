@@ -1441,7 +1441,7 @@ def search_workspace_tables(workspace_id):
         if not is_global:
             allowed_ws = _user_allowed_workspace_ids()
             if workspace_id not in allowed_ws:
-                return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+                return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         print(f"\n🔍 ===============================================")
         if is_global:
@@ -1911,7 +1911,7 @@ def get_table_columns(workspace_id, dataset_name, table_name):
         # allow-list. set() on fetch failure denies everything.
         allowed_ws = _user_allowed_workspace_ids()
         if workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         print(f"\n📋 FETCHING COLUMNS FOR TABLE: {table_name}")
         print(f"   Workspace: {workspace_id}")
@@ -2148,7 +2148,7 @@ def search_workspace_content(workspace_id):
         # allow-list. set() on fetch failure denies everything.
         allowed_ws = _user_allowed_workspace_ids()
         if workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         print(f"\n📄 ===============================================")
         print(f"📄 CONTENT SEARCH: '{search_term}' in workspace {workspace_id}")
@@ -2503,7 +2503,7 @@ def deep_content_search(workspace_id):
         # the deep_search_progress write so a denial leaves no progress state.
         allowed_ws = _user_allowed_workspace_ids()
         if workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         # Build scope description
         scope_info = []
@@ -3838,7 +3838,7 @@ def get_reports():
         # practice), so an auth/backend failure denies instead of leaking.
         allowed_ws = _user_allowed_workspace_ids()
         if allowed_ws is not None and workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         # Get user info for cache key (include folder_id in cache key)
         user_id = session.get('user', {}).get('oid', 'unknown')
@@ -3894,7 +3894,7 @@ def get_reports():
                     # Defense-in-depth: the pre-gate above already returned 403
                     # for this workspace; unreachable unless the allow-list
                     # changed between the two checks.
-                    return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+                    return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
                 else:
                     catalog_payload = catalog_service.get_workspace_reports(
                         workspace_id, allowed_workspace_ids=allowed
@@ -4597,7 +4597,7 @@ def export_inactive_reports(workspace_id):
         # Scanner data for any workspace id passed in the URL.
         allowed_ws = _user_allowed_workspace_ids()
         if allowed_ws is not None and workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         print(f"\n📋 GENERATING DECOMMISSION REPORT FOR WORKSPACE: {workspace_id}")
         REFRESH_STALE_DAYS = 90
@@ -5142,7 +5142,7 @@ def decommission_list_candidates(workspace_id):
         # ACL: fail-closed (P0) — tenant-wide catalog listing.
         allowed_ws = _user_allowed_workspace_ids()
         if allowed_ws is not None and workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         REFRESH_STALE_DAYS = 90
         VIEW_LOOKBACK_LABEL = '60 days'
@@ -5490,7 +5490,7 @@ def get_report_usage(workspace_id):
         # in the URL (Admin Activity Events are tenant-wide).
         allowed_ws = _user_allowed_workspace_ids()
         if allowed_ws is not None and workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         print(f"\n📊 FETCHING REPORT USAGE METRICS FOR WORKSPACE: {workspace_id}")
         print(f"   ⚠️  NOTE: Live Activity Events requires Service Principal with Power BI Admin role")
@@ -5971,7 +5971,7 @@ def get_orphaned_reports(workspace_id):
         # Scanner/catalog data for any workspace id passed in the URL.
         allowed_ws = _user_allowed_workspace_ids()
         if allowed_ws is not None and workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         print(f"\n👻 DETECTING ORPHANED REPORTS FOR WORKSPACE: {workspace_id}")
 
@@ -6471,7 +6471,7 @@ def get_reports_metadata(workspace_id):
         # gate must run before any cached data is served.
         allowed_ws = _user_allowed_workspace_ids()
         if allowed_ws is not None and workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         # Check cache first (5-minute TTL)
         cache_key = f"metadata_{workspace_id}"
@@ -6784,7 +6784,7 @@ def get_dataset_lineage():
         # The scan itself runs with the service principal.
         allowed_ws = _user_allowed_workspace_ids()
         if workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         # Initialize Scanner API with service principal token
         scanner_service = PowerBIScanner()
@@ -7200,7 +7200,7 @@ def crash_test_report(report_id):
         # delegated allow-list. set() on fetch failure denies everything.
         allowed_ws = _user_allowed_workspace_ids()
         if workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         print(f"\n🔬 HYBRID CRASH TEST REQUEST")
         print(f"   Report: {report_id}")
@@ -8145,7 +8145,7 @@ def get_lineage():
         # the requested workspace must be in the user's delegated allow-list.
         allowed_ws = _user_allowed_workspace_ids()
         if workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         headers = {
             'Authorization': f'Bearer {user_token}',
@@ -9018,7 +9018,7 @@ def get_visual_lineage(report_id):
         # allow-list. set() on fetch failure denies everything.
         allowed_ws = _user_allowed_workspace_ids()
         if workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         print(f"\n📊 ===============================================")
         print(f"📊 VISUAL LINEAGE REQUEST")
@@ -10535,7 +10535,7 @@ def generate_documentation():
     # workspace must be in the user's delegated allow-list.
     allowed_ws = _user_allowed_workspace_ids()
     if workspace_id not in allowed_ws:
-        return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+        return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
     # Refresh-capable token (silent MSAL refresh + session write-back) instead
     # of the raw session JWT, which goes stale after ~1h. If no valid token

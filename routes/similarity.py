@@ -139,7 +139,7 @@ def analyze_report_similarity(workspace_id):
             from routes.catalog import _user_allowed_workspace_ids
             allowed_ws = _user_allowed_workspace_ids()
             if allowed_ws is not None and workspace_id not in allowed_ws:
-                return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+                return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
             workspaces_to_scan = [workspace_id]
 
         # Run scan to get all reports with metadata
@@ -490,7 +490,7 @@ def export_similarity_analysis():
                 from routes.catalog import _user_allowed_workspace_ids
                 allowed_ws = _user_allowed_workspace_ids()
                 if allowed_ws is not None and workspace_id not in allowed_ws:
-                    return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+                    return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
                 workspaces_to_scan = [workspace_id]
 
             # Scan all workspaces
@@ -1359,7 +1359,7 @@ def get_similarity_analysis():
         from routes.catalog import _user_allowed_workspace_ids
         allowed_ws = _user_allowed_workspace_ids()
         if workspace_id not in allowed_ws:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         print(f"\n🔍 SIMILARITY ANALYSIS: type={analysis_type} ws={workspace_id} thr={threshold}")
         similarity_logger.info(f"SIMILARITY ANALYSIS: type={analysis_type} ws={workspace_id} thr={threshold}")

@@ -847,7 +847,7 @@ def api_catalog_impact_model_details():
     try:
         allowed = _user_allowed_workspace_ids()
         if allowed is not None and workspace_id and workspace_id not in allowed:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         # Heavy gate (P0): model details parse workspace_catalog (284 MB).
         got_gate, details = _heavy_route_call(lambda: catalog_service.impact_model_details(
@@ -870,7 +870,7 @@ def api_catalog_impact_model_details():
         # ACL: if no workspace_id was passed, still enforce when we resolved one
         ws_resolved = details.get('workspaceId') or workspace_id
         if allowed is not None and ws_resolved and ws_resolved not in allowed:
-            return jsonify({'success': False, 'error': 'Access denied for workspace'}), 403
+            return jsonify({'success': False, 'error': 'Access denied for workspace. Access is checked against your own Power BI workspace roles and rechecked every 5 minutes - if you believe you have access, wait 5 minutes and retry; otherwise ask the workspace admin to add you.'}), 403
 
         payload = {
             'success': True,
