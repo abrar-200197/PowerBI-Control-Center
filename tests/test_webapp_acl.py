@@ -6,9 +6,12 @@ contract tested here:
 
   1. Fetch failure (HTTP error or network exception) returns set() — DENY,
      never None, never a fall-through to tenant-wide data.
-  2. The delegated /groups fetch is PAGINATED (this tenant has ~550 workspaces
-     and Power BI caps list responses at ~100 per page; a single-page fetch
-     silently truncated the allow-list and produced false 403 denials).
+  2. The delegated /groups fetch is NOT $top-limited: a $top-limited call
+     returns only the first ~100 rows and NO @odata.nextLink (observed in
+     production 2026-11-25), which silently truncated the allow-list and
+     403'd every workspace beyond the user's first 100. The unpaged call
+     returns the user's FULL list; nextLink is still followed when the
+     service sends one.
   3. The helper reads ONLY its own `acl_workspaces_{oid}` cache namespace.
      The UI `workspaces_{oid}` entry is written by /api/workspaces, whose
      service-principal fallback stores the TENANT-WIDE workspace list under
@@ -108,6 +111,26 @@ def _run_get(outcomes):
     return flaky
 
 
+def _powerbi_like_groups_get(all_workspaces, calls):
+    """Scripted requests.get modeling the OBSERVED delegated /groups behavior
+    (2026-11-25 incident): a $top-limited call returns only the first $top rows
+    with NO continuation link, while the unpaged call returns the user's full
+    list. Lets the regression test below fail against the old $top=100 fetch
+    exactly the way production did."""
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append({'url': url, 'timeout': timeout})
+        if '$top=' in url:
+            try:
+                n = int(url.split('$top=')[1].split('&')[0])
+            except (IndexError, ValueError):
+                n = 100
+            return _FakeResponse(200, {'value': all_workspaces[:n]})
+        return _FakeResponse(200, {'value': all_workspaces})
+
+    return fake_get
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -152,6 +175,28 @@ def test_paginated_fetch_follows_nextlink():
         assert len(flaky.calls) == 2, flaky.calls
         # Every hop carries an explicit timeout (app-wide stall class).
         assert all(c['timeout'] for c in flaky.calls), flaky.calls
+    finally:
+        _teardown()
+
+
+def test_full_list_beyond_first_100_workspaces():
+    """2026-11-25 incident regression: the old fetch sent ?$top=100, Power BI
+    answered with the first 100 workspaces and no nextLink, and users with
+    >100 workspaces were denied everything beyond position 100 (a 443-workspace
+    user was denied on #322 'Retail Bonus templates' - which WAS in their own
+    list). The fetch must retrieve the user's COMPLETE accessible list."""
+    _setup()
+    try:
+        many = [{'id': f'ws-{i}', 'name': f'WS {i}'} for i in range(443)]
+        calls = []
+        requests.get = _powerbi_like_groups_get(many, calls)
+        result = rc._user_allowed_workspace_ids()
+        assert len(result) == 443, len(result)
+        assert 'ws-322' in result, 'workspace beyond position 100 missing'
+        assert len(calls) == 1, calls
+        # The incident was the $top=100 URL itself; pin its absence.
+        assert '$top' not in calls[0]['url'], calls[0]['url']
+        assert calls[0]['timeout'], calls[0]
     finally:
         _teardown()
 
@@ -244,6 +289,7 @@ if __name__ == "__main__":
     test_fetch_failure_returns_empty_set()
     test_request_exception_returns_empty_set()
     test_paginated_fetch_follows_nextlink()
+    test_full_list_beyond_first_100_workspaces()
     test_ignores_ui_workspaces_cache_poisoning()
     test_reads_own_acl_cache_entry()
     test_ignores_non_delegated_acl_entry()

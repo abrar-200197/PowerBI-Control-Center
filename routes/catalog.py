@@ -98,10 +98,13 @@ def _user_allowed_workspace_ids():
     TENANT-WIDE workspace list from its service-principal fallback; trusting
     it here would silently widen every ACL gate to tenant-wide (P0 fix).
 
-    The live fetch uses the user's DELEGATED token against /groups and is
-    paginated via `@odata.nextLink` (same pattern as
-    powerbi_connector._paged_get): a single-page fetch truncated the
-    allow-list and produced false 403 denials for users in >100 workspaces.
+    The live fetch uses the user's DELEGATED token against /groups WITHOUT
+    $top: a $top-limited call returns only the first ~100 rows and NO
+    @odata.nextLink (observed in production 2026-11-25), which silently kept
+    the user's first 100 workspaces and 403'd everything beyond position 100.
+    The unpaged call returns the user's FULL accessible list in one response -
+    the same call /api/workspaces proves daily (439-443 items). @odata.nextLink
+    is still followed when the service sends one, bounded by _ACL_MAX_PAGES.
 
     Returns set() on any failure after auth (fail closed, never None) —
     an empty allow-list DENIES, it never falls through to tenant-wide data.
@@ -120,11 +123,16 @@ def _user_allowed_workspace_ids():
         ):
             return {w.get('id') for w in (cached.get('data') or []) if w.get('id')}
 
-        # Delegated, paginated fetch. Never use the service principal here:
-        # this list IS the security perimeter.
+        # Delegated fetch. Never use the service principal here: this list IS
+        # the security perimeter. Do NOT add $top - a $top-limited /groups call
+        # returns only the first page and NO @odata.nextLink (observed in
+        # production 2026-11-25), silently truncating the allow-list at 100 and
+        # denying every workspace beyond the user's first 100. The unpaged call
+        # returns the full list; the loop below follows @odata.nextLink only if
+        # one actually appears.
         headers = _get_user_powerbi_headers()
         workspaces = []
-        url = "https://api.powerbi.com/v1.0/myorg/groups?$top=100"
+        url = "https://api.powerbi.com/v1.0/myorg/groups"
         for _page in range(_ACL_MAX_PAGES):
             resp = requests.get(url, headers=headers, timeout=30)
             if resp.status_code != 200:
@@ -140,6 +148,9 @@ def _user_allowed_workspace_ids():
             # allow-list may be incomplete (fail closed per page, not tenant).
             print(f"⚠️ allowed-workspaces fetch hit the {_ACL_MAX_PAGES}-page cap; allow-list may be truncated")
 
+        # One diagnosability line per fetch (cache hits are silent): a count
+        # here would have made the 2026-11-25 truncation a 5-minute diagnosis.
+        print(f"?? ACL allow-list fetched: {len(workspaces)} workspaces for {user_id}")
         # Source tag: only entries fetched here (delegated) may ever be
         # served back as an allow-list.
         workspaces_cache[cache_key] = {
