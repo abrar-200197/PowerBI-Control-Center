@@ -584,19 +584,13 @@ async function loadData(forceRefresh = false) {
     const gen = tpack.generatedAt || summary?.generatedAt || "";
     const stats = tpack.stats || summary?.stats || {};
     const runMeta = $("#runMeta");
-    if (runMeta) {
-      // UX: catalog freshness was fetched on every load but never shown
-      // (this element was hard-hidden). Show "as of" + a staleness flag.
-      runMeta.classList.remove("hidden");
-      runMeta.removeAttribute("aria-hidden");
+    if (runMeta && !runMeta.classList.contains("hidden")) {
       const srcLabel = fromSession ? "Session cache" : (tpack.source === "server-thin" ? "Server (cached)" : "Server");
-      const stale = gen && (Date.now() - new Date(gen).getTime()) > 7 * 86400000;
       runMeta.innerHTML =
-        `Catalog as of (${srcLabel}): ` +
+        `Source: <strong>${srcLabel}</strong> · ` +
         `${fmt(stats.workspaceCount)} ws · ${fmt(stats.reportCount)} reports · ` +
         `${fmt(state.rows.length)} tables` +
-        (gen ? ` · generated ${new Date(gen).toLocaleString()}` : "") +
-        (stale ? ` · ⚠ data may be stale` : "");
+        (gen ? ` · ${new Date(gen).toLocaleString()}` : "");
     }
 
     populateSubSourceFilter();
